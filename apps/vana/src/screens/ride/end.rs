@@ -23,8 +23,6 @@ pub const DISCARD_CUES: [Cue; 3] = [
     Cue::new(Role::Act, Icon::Check),
     Cue::new(Role::Move, Icon::Trash),
 ];
-/// A question whose ACT throws a ride away: DISCARD RIDE?, DELETE RIDE?.
-pub const TRASH_CUES: [Cue; 2] = [BACK, Cue::new(Role::Act, Icon::Trash)];
 
 /// A question about a ride on one panel, centred down it: rows of text whose
 /// capitals end on their bottoms, between the cues.

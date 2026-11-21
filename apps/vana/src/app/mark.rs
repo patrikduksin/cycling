@@ -4,7 +4,6 @@ use super::cues::Cue;
 use super::input::HOLD_GAP_MS;
 use super::navigation::{Navigation, Pause, Restore, To};
 use crate::compose::input::Action;
-use crate::ride::log::Status;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::{Page, Text};
@@ -55,7 +54,6 @@ pub(super) enum MoveHold {
     Mark,
     /// What the screen shown holds MOVE for, as its buttons name it.
     Screen(Action),
-    StopFollowing,
 }
 
 /// What a MOVE report leaves for the rest of the input handling.
@@ -231,8 +229,7 @@ impl Runtime {
         }));
         match move_hold {
             MoveHold::Mark => self.mark(pressed_ms, page, now),
-            MoveHold::Screen(action) => self.carry(action, true, now, now),
-            MoveHold::StopFollowing => self.stop_following_from_map(now),
+            MoveHold::Screen(action) => self.carry(action, true, pressed_ms, now),
         }
         self.display.redraw();
         MoveReport::Held
@@ -252,24 +249,9 @@ impl Runtime {
         self.navigation.chime(Cue::Mark);
     }
 
-    fn move_hold(&self) -> MoveHold {
-        let ride_shown = self.navigation.page() == Page::Ride
-            && !(self.ride.active().status() == Status::Paused && !self.navigation.pause_hidden());
-        let held = self
-            .screen_id()
-            .builtin()
-            .and_then(|builtin| builtin.buttons.held);
-        match (self.navigation.ride_page(), held) {
-            (_, Some(Action::ExtendStep))
-                if ride_shown
-                    && self.ride.active().status() == Status::Recording
-                    && self.step_extendable() =>
-            {
-                MoveHold::Screen(Action::ExtendStep)
-            }
-            (RidePage::Map, _) if ride_shown && self.following() => MoveHold::StopFollowing,
-            _ => MoveHold::Mark,
-        }
+    fn move_hold(&mut self) -> MoveHold {
+        self.composed_hold()
+            .map_or(MoveHold::Mark, MoveHold::Screen)
     }
 }
 

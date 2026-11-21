@@ -163,7 +163,19 @@ mod tests {
     use super::*;
     use crate::ride::course::follow::MOVING_FROM_MM_S;
     use crate::ride::geo::TURN;
-    use crate::screens::BASE;
+    use crate::screens::chrome::Rect;
+    use crate::screens::scaled::BASE;
+
+    const FREE: super::super::Ground =
+        super::super::ground(&BASE, super::super::ground_rect(&BASE));
+    /// Beside a radar's strip, as the map page's tree places the map.
+    const BESIDE_RADAR: super::super::Ground = super::super::ground(
+        &BASE,
+        Rect {
+            left: crate::screens::ride::RADAR_WIDTH,
+            ..super::super::ground_rect(&BASE)
+        },
+    );
 
     const KMH: f32 = 1_000_000.0 / 3_600.0;
 
@@ -177,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_projection_puts_the_heading_up_and_the_rider_where_posed() {
-        let pose = Pose::new(Reach::new(335, Detail::Streets), &BASE.map.free, TURN / 4);
+        let pose = Pose::new(Reach::new(335, Detail::Streets), &FREE, TURN / 4);
         assert_eq!(pose.rider, (120, 223));
         let at = pose.projection((100.0, 50.0));
         assert_eq!(at.at((100.0, 50.0)), (120.0, 223.0));
@@ -190,7 +202,7 @@ mod tests {
     #[test]
     fn beside_a_radar_the_rider_is_in_the_middle_of_what_is_left() {
         assert_eq!(
-            Pose::new(Reach::new(300, Detail::Streets), &BASE.map.beside_radar, 0).rider,
+            Pose::new(Reach::new(300, Detail::Streets), &BESIDE_RADAR, 0).rider,
             (134, 223)
         );
     }
@@ -272,14 +284,14 @@ mod tests {
     #[test]
     fn the_scale_bar_reads_a_round_distance_up_to_90_px() {
         let bar = |ahead_m| {
-            Pose::new(Reach::new(ahead_m, Detail::Streets), &BASE.map.free, 0).bar(|px, _| px <= 90)
+            Pose::new(Reach::new(ahead_m, Detail::Streets), &FREE, 0).bar(|px, _| px <= 90)
         };
         assert_eq!(bar(150), Some((67, &b"50 M"[..])));
         assert_eq!(bar(278), Some((72, &b"100 M"[..])));
         assert_eq!(bar(335), Some((60, &b"100 M"[..])));
         assert_eq!(bar(444), Some((45, &b"100 M"[..])));
         assert_eq!(bar(1_000), Some((50, &b"250 M"[..])));
-        let closest = Pose::new(Reach::new(150, Detail::Streets), &BASE.map.free, 0);
+        let closest = Pose::new(Reach::new(150, Detail::Streets), &FREE, 0);
         assert_eq!(closest.bar(|px, _| px <= 66), None, "50 M is 67 px here");
     }
 }

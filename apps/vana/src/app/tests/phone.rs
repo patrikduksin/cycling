@@ -1184,6 +1184,7 @@ fn device_rows(runtime: &Runtime) -> (bool, Vec<&'static str>) {
 fn past_ride_cues(runtime: &Runtime) -> std::vec::Vec<crate::screens::cue::Cue> {
     let mut view = runtime.navigation.view(None);
     runtime.past_view(&mut view);
+    view.compose_main();
     view.prepare().cues().to_vec()
 }
 
@@ -1264,4 +1265,33 @@ fn without_wifi_a_saved_ride_has_no_send_cue_and_act_stays() {
     runtime.input_received(press(Role::Act), now + 500, now + 500, &mut radio);
     assert_eq!(runtime.navigation.page(), Page::PastRide);
     assert!(runtime.phone_status().is_none());
+}
+
+/// Holding MOVE on the map stops following the course, whether or not a
+/// frame has drawn the map since it opened.
+#[test]
+fn holding_move_on_a_map_just_opened_stops_following() {
+    use crate::screens::ride::RidePage;
+    use crate::screens::workout::Page;
+    for drawn in [true, false] {
+        let mut journal = Journal::erased();
+        let mut radio = super::Radio::new();
+        let mut runtime = ready_runtime(&mut journal, &mut radio);
+        attach_course_room(&mut runtime);
+        runtime.track.as_deref_mut().unwrap().follow_a_course();
+        runtime.navigation.go(To::Page(Page::Ride));
+        let before = runtime.ride_pages().preceding(RidePage::Map);
+        runtime.navigation.go(To::RidePage(before));
+        runtime.compose(false, 1_000);
+        runtime.next_ride_page();
+        assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
+        if drawn {
+            runtime.compose(false, 1_900);
+        }
+        for now in (2_000..=3_600).step_by(200) {
+            runtime.input_received(press(Role::Move), now, now, &mut radio);
+        }
+        assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
+        assert!(!runtime.following(), "still following, map drawn: {drawn}");
+    }
 }

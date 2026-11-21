@@ -1178,6 +1178,13 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
             "target band",
             "step left",
             "workout chart",
+            "map",
+            "scale",
+            "words",
+            "cell",
+            "zone time",
+            "best effort",
+            "profile",
             "line",
             "ftp",
             "best",
@@ -1187,6 +1194,8 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
             "script"
         ]
     );
+    assert_eq!(registry::tile(registry::MAP).name(), "map");
+    assert_eq!(registry::tile(registry::SCALE).name(), "scale");
     for at in panels() {
         // A script's looks are its module's, checked at accept (script/tests.rs).
         for (_, tile) in registry::every().filter(|(_, tile)| tile.name() != "script") {

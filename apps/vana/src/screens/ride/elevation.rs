@@ -16,36 +16,42 @@ use crate::screens::chrome::{Rect, Row};
 
 /// The most columns a chart has on any of `panels`.
 const fn columns(panels: &[(usize, usize)]) -> usize {
-    crate::screens::scaled::largest!(panels, |at| super::summary::text(&at).width())
+    crate::screens::scaled::largest!(panels, |at| at.panel.width)
 }
 
 /// The most columns a chart has on any panel this build meets.
 pub const COLUMNS: usize = columns(crate::screens::limits::PANELS);
-/// A column's top is a `u8`.
-pub const MAX_HEIGHT: usize = u8::MAX as usize;
 /// A column's grade spans the road 100 m each side.
 const REACH_MM: u64 = 100_000;
 
 /// The chart's columns, and the altitudes the captions name.
 #[derive(Clone, Hash)]
 pub struct Chart {
+    /// Where it was charted, once it was: the fill ends above its bottom
+    /// row, the baseline.
+    rect: Option<Rect>,
     /// The lowest and highest altitude in decimetres, none without a trace.
     range_dm: Option<(i32, i32)>,
-    tops: [u8; COLUMNS],
+    tops: [u16; COLUMNS],
     bands: [Steepness; COLUMNS],
 }
 
 impl Default for Chart {
     fn default() -> Self {
         Self {
+            rect: None,
             range_dm: None,
-            tops: [u8::MAX; COLUMNS],
+            tops: [0; COLUMNS],
             bands: [Steepness::Easy; COLUMNS],
         }
     }
 }
 
 impl Chart {
+    pub fn rect(&self) -> Option<Rect> {
+        self.rect
+    }
+
     /// The lowest and highest altitude drawn, in whole metres.
     pub fn range_m(&self) -> Option<(i32, i32)> {
         self.range_dm
@@ -54,6 +60,7 @@ impl Chart {
 
     /// Chart `trace` across `rect`; a ride without altitude leaves it empty.
     pub fn refresh(&mut self, trace: &Trace, rect: Rect) {
+        self.rect = Some(rect);
         let len = trace.len();
         self.range_dm = trace.range_dm().filter(|_| len >= 2);
         let Some((low, high)) = self.range_dm else {
@@ -74,7 +81,7 @@ impl Chart {
             let (a, b) = (trace.altitude_dm(index), trace.altitude_dm(next));
             let altitude = a + (b - a) * into / (columns as i32 - 1);
             let filled = 1 + (altitude - floor) * rows / span;
-            self.tops[column] = (height - filled.clamp(1, height)) as u8;
+            self.tops[column] = (height - filled.clamp(1, height)) as u16;
             let (from, to) = (index.saturating_sub(reach), (index + reach).min(len - 1));
             let rise = i64::from(trace.altitude_dm(to) - trace.altitude_dm(from));
             let run = (to - from) as u64 * trace.step_mm();
@@ -90,13 +97,12 @@ impl Chart {
     }
 }
 
-/// The fill and its baseline, on the rows of `rect`, the region the chart
-/// was charted across.
-pub fn paint(chart: &Chart, rect: Rect, row: &mut Row) {
+/// The fill and its baseline, on the rows the chart was charted across.
+pub fn paint(chart: &Chart, row: &mut Row) {
     let y = row.y();
-    if chart.range_dm.is_none() {
+    let Some(rect) = chart.rect.filter(|_| chart.range_dm.is_some()) else {
         return;
-    }
+    };
     if y == rect.bottom {
         row.span(rect.left..rect.right, GRID);
     }
@@ -127,8 +133,9 @@ pub fn paint(chart: &Chart, rect: Rect, row: &mut Row) {
 
 /// The per-pixel original of `paint`.
 #[cfg(test)]
-pub fn pixel(chart: &Chart, rect: Rect, x: usize, y: usize) -> Option<u16> {
-    if chart.range_dm.is_none() || !(rect.left..rect.right).contains(&x) {
+pub fn pixel(chart: &Chart, x: usize, y: usize) -> Option<u16> {
+    let rect = chart.rect.filter(|_| chart.range_dm.is_some())?;
+    if !(rect.left..rect.right).contains(&x) {
         return None;
     }
     if y == rect.bottom {
@@ -143,7 +150,9 @@ pub fn pixel(chart: &Chart, rect: Rect, x: usize, y: usize) -> Option<u16> {
 mod tests {
     use super::*;
 
-    const RECT: Rect = crate::screens::BASE.summary.elevation.chart;
+    fn rect() -> Rect {
+        super::super::summary::chart_on(&crate::screens::BASE)
+    }
 
     fn trace(metres: u64, altitude_dm: impl Fn(u64) -> i32) -> Trace {
         let mut trace = Trace::default();
@@ -156,9 +165,10 @@ mod tests {
     #[test]
     fn a_ride_without_altitude_draws_nothing() {
         let mut chart = Chart::default();
-        chart.refresh(&Trace::default(), RECT);
+        let rect = rect();
+        chart.refresh(&Trace::default(), rect);
         assert!(chart.range_m().is_none());
-        assert_eq!(pixel(&chart, RECT, RECT.left + 5, RECT.bottom), None);
+        assert_eq!(pixel(&chart, rect.left + 5, rect.bottom), None);
     }
 
     #[test]
@@ -170,7 +180,7 @@ mod tests {
             _ => 6800 - (m as i32 - 2000) / 2,
         });
         for layout in crate::screens::panels::ALL {
-            let rect = layout.summary.elevation.chart;
+            let rect = super::super::summary::chart_on(layout);
             let mut chart = Chart::default();
             chart.refresh(&trace, rect);
             assert_eq!(chart.range_m(), Some((600, 680)));
@@ -206,16 +216,37 @@ mod tests {
         );
     }
 
-    /// A 3/4 panel as wide as the C606 has narrower margins, so a wider
-    /// chart: 240 × 300 spans 216 columns, not 208.
+    /// A tree may grow the profile over the whole panel: a steady climb
+    /// fills from the baseline at its start to the top at its end, on every
+    /// panel.
     #[test]
-    fn the_chart_is_bounded_by_each_panels_own_layout() {
-        assert_eq!(
-            columns(&[(240, 320)]),
-            208,
-            "the C606's chart keeps its columns"
-        );
-        assert_eq!(columns(&[(240, 320), (240, 300)]), 216);
-        assert_eq!(columns(&[(240, 320), (180, 320)]), 208);
+    fn the_chart_at_the_largest_box_accept_allows_paints_on_every_panel() {
+        use crate::compose::registry::PROFILE;
+        let trace = trace(1000, |m| 6000 + m as i32);
+        for layout in crate::screens::panels::ALL {
+            let rect = super::super::summary::chart_rect(crate::screens::ride::largest_box(
+                layout, PROFILE,
+            ));
+            let mut chart = Chart::default();
+            chart.refresh(&trace, rect);
+            let (first, last) = (rect.left, rect.right - 1);
+            let at = |x, y| pixel(&chart, x, y).is_some();
+            let what = std::format!("{:?}", layout.scaled.panel);
+            assert!(
+                !at(first, rect.bottom - 2) && at(first, rect.bottom - 1),
+                "{what}"
+            );
+            assert!(
+                at(last, rect.top) && (rect.top..rect.bottom).all(|y| at(last, y)),
+                "{what}"
+            );
+            for y in rect.top..=rect.bottom {
+                let mut pixels = [0u16; crate::screens::chrome::WIDTH];
+                paint(&chart, &mut Row::new(y, &mut pixels));
+                for (x, &got) in pixels.iter().enumerate() {
+                    assert_eq!(got, pixel(&chart, x, y).unwrap_or(0), "{what} at {x},{y}");
+                }
+            }
+        }
     }
 }

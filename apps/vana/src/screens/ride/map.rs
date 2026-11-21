@@ -3,49 +3,26 @@ mod pose;
 mod raster;
 mod roads;
 
-use super::kilometres;
 use crate::ride::breadcrumb::Crumb;
 use crate::ride::course::follow::Placement;
 use crate::ride::course::nav::{Glyph, Guidance, Sign, Spot};
 use crate::ride::course::route_leg;
 use crate::ride::geo::{Frame as RideFrame, distance};
-use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
-    self, ACCENT, AMBER, Align, BLACK, CASING, Look, RIDDEN, Rect, Row, SECONDARY, Shown, WHITE,
+    ACCENT, AMBER, BLACK, CASING, Look, RIDDEN, Rect, Row, SECONDARY, Shown, WHITE,
     paint_disc_over, rgb,
 };
 use crate::screens::icons::StaticIcon;
 use crate::screens::limits;
 use crate::screens::look;
-use crate::screens::scaled::{Scaled, Track as Split};
-use crate::screens::workout::{Text, View};
+use crate::screens::scaled::Scaled;
 use arrow::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, arrow_shape};
-use firmware_shell::rendering::font::{FaceRole, SPILL};
 use pose::{Pose, Projection};
 pub use pose::{Reach, Zoom};
 use raster::{Bar, Class, Cover, Layer, Stroke, Triangle};
 use roads::{Roads, Source};
 
 type Point = (f32, f32);
-
-/// The map page on one panel: the ground the map covers, without a radar
-/// and beside one's strip, and the foot below it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    pub free: Ground,
-    pub beside_radar: Ground,
-    pub foot: Foot,
-}
-
-impl Regions {
-    pub const fn ground(&self, radar: bool) -> &Ground {
-        if radar {
-            &self.beside_radar
-        } else {
-            &self.free
-        }
-    }
-}
 
 /// Where the map draws in a frame, with or without a radar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,76 +50,45 @@ impl Ground {
     }
 }
 
-/// The foot under the map: the scale bar and its label at the left, the
-/// distance and its unit at the right, on one baseline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Foot {
-    /// Across the panel: beside a radar it runs under the strip, which
-    /// ends above it.
-    pub rect: Rect,
-    /// The longest scale bar.
-    pub bar: Rect,
-    /// Between the bar and its label.
-    pub gap: usize,
-    pub baseline: usize,
-    pub distance_right: usize,
-    pub unit_right: usize,
-}
-
-const FOOT_ROWS: u16 = 30;
-const GROUND_ROWS: usize = ground_rows(limits::PANELS);
-const BAR_MAX_PX: u16 = 90;
+/// The status bar's rows and the foot's, which the map's ground lies
+/// between on the map page.
+pub const BAR_UNITS: u16 = 22;
+pub const FOOT_UNITS: u16 = 30;
+/// The most rows the map's ground has: the whole panel, which a tree may
+/// give it.
+const GROUND_ROWS: usize = crate::screens::scaled::largest!(limits::PANELS, |at| at.panel.height);
+/// The longest scale bar.
+pub const BAR_MAX_UNITS: usize = 90;
 const PUCK_RINGS_QUARTER_PX: [usize; 2] = [58, 50];
 const PUCK_RING_COLOURS: [u16; 2] = [BLACK, WHITE];
 const JUNCTION_RINGS_QUARTER_PX: [usize; 4] = [48, 40, 22, 14];
 const JUNCTION_RING_COLOURS: [u16; 4] = [GROUND_COLOR, AMBER, BLACK, WHITE];
 
-/// The most rows the map's ground has on any of `panels`.
-const fn ground_rows(panels: &[(usize, usize)]) -> usize {
-    crate::screens::scaled::largest!(panels, |at| ground_and_foot(&at)[0].height())
-}
-
-const fn ground_and_foot(at: &Scaled) -> [Rect; 2] {
-    use Split::{Fr, Unit};
-    let below_bar = Rect {
-        top: chrome::regions(at).status_bar.bottom,
+/// The map page's ground without a radar: the panel between the status bar
+/// and the foot, as its built-in tree places it.
+pub const fn ground_rect(at: &Scaled) -> Rect {
+    let bar = at.unit(BAR_UNITS as usize);
+    // A tree sizes its pinned bands by their running sum.
+    let foot = at.unit((BAR_UNITS + FOOT_UNITS) as usize) - bar;
+    Rect {
+        top: bar,
+        bottom: at.panel.height - foot,
         ..at.screen()
-    };
-    below_bar.rows([Fr(1), Unit(FOOT_ROWS)], Unit(0), at)
-}
-
-pub const fn regions(at: &Scaled) -> Regions {
-    use Split::{Fr, Unit};
-    let [drawn, foot] = ground_and_foot(at);
-    assert!(
-        drawn.height() <= GROUND_ROWS,
-        "the map's ground has more rows than its frame holds"
-    );
-    let [_, inner, _] = foot.cols([Unit(12), Fr(1), Unit(12)], Unit(0), at);
-    let [_, bar, _] = foot.rows([Unit(13), Unit(3), Fr(1)], Unit(0), at);
-    let bar = Rect {
-        right: inner.left + at.unit(BAR_MAX_PX as usize),
-        ..bar.with_columns(inner)
-    };
-    let body = super::frame(at).body;
-    Regions {
-        free: ground(at, drawn, drawn),
-        beside_radar: ground(at, drawn, drawn.with_columns(body)),
-        foot: Foot {
-            rect: foot,
-            bar,
-            gap: at.unit(6),
-            baseline: foot.top + at.unit(19),
-            distance_right: inner.right - at.unit(KM_ROOM),
-            unit_right: inner.right,
-        },
     }
 }
 
-/// The room for "KM" and the gap before it.
-const KM_ROOM: usize = 25;
-
-const fn ground(at: &Scaled, drawn: Rect, shown: Rect) -> Ground {
+/// The ground a map tile placed at `shown` draws: its rows across the
+/// panel, so a radar's strip beside it covers lines kept under it.
+pub const fn ground(at: &Scaled, shown: Rect) -> Ground {
+    assert!(
+        shown.height() <= GROUND_ROWS,
+        "the map's ground has more rows than its frame holds"
+    );
+    let drawn = Rect {
+        left: 0,
+        right: at.panel.width,
+        ..shown
+    };
     Ground {
         drawn,
         shown,
@@ -331,17 +277,16 @@ impl<'a> Cache<'a> {
         Self { frame, held: None }
     }
 
-    /// Fill the frame again, laid out in `map`, if `track` or the roads
-    /// changed; whether it did. A cache serves one panel, so `map` is the
-    /// same every time.
-    pub fn update(&mut self, track: &Track, map: &'static Regions) -> bool {
+    /// Fill the frame again over `ground`, if `track`, the roads or the
+    /// ground changed; whether it did.
+    pub fn update(&mut self, track: &Track, ground: Ground) -> bool {
         let key = Key {
             roads: self.frame.roads.generation(),
             ..track.key()
         };
-        let stale = self.held != Some(key);
+        let stale = self.held != Some(key) || self.frame.ground != Some(ground);
         if stale {
-            fill(self.frame, track, map);
+            fill(self.frame, track, ground);
             self.held = Some(key);
         }
         stale
@@ -413,6 +358,7 @@ impl<'a> Filled<'a> {
 impl core::hash::Hash for Filled<'_> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.key.hash(state);
+        self.frame.ground.hash(state);
         self.frame.last_pose.hash(state);
     }
 }
@@ -525,7 +471,7 @@ struct Arrow {
 #[derive(Clone)]
 pub struct Frame {
     show: Show,
-    ground: Option<&'static Ground>,
+    ground: Option<Ground>,
     last_pose: Pose,
     last_centre: Point,
     layer: Layer<GROUND_ROWS>,
@@ -723,8 +669,7 @@ fn draw_roads(frame: &mut Frame, at: &Projection, drawn: &Rect, centre: Point, l
     }
 }
 
-fn fill(frame: &mut Frame, track: &Track, map: &'static Regions) {
-    let ground = map.ground(track.radar);
+fn fill(frame: &mut Frame, track: &Track, ground: Ground) {
     frame.ground = Some(ground);
     frame.show = if track.rider_or_last_crumb().is_none() {
         Show::NoGps
@@ -746,8 +691,8 @@ fn fill(frame: &mut Frame, track: &Track, map: &'static Regions) {
         return;
     };
     let heading = track.heading.unwrap_or(frame.last_pose.heading);
-    let pose = Pose::new(track.reach, ground, heading);
-    draw(frame, track, ground, centre, pose);
+    let pose = Pose::new(track.reach, &ground, heading);
+    draw(frame, track, &ground, centre, pose);
 }
 
 fn draw(frame: &mut Frame, track: &Track, ground: &Ground, centre: Point, pose: Pose) {
@@ -1002,8 +947,8 @@ fn bucket(frame: &mut Frame, drawn: &Rect) {
     }
 }
 
-fn ground_on(frame: &Frame, y: usize) -> Option<&'static Ground> {
-    frame.ground.filter(|ground| {
+fn ground_on(frame: &Frame, y: usize) -> Option<&Ground> {
+    frame.ground.as_ref().filter(|ground| {
         frame.show == Show::Map && (ground.drawn.top..ground.drawn.bottom).contains(&y)
     })
 }
@@ -1153,77 +1098,49 @@ pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: Shown)
     color
 }
 
-pub(super) fn prepare(view: &View) -> Canvas {
-    let layout = view.layout;
-    let (at, map) = (&layout.scaled, &layout.map);
-    let shown = map.ground(view.radar_paired).shown;
-    let (width, cx) = (shown.width(), (shown.left + shown.right) / 2);
-    let middle = (shown.top + shown.bottom) / 2;
-    let mut canvas = Canvas::default();
-    let say = |canvas: &mut Canvas, text: &[u8]| {
-        let face = at.face(FaceRole::Body);
-        canvas.fit(&[face], text, width, cx, middle, Align::Center, WHITE);
-    };
-    let frame = match view.map() {
-        Some(frame) if frame.show == Show::Map => frame,
-        Some(frame) if frame.show == Show::NoGps => {
-            say(&mut canvas, b"NO GPS YET");
-            let below = middle + at.unit(24);
-            let words = b"MAP STARTS WITH GPS";
-            canvas.caption(at, words, width, cx, below, Align::Center);
-            return canvas;
-        }
-        _ => {
-            say(&mut canvas, b"NO TRACK");
-            return canvas;
-        }
-    };
-    if !frame.has_track {
-        let rider = usize::try_from(frame.last_pose.rider.1).unwrap_or(middle);
-        let above = rider - at.unit(36);
-        let words = b"DRAWS AS YOU RIDE";
-        canvas.caption(at, words, width, cx, above, Align::Center);
+/// What the map tile writes over its ground.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Words {
+    None,
+    NoGps,
+    /// The map shows the rider at row `rider` before any track is kept.
+    DrawsAsYouRide {
+        rider: usize,
+    },
+}
+
+impl Frame {
+    /// Where the frame was last filled.
+    pub fn ground(&self) -> Option<Ground> {
+        self.ground
     }
-    let foot = &map.foot;
-    let (baseline, right) = (foot.baseline, foot.distance_right);
-    let mut distance = Text::<12>::new();
-    let mm = frame
-        .left_m
-        .map_or(view.totals.distance_mm(), |m| u64::from(m) * 1000);
-    kilometres(&mut distance, mm);
-    let figures = at.face(FaceRole::Foot20);
-    let across = right - foot.bar.left;
-    let distance_left = right - figures.width(distance.as_bytes()).min(across);
-    let caption = at.face(FaceRole::Caption);
-    let fits = |bar, label: &[u8]| {
-        let label_right = foot.bar.left + bar + foot.gap + caption.width(label) + SPILL;
-        bar <= foot.bar.width() && label_right + foot.gap <= distance_left
-    };
-    if let Some((bar, label)) = frame.last_pose.bar(fits) {
-        canvas.shape(Shape::Bar {
-            rect: Rect {
-                right: foot.bar.left + bar,
-                ..foot.bar
-            },
-            radius: at.unit(1),
-            color: SECONDARY,
-        });
-        let left = foot.bar.left + bar + foot.gap;
-        let width = distance_left - foot.gap - left;
-        canvas.caption(at, label, width, left, baseline, Align::Left);
+
+    /// Whether the map shows: only then does its foot.
+    pub fn shows(&self) -> bool {
+        self.show == Show::Map
     }
-    canvas.fit(
-        &[figures],
-        distance.as_bytes(),
-        across,
-        right,
-        baseline,
-        Align::Right,
-        WHITE,
-    );
-    let unit = foot.unit_right;
-    canvas.caption(at, b"KM", unit - right, unit, baseline, Align::Right);
-    canvas
+
+    /// None while the frame is unfilled, which reads as no track.
+    pub fn words(&self) -> Option<Words> {
+        match self.show {
+            Show::Unfilled => None,
+            Show::NoGps => Some(Words::NoGps),
+            Show::Map if self.has_track => Some(Words::None),
+            Show::Map => Some(Words::DrawsAsYouRide {
+                rider: usize::try_from(self.last_pose.rider.1).unwrap_or(0),
+            }),
+        }
+    }
+
+    /// Metres left on the course followed.
+    pub fn left_m(&self) -> Option<u32> {
+        self.left_m
+    }
+
+    /// The longest scale bar `fits` takes, in pixels, with its label.
+    pub fn scale(&self, fits: impl Fn(usize, &[u8]) -> bool) -> Option<(usize, &'static [u8])> {
+        self.last_pose.bar(fits)
+    }
 }
 
 #[cfg(test)]

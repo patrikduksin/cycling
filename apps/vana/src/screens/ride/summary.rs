@@ -30,31 +30,21 @@
 //! gradient.
 use super::elevation::Chart;
 use super::stats::zone_bar;
-use super::{Cells, elapsed, kilometres, speed, whole};
+use super::{elapsed, kilometres, speed, whole};
+use crate::compose::tile::{Form, Forms, forms};
 use crate::kept::bests::Found;
 use crate::ride::recovery::Reading as Recovery;
-use crate::ride::totals::EFFORT_SECONDS;
-use crate::screens::Layout;
+use crate::ride::rider::Rider;
+use crate::ride::totals::{EFFORT_SECONDS, Totals};
+use crate::ride::zones::{HEART_ZONES, POWER_ZONES};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
     AMBER, Align, GRADE, HEART, POWER, Rect, SECONDARY, SPEED, TERTIARY, WHITE,
 };
-use crate::screens::cue::{Badge, Cue, Icon};
-use crate::screens::scaled::{Scaled, Track};
+use crate::screens::cue::{Badge, Icon};
+use crate::screens::scaled::Scaled;
 use crate::screens::workout::{Text, View};
-use device_api::input::Role;
 use firmware_shell::rendering::font::{Face, FaceRole};
-
-pub const CUE: Cue = Cue::new(Role::Act, Icon::Check);
-/// A saved ride: ACT sends it to the phone. BACK keeps its fixed role,
-/// back to the list, without a cue, as on the ride pages.
-pub const PAST_CUES: [Cue; 1] = [Cue::new(Role::Act, Icon::Send)];
-const PAGE_CUES: [Cue; 2] = [CUE, PAST_CUES[0]];
-/// The FTP offer: ACT takes it, BACK keeps the FTP in force.
-pub const OFFER_CUES: [Cue; 2] = [
-    Cue::new(Role::Back, Icon::Back),
-    Cue::new(Role::Act, Icon::Check),
-];
 
 /// Where the saved ride stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -139,6 +129,46 @@ pub fn delete_shown(after: &After) -> bool {
     after.page == pages(after.elevation) && after.delete && after.past
 }
 
+/// What the summary shows: a lone message while a ride is written, read or
+/// unreadable, else the page it is on. Each is a screen of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    Message,
+    Overview,
+    Effort,
+    Elevation,
+    Best,
+    Offer,
+    Delete,
+}
+
+impl Shown {
+    pub fn of(after: &After) -> Self {
+        if delete_shown(after) {
+            return Self::Delete;
+        }
+        if matches!(
+            after.saving,
+            Saving::Writing | Saving::Reading | Saving::Unreadable
+        ) {
+            return Self::Message;
+        }
+        match after.page {
+            0 => Self::Overview,
+            1 => Self::Effort,
+            _ if offer_shown(after) => Self::Offer,
+            2 if after.elevation => Self::Elevation,
+            _ => Self::Best,
+        }
+    }
+}
+
+/// Whether a saved ride's send cue hides: while it is read back, or with no
+/// phone to send it to. DELETE RIDE? keeps its own cue.
+pub fn send_hidden(after: &After) -> bool {
+    after.past && !delete_shown(after) && (after.saving == Saving::Reading || !after.send)
+}
+
 /// Whether the page is a question with a back cue, shown without the bar.
 pub fn question_shown(after: &After) -> bool {
     offer_shown(after) || delete_shown(after)
@@ -154,503 +184,166 @@ pub fn effort_label(index: usize) -> Text<12> {
     label
 }
 
-/// The summary on one panel. A text row's bottom is its baseline. On a
-/// taller panel the elevation chart takes the spare rows, a lone message
-/// and the FTP offer stay in the middle, and the other pages keep the top,
-/// clear of the done cue's corner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    /// The text margins across the content.
-    pub text: Rect,
-    /// Two columns of cells, as on the ride pages.
-    pub cells: Cells,
-    /// The check over RIDE SAVED.
-    pub badge: Badge,
-    pub message: Message,
-    pub overview: Overview,
-    pub effort: Effort,
-    pub elevation: Elevation,
-    pub best: BestPower,
-    /// `20 MIN BEST`, `FTP 245 W?` and `NOW`.
-    pub offer: [Rect; 3],
-}
-
-/// SAVING, READING or RIDE UNREADABLE, alone on the page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Message {
-    pub title: Rect,
-    /// Why a ride is unreadable.
-    pub reason: Rect,
-    /// What to do while the ride is written or read.
-    pub note: Rect,
-}
-
-/// The first page: SAVED RIDE over a saved ride's start, or RIDE SAVED; NOT
-/// ALL SAVED over its cause; then the ride's totals.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Overview {
-    pub saved: Rect,
-    pub failed: Rect,
-    pub cause: Rect,
-    pub title: Rect,
-    pub cells: Rect,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Effort {
-    pub cells: Rect,
-    /// The time-in-zone bars; "PWR" and "HR" sit left of them.
-    pub power_bar: Rect,
-    pub heart_bar: Rect,
-    /// The heart rate recovery: a cell across the page.
-    pub recovery: Rect,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Elevation {
-    pub cells: Rect,
-    /// The profile's fill; its baseline is the row under it.
-    pub chart: Rect,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BestPower {
-    /// BEST POWER W.
-    pub header: Rect,
-    /// One row per effort, each across the text margins: its label, its bar
-    /// and its watts lie in the columns below.
-    pub efforts: [Rect; 4],
-    pub label: Rect,
-    /// The longest a bar can be; the highest effort fills it.
-    pub bar: Rect,
-    pub value: Rect,
-    /// Climbs and laps.
-    pub cells: Rect,
-}
-
-/// Inside the summary's text margins, which the elevation chart spans.
-pub(super) const fn text(at: &Scaled) -> Rect {
-    use Track::{Fr, Unit};
-    let content = crate::screens::chrome::regions(at).content;
-    let [_, text, _] = content.cols([Unit(16), Fr(1), Unit(16)], Unit(0), at);
-    text
-}
-
-const CHART_BASELINE_ROWS: usize = 1;
-const BASELINE_CLEAR_OF_CUE_PX: usize = 2;
-
-pub const fn regions(at: &Scaled, corners: &crate::screens::cue::Corners) -> Regions {
-    use Track::{Fr, Unit};
-    let content = crate::screens::chrome::regions(at).content;
-    let text = text(at);
-    let [_, left, _, right, _] = content.cols(
-        [Unit(16), Fr(1), Unit(COLUMN_GAP), Fr(1), Unit(16)],
-        Unit(0),
-        at,
-    );
-    let pitch = super::CELL_PITCH as u16;
-    // The pages that start at the top start below a cue in a top corner.
-    let below_cues = Rect {
-        top: corners
-            .rows_clear_of(&PAGE_CUES, content.with_columns(text), at.panel, 0)
-            .top,
-        ..content
-    };
-    let [_, badge, _] = content.rows([Unit(14), Unit(40), Fr(1)], Unit(0), at);
-    let [_, title, reason, note, _, _] = content.rows(
-        [Fr(1), Unit(126), Unit(24), Unit(4), Unit(142), Fr(1)],
-        Unit(0),
-        at,
-    );
-    let [saved, failed, cause, overview_title, _, overview_cells, _] = content.rows(
-        [
-            Unit(46),
-            Unit(16),
-            Unit(22),
-            Unit(4),
-            Unit(10),
-            Unit(3 * pitch),
-            Fr(1),
-        ],
-        Unit(0),
-        at,
-    );
-    let [_, effort_cells, _, power_bar, _, heart_bar, _, recovery, _] = below_cues.rows(
-        [
-            Unit(8),
-            Unit(3 * pitch),
-            Unit(12),
-            Unit(BAR_HEIGHT),
-            Unit(10),
-            Unit(BAR_HEIGHT),
-            Unit(14),
-            Unit(pitch),
-            Fr(1),
-        ],
-        Unit(0),
-        at,
-    );
-    let [_, bars] = text.cols([Fr(1), Unit(148)], Unit(0), at);
-    let [_, elevation_cells, _, chart, _] = below_cues.rows(
-        [Unit(8), Unit(2 * pitch), Unit(16), Fr(1), Unit(48)],
-        Unit(0),
-        at,
-    );
-    let chart = corners.rows_clear_of(
-        &PAGE_CUES,
-        chart.with_columns(text),
-        at.panel,
-        CHART_BASELINE_ROWS + BASELINE_CLEAR_OF_CUE_PX,
-    );
-    assert!(
-        chart.width() <= super::elevation::COLUMNS
-            && chart.height() <= super::elevation::MAX_HEIGHT,
-        "the elevation chart has more columns or rows than it keeps"
-    );
-    let [_, header, first, second, third, fourth, _, best_cells, _] = below_cues.rows(
-        [
-            Unit(8),
-            Unit(12),
-            Unit(36),
-            Unit(38),
-            Unit(38),
-            Unit(38),
-            Unit(18),
-            Unit(pitch),
-            Fr(1),
-        ],
-        Unit(0),
-        at,
-    );
-    let [label, _] = text.cols([Unit(EFFORT_LABEL_WIDTH), Fr(1)], Unit(0), at);
-    let after_label = Rect {
-        left: label.right,
-        ..text
-    };
-    let [_, bar, _, value] = after_label.cols([Unit(6), Unit(72), Unit(8), Fr(1)], Unit(0), at);
-    let [_, best, ftp, now, _, _] = content.rows(
-        [Fr(1), Unit(80), Unit(60), Unit(30), Unit(126), Fr(1)],
-        Unit(0),
-        at,
-    );
-    let efforts = Rect {
-        top: first.top,
-        bottom: fourth.bottom,
-        ..text
-    };
-    Regions {
-        text,
-        cells: Cells {
-            columns: [(left.left, left.right), (right.left, right.right)],
-            caption: at.unit(12),
-            value: at.unit(41),
-            pitch: at.unit(super::CELL_PITCH),
-        },
-        badge: Badge {
-            cx: (text.left + text.right) / 2,
-            cy: (badge.top + badge.bottom) / 2,
-            radius: badge.height() / 2,
-            icon: Icon::Check,
-        },
-        message: Message {
-            title: title.with_columns(text),
-            reason: reason.with_columns(text),
-            note: note.with_columns(text),
-        },
-        overview: Overview {
-            saved: saved.with_columns(text),
-            failed: failed.with_columns(text),
-            cause: cause.with_columns(text),
-            title: overview_title.with_columns(text),
-            cells: overview_cells.with_columns(text),
-        },
-        effort: Effort {
-            cells: effort_cells.with_columns(text),
-            power_bar: power_bar.with_columns(bars),
-            heart_bar: heart_bar.with_columns(bars),
-            recovery: corners.columns_clear_of(&PAGE_CUES, recovery.with_columns(text), at.panel),
-        },
-        elevation: Elevation {
-            cells: elevation_cells.with_columns(text),
-            chart,
-        },
-        best: BestPower {
-            header: header.with_columns(text),
-            efforts: [
-                first.with_columns(text),
-                second.with_columns(text),
-                third.with_columns(text),
-                fourth.with_columns(text),
-            ],
-            label: efforts.with_columns(label),
-            bar: efforts.with_columns(bar),
-            value: efforts.with_columns(value),
-            cells: best_cells.with_columns(text),
-        },
-        offer: [
-            best.with_columns(text),
-            ftp.with_columns(text),
-            now.with_columns(text),
-        ],
-    }
-}
-
-/// The best efforts' label column, before it widens for a step's faces.
-const EFFORT_LABEL_WIDTH: u16 = 56;
-const COLUMN_GAP: u16 = 8;
-const BAR_HEIGHT: u16 = 8;
-
-/// A caption over its value in a column of the band whose caption top is
-/// `top`, as on the ride pages. A new personal best says `BEST` in its
-/// caption, in the reading's colour.
-fn cell(canvas: &mut Canvas, layout: &Layout, column: usize, top: usize, reading: &Reading) {
-    let (at, cells) = (&layout.scaled, &layout.summary.cells);
-    let (left, right) = cells.columns[column];
-    let (caption, caption_color) = match reading.best {
-        Some(caption) => (caption, reading.color),
-        None => (reading.caption, SECONDARY),
-    };
-    canvas.fit(
-        &[at.face(FaceRole::Caption)],
-        caption,
-        right - left,
-        left,
-        top + cells.caption,
-        Align::Left,
-        caption_color,
-    );
-    canvas.fit(
-        &[at.face(FaceRole::Value), at.face(FaceRole::Body)],
-        reading.value.as_bytes(),
-        right - left,
-        left,
-        top + cells.value,
-        Align::Left,
-        reading.color,
-    );
-}
-
-/// A caption over a value, and the caption of a personal best in its place.
+/// What a summary tile reads: the ride's totals and what the summary shows
+/// beyond them.
 #[derive(Clone, Copy)]
-struct Reading<'a> {
-    caption: &'a [u8],
-    value: &'a Text<12>,
-    color: u16,
-    best: Option<&'a [u8]>,
+pub struct Facts<'a> {
+    pub(crate) after: &'a After,
+    pub(crate) totals: &'a Totals,
+    pub(crate) active_secs: u64,
+    pub(crate) rider: Rider,
+    pub(crate) power_time: Option<[usize; POWER_ZONES]>,
+    pub(crate) heart_time: Option<[usize; HEART_ZONES]>,
+    /// The lowest and highest altitude the profile draws, in whole metres.
+    pub(crate) range_m: Option<(i32, i32)>,
+    pub(crate) past_title: &'a Text<20>,
 }
 
-/// The room a `BEST` caption has under a best-power bar.
-const BEST_WIDTH: usize = 44;
-
-fn reading<'a>(caption: &'a [u8], value: &'a Text<12>, color: u16) -> Reading<'a> {
-    Reading {
-        caption,
-        value,
-        color,
-        best: None,
-    }
-}
-
-impl<'a> Reading<'a> {
-    /// A new personal best: `caption` replaces the usual one, and the value
-    /// takes `color` where it would be white.
-    fn best(self, set: bool, caption: &'a [u8], color: u16) -> Self {
-        if !set {
-            return self;
-        }
-        Self {
-            best: Some(caption),
-            color,
-            ..self
-        }
-    }
-}
-
-fn cells(canvas: &mut Canvas, layout: &Layout, rows: Rect, cells: &[Reading]) {
-    let pitch = layout.summary.cells.pitch;
-    for (index, reading) in cells.iter().enumerate() {
-        let top = rows.top + index / 2 * pitch;
-        cell(canvas, layout, index % 2, top, reading);
-    }
-}
-
-pub fn prepare(view: &View) -> Canvas {
-    let layout = view.layout;
-    let (at, regions) = (&layout.scaled, &layout.summary);
-    let after = view.after();
-    if delete_shown(after) {
-        let mut canvas = super::end::question(view, b"DELETE RIDE?", b"IT GOES FROM YOUR RIDES");
-        let title = view.past_title().as_bytes();
-        let row = layout.end.name;
-        let centre = (row.left + row.right) / 2;
-        canvas.caption(at, title, row.width(), centre, row.bottom, Align::Center);
-        return canvas;
-    }
-    let mut canvas = Canvas::default();
-    let (title, body, caption) = (
-        at.face(FaceRole::Title),
-        at.face(FaceRole::Body),
-        at.face(FaceRole::Caption),
-    );
-    let message = &regions.message;
-    match after.saving {
-        Saving::Writing => {
-            centred(&mut canvas, &[title, body], b"SAVING", message.title, WHITE);
-            let note = b"KEEP VANA ON";
-            centred(&mut canvas, &[caption], note, message.note, SECONDARY);
-            return canvas;
-        }
-        Saving::Reading => {
-            centred(
-                &mut canvas,
-                &[title, body],
-                b"READING",
-                message.title,
-                WHITE,
-            );
-            let note = b"ONE MOMENT";
-            centred(&mut canvas, &[caption], note, message.note, SECONDARY);
-            return canvas;
-        }
-        Saving::Unreadable => {
-            let unreadable = b"RIDE UNREADABLE";
-            centred(&mut canvas, &[body], unreadable, message.title, AMBER);
-            let reason = b"ITS RECORD IS DAMAGED";
-            centred(&mut canvas, &[caption], reason, message.reason, SECONDARY);
-            return canvas;
-        }
-        Saving::Failed if after.page == 0 => {
-            let overview = &regions.overview;
-            let failed = b"NOT ALL SAVED";
-            centred(&mut canvas, &[title, body], failed, overview.failed, AMBER);
-            let cause = b"STORAGE FAILED AT THE END";
-            centred(&mut canvas, &[caption], cause, overview.cause, SECONDARY);
-        }
-        _ => {}
-    }
-    match after.page {
-        0 => overview(view, layout, &mut canvas),
-        1 => effort(view, layout, &mut canvas),
-        _ if offer_shown(after) => ftp_offer(view, layout, &mut canvas),
-        2 if after.elevation => elevation_page(view, layout, &mut canvas),
-        _ => best_power(view, layout, &mut canvas),
-    }
-    canvas
-}
-
-/// The badge shows over a saved ride's first page.
-pub fn badge(view: &View) -> Option<Badge> {
-    let after = view.after();
-    (after.saving == Saving::Saved && after.page == 0 && !after.past)
-        .then_some(view.layout.summary.badge)
-}
-
-fn overview(view: &View, layout: &Layout, canvas: &mut Canvas) {
-    let (at, regions) = (&layout.scaled, &layout.summary.overview);
-    let totals = &view.totals;
-    let after = view.after();
-    let faces = [at.face(FaceRole::Title), at.face(FaceRole::Body)];
-    if after.past {
-        let saved = regions.saved;
-        if after.saving == Saving::Unsynced {
-            let caption = [at.face(FaceRole::Caption)];
-            centred(canvas, &caption, b"SYNC TO SAVE", saved, AMBER);
-        } else {
-            let centre = (saved.left + saved.right) / 2;
-            let text = b"SAVED RIDE";
-            canvas.caption(at, text, saved.width(), centre, saved.bottom, Align::Center);
-        }
-        let title = view.past_title().as_bytes();
-        centred(canvas, &faces, title, regions.title, WHITE);
-    } else if after.saving == Saving::Saved {
-        centred(canvas, &faces, b"RIDE SAVED", regions.title, WHITE);
-    } else if after.saving == Saving::Unsynced {
-        centred(canvas, &faces, b"SYNC TO SAVE", regions.title, AMBER);
-    }
-    let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
-    let [time, distance, avg_speed, ascent, power, heart] = &mut values;
-    elapsed(time, view.active_secs);
-    kilometres(distance, totals.distance_mm());
-    speed(avg_speed, totals.avg_speed_mm_s());
-    whole(ascent, Some((totals.ascent_dm() + 5) / 10));
-    whole(power, totals.avg_power());
-    whole(heart, totals.avg_heart_bpm());
-    let found = view.after().found;
-    cells(
-        canvas,
-        layout,
-        regions.cells,
-        &[
-            reading(b"TIME", time, WHITE).best(found.time, b"BEST TIME", SPEED),
-            reading(b"DIST KM", distance, WHITE).best(found.distance, b"BEST KM", SPEED),
-            reading(b"AVG KM/H", avg_speed, SPEED),
-            reading(b"ASCENT M", ascent, GRADE).best(found.ascent, b"BEST ASC M", GRADE),
-            reading(b"AVG W", power, POWER),
-            reading(b"AVG BPM", heart, HEART),
-        ],
-    );
-}
-
-fn effort(view: &View, layout: &Layout, canvas: &mut Canvas) {
-    let regions = &layout.summary.effort;
-    let totals = &view.totals;
-    let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
-    let [np, max, work, kcal, heart, max_heart] = &mut values;
-    whole(np, totals.normalized_power());
-    whole(max, totals.max_power());
-    whole(work, totals.work_kj());
-    whole(kcal, totals.kcal_for(view.rider));
-    whole(heart, totals.avg_heart_bpm());
-    whole(max_heart, totals.max_heart_bpm());
-    cells(
-        canvas,
-        layout,
-        regions.cells,
-        &[
-            reading(b"NP W", np, POWER),
-            reading(b"MAX W", max, POWER),
-            reading(b"WORK KJ", work, WHITE),
-            reading(b"KCAL", kcal, WHITE),
-            reading(b"AVG BPM", heart, HEART),
-            reading(b"MAX BPM", max_heart, HEART),
-        ],
-    );
+/// The facts of the summary `view` shows.
+pub(crate) fn facts<'v>(view: &'v View) -> Facts<'v> {
     let marks = &view.marks;
-    let left = layout.summary.text.left;
-    zone_bar(
-        canvas,
-        layout,
-        b"PWR",
-        left,
-        regions.power_bar,
-        marks.power_time,
-    );
-    zone_bar(
-        canvas,
-        layout,
-        b"HR",
-        left,
-        regions.heart_bar,
-        marks.heart_time,
-    );
-    if let Some(reading) = view.after().recovery {
-        recovery(canvas, layout, reading);
+    Facts {
+        after: view.after(),
+        totals: &view.totals,
+        active_secs: view.active_secs,
+        rider: view.rider,
+        power_time: marks.power_time,
+        heart_time: marks.heart_time,
+        range_m: view.elevation_chart().and_then(Chart::range_m),
+        past_title: view.past_title(),
     }
 }
 
-fn recovery(canvas: &mut Canvas, layout: &Layout, reading: Recovery) {
-    let (at, cells) = (&layout.scaled, &layout.summary.cells);
-    let row = layout.summary.effort.recovery;
-    let mut text = Text::<16>::new();
-    let color = match reading {
+/// A number the summary shows in a cell: a caption over its value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stat {
+    Time,
+    Distance,
+    AvgSpeed,
+    Ascent,
+    AvgPower,
+    AvgHeart,
+    Np,
+    MaxPower,
+    Work,
+    Kcal,
+    MaxHeart,
+    Descent,
+    Lowest,
+    Highest,
+    Climbs,
+    Laps,
+    /// The heart rate recovery after the finish, across the page in the
+    /// body face; nothing until it is measured.
+    Recovery,
+}
+
+impl Stat {
+    pub const ALL: [Self; 17] = [
+        Self::Time,
+        Self::Distance,
+        Self::AvgSpeed,
+        Self::Ascent,
+        Self::AvgPower,
+        Self::AvgHeart,
+        Self::Np,
+        Self::MaxPower,
+        Self::Work,
+        Self::Kcal,
+        Self::MaxHeart,
+        Self::Descent,
+        Self::Lowest,
+        Self::Highest,
+        Self::Climbs,
+        Self::Laps,
+        Self::Recovery,
+    ];
+
+    pub const fn caption(self) -> &'static [u8] {
+        match self {
+            Self::Time => b"TIME",
+            Self::Distance => b"DIST KM",
+            Self::AvgSpeed => b"AVG KM/H",
+            Self::Ascent => b"ASCENT M",
+            Self::AvgPower => b"AVG W",
+            Self::AvgHeart => b"AVG BPM",
+            Self::Np => b"NP W",
+            Self::MaxPower => b"MAX W",
+            Self::Work => b"WORK KJ",
+            Self::Kcal => b"KCAL",
+            Self::MaxHeart => b"MAX BPM",
+            Self::Descent => b"DESCENT M",
+            Self::Lowest => b"MIN M",
+            Self::Highest => b"MAX M",
+            Self::Climbs => b"CLIMBS",
+            Self::Laps => b"LAPS",
+            Self::Recovery => b"HR RECOVERY",
+        }
+    }
+
+    const fn color(self) -> u16 {
+        match self {
+            Self::Time | Self::Distance | Self::Work | Self::Kcal | Self::Laps => WHITE,
+            Self::AvgSpeed => SPEED,
+            Self::Ascent | Self::Descent | Self::Lowest | Self::Highest | Self::Climbs => GRADE,
+            Self::AvgPower | Self::Np | Self::MaxPower => POWER,
+            Self::AvgHeart | Self::MaxHeart | Self::Recovery => HEART,
+        }
+    }
+
+    /// The caption of a personal best the ride set, and its colour.
+    fn best(self, found: &Found) -> Option<(&'static [u8], u16)> {
+        match self {
+            Self::Time if found.time => Some((b"BEST TIME", SPEED)),
+            Self::Distance if found.distance => Some((b"BEST KM", SPEED)),
+            Self::Ascent if found.ascent => Some((b"BEST ASC M", GRADE)),
+            _ => None,
+        }
+    }
+
+    /// The value, and its colour where the stat's own does not apply.
+    fn value(self, facts: &Facts, value: &mut Text<16>) -> Option<u16> {
+        let totals = facts.totals;
+        let mut text = Text::<12>::new();
+        let range = facts.range_m;
+        match self {
+            Self::Time => elapsed(&mut text, facts.active_secs),
+            Self::Distance => kilometres(&mut text, totals.distance_mm()),
+            Self::AvgSpeed => speed(&mut text, totals.avg_speed_mm_s()),
+            Self::Ascent => whole(&mut text, Some((totals.ascent_dm() + 5) / 10)),
+            Self::AvgPower => whole(&mut text, totals.avg_power()),
+            Self::AvgHeart => whole(&mut text, totals.avg_heart_bpm()),
+            Self::Np => whole(&mut text, totals.normalized_power()),
+            Self::MaxPower => whole(&mut text, totals.max_power()),
+            Self::Work => whole(&mut text, totals.work_kj()),
+            Self::Kcal => whole(&mut text, totals.kcal_for(facts.rider)),
+            Self::MaxHeart => whole(&mut text, totals.max_heart_bpm()),
+            Self::Descent => whole(&mut text, Some((totals.descent_dm() + 5) / 10)),
+            Self::Lowest => whole(&mut text, range.map(|(low, _)| low)),
+            Self::Highest => whole(&mut text, range.map(|(_, high)| high)),
+            Self::Climbs => whole(&mut text, facts.after.climbs),
+            Self::Laps => whole(&mut text, facts.after.laps),
+            Self::Recovery => {
+                let reading = facts.after.recovery?;
+                return Some(recovery(reading, value));
+            }
+        }
+        let _ = value.push_str(text.as_str());
+        None
+    }
+}
+
+/// `MEASURING 42 S`, or the fall in beats a minute, and its colour.
+fn recovery(reading: Recovery, text: &mut Text<16>) -> u16 {
+    match reading {
         Recovery::Measuring(secs) => {
-            let _ = core::fmt::Write::write_fmt(&mut text, format_args!("MEASURING {secs} S"));
+            let _ = core::fmt::Write::write_fmt(text, format_args!("MEASURING {secs} S"));
             SECONDARY
         }
-        // A fall is the good direction; a rise is shown plainly.
+        // `drop` counts the beats lost, so a fall prints as a minus.
         Recovery::Recovered(drop) => {
             let _ = core::fmt::Write::write_fmt(
-                &mut text,
+                text,
                 format_args!(
                     "{}{} BPM",
                     if drop > 0 { "-" } else { "+" },
@@ -659,26 +352,436 @@ fn recovery(canvas: &mut Canvas, layout: &Layout, reading: Recovery) {
             );
             HEART
         }
+    }
+}
+
+/// A cell's caption baseline and value baseline, below its top.
+const CAPTION_UNITS: usize = 12;
+const VALUE_UNITS: usize = 41;
+/// The widest value any cell shows, and the widest recovery.
+const WIDEST: &[u8] = b"99:59:59";
+const WIDEST_RECOVERY: &[u8] = b"MEASURING 59 S";
+
+/// A cell's looks: every cell has the same, so a row of them splits evenly.
+/// Its value takes the value face, or the body face where that is all
+/// there is room for.
+pub fn cell_forms(stat: Stat, at: &Scaled) -> Forms {
+    let height = at.unit(VALUE_UNITS) as u16;
+    let caption = at.face(FaceRole::Caption).fit_width(b"BEST ASC M");
+    let form = |role: FaceRole, widest: &[u8]| Form {
+        width: at.face(role).fit_width(widest).max(caption) as u16,
+        height,
+        shapes: 0,
+        runs: 2,
     };
-    // A cell as above, but across the page and in BODY: VALUE has no
-    // letters, and the measuring text is long.
-    canvas.caption(
-        at,
-        b"HR RECOVERY",
-        row.width(),
-        row.left,
-        row.top + cells.caption,
+    match stat {
+        Stat::Recovery => forms(&[form(FaceRole::Body, WIDEST_RECOVERY)]),
+        _ => forms(&[form(FaceRole::Value, WIDEST), form(FaceRole::Body, WIDEST)]),
+    }
+}
+
+/// A caption over its value at the top of `rect`. A new personal best says
+/// `BEST` in its caption, in the reading's colour.
+pub fn cell(stat: Stat, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Canvas) {
+    let mut value = Text::<16>::new();
+    let color = match stat.value(facts, &mut value) {
+        Some(color) => color,
+        None if stat == Stat::Recovery => return,
+        None => stat.color(),
+    };
+    let (caption, caption_color, color) = match stat.best(&facts.after.found) {
+        Some((caption, best)) => (caption, best, best),
+        None => (stat.caption(), SECONDARY, color),
+    };
+    let width = rect.width();
+    let caption_face = at.face(FaceRole::Caption);
+    let caption_base = rect.top + at.unit(CAPTION_UNITS);
+    let base = rect.top + at.unit(VALUE_UNITS);
+    out.fit(
+        &[caption_face],
+        caption,
+        width,
+        rect.left,
+        caption_base,
         Align::Left,
+        caption_color,
     );
-    canvas.fit(
-        &[at.face(FaceRole::Body)],
-        text.as_bytes(),
-        row.width(),
-        row.left,
-        row.top + cells.value,
+    let faces = match stat {
+        Stat::Recovery => &[at.face(FaceRole::Body)][..],
+        _ => &[at.face(FaceRole::Value), at.face(FaceRole::Body)],
+    };
+    out.fit(
+        faces,
+        value.as_bytes(),
+        width,
+        rect.left,
+        base,
         Align::Left,
         color,
     );
+}
+
+/// The caption beside a time-in-zone bar, and the bar's length and height.
+const ZONE_CAPTION_UNITS: usize = 10;
+const ZONE_BAR_UNITS: usize = 148;
+const BAR_HEIGHT: usize = 8;
+
+pub fn zone_time_forms(at: &Scaled) -> Forms {
+    let caption = at.face(FaceRole::Caption).fit_width(b"PWR");
+    forms(&[Form {
+        width: (caption + at.unit(8 + ZONE_BAR_UNITS)) as u16,
+        height: at.unit(ZONE_CAPTION_UNITS) as u16,
+        shapes: POWER_ZONES as u8,
+        runs: 1,
+    }])
+}
+
+/// "PWR" or "HR" at the left of `rect` and the time in each zone as a bar
+/// at its right.
+pub fn zone_time(heart: bool, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Canvas) {
+    let bar = Rect {
+        left: rect.right - at.unit(ZONE_BAR_UNITS),
+        bottom: rect.top + at.unit(BAR_HEIGHT),
+        ..rect
+    };
+    if heart {
+        zone_bar(out, at, b"HR", rect.left, bar, facts.heart_time);
+    } else {
+        zone_bar(out, at, b"PWR", rect.left, bar, facts.power_time);
+    }
+}
+
+/// A best effort's label column, its longest bar, and how far under the
+/// bar a new personal best's `BEST` sits.
+const EFFORT_LABEL_WIDTH: usize = 56;
+const EFFORT_BAR_UNITS: usize = 72;
+const BEST_BELOW_UNITS: usize = 11;
+/// The room a `BEST` caption has under a best-power bar.
+const BEST_WIDTH: usize = 44;
+
+pub fn effort_forms(at: &Scaled) -> Forms {
+    let value = |role| at.face(role).fit_width(b"9999");
+    let form = |role| Form {
+        width: (at.unit(EFFORT_LABEL_WIDTH + 6 + EFFORT_BAR_UNITS + 8) + value(role)) as u16,
+        height: (at.face(FaceRole::Value).fit_height() + at.unit(BEST_BELOW_UNITS)) as u16,
+        shapes: 1,
+        runs: 3,
+    };
+    forms(&[form(FaceRole::Value), form(FaceRole::Body)])
+}
+
+/// A best effort's row: its label, a bar as long as its share of the
+/// highest, its watts at the right and, under the bar, `BEST` for a new
+/// personal best.
+pub fn effort(index: usize, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Canvas) {
+    let after = facts.after;
+    let best = after.best[index];
+    let peak = after.best.iter().flatten().max().copied().unwrap_or(0);
+    let base = rect.top + at.face(FaceRole::Value).fit_height();
+    let label = effort_label(index);
+    let label_width = at.unit(EFFORT_LABEL_WIDTH);
+    let below = base - at.unit(4);
+    out.caption(
+        at,
+        label.as_bytes(),
+        label_width,
+        rect.left,
+        below,
+        Align::Left,
+    );
+    let bar_left = rect.left + label_width + at.unit(6);
+    let longest = at.unit(EFFORT_BAR_UNITS);
+    let value_left = bar_left + longest + at.unit(8);
+    let mut value = Text::<12>::new();
+    whole(&mut value, best);
+    let color = if best.is_some() { POWER } else { TERTIARY };
+    let faces = [at.face(FaceRole::Value), at.face(FaceRole::Body)];
+    let width = rect.right - value_left;
+    out.fit(
+        &faces,
+        value.as_bytes(),
+        width,
+        rect.right,
+        base,
+        Align::Right,
+        color,
+    );
+    let length = match best {
+        Some(watts) if peak > 0 => {
+            (usize::from(watts) * longest / usize::from(peak)).max(at.unit(4))
+        }
+        _ => longest,
+    };
+    out.shape(Shape::Bar {
+        rect: Rect {
+            left: bar_left,
+            top: base - at.unit(12),
+            right: bar_left + length,
+            bottom: below,
+        },
+        radius: at.unit(2),
+        color,
+    });
+    if after.found.power[index] {
+        let base = base + at.unit(BEST_BELOW_UNITS);
+        let face = [at.face(FaceRole::Caption)];
+        out.fit(
+            &face,
+            b"BEST",
+            at.unit(BEST_WIDTH),
+            bar_left,
+            base,
+            Align::Left,
+            POWER,
+        );
+    }
+}
+
+/// The summary's words: each a block of centred lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Words {
+    /// SAVING, READING or RIDE UNREADABLE, and what to do meanwhile.
+    Message,
+    /// The first page's title: RIDE SAVED under its badge, SYNC TO SAVE,
+    /// NOT ALL SAVED over its cause, or a saved ride's start.
+    Heading,
+    /// BEST POWER W, over the best efforts.
+    BestPower,
+    /// `FTP 245 W?`: what the new 20 min best suggests, and what it replaces.
+    Offer,
+    /// DELETE RIDE? about the saved ride shown.
+    Delete,
+}
+
+impl Words {
+    pub const ALL: [Self; 5] = [
+        Self::Message,
+        Self::Heading,
+        Self::BestPower,
+        Self::Offer,
+        Self::Delete,
+    ];
+}
+
+/// Between a heading's caption or NOT ALL SAVED and the line under it.
+const HEADING_UPPER_UNITS: usize = 42;
+const CAUSE_UNITS: usize = 22;
+/// The badge over RIDE SAVED.
+const BADGE_UNITS: usize = 40;
+const HEADING_UNITS: usize = 74;
+/// The heading's lines inside its row: the text margins less the row's.
+const HEADING_INSET_UNITS: usize = 8;
+/// A message's note below its title.
+const NOTE_UNITS: usize = 28;
+const REASON_UNITS: usize = 24;
+/// The FTP offer's lines, each below the one before.
+const OFFER_FTP_UNITS: usize = 60;
+const OFFER_NOW_UNITS: usize = 30;
+/// DELETE RIDE?'s lines, each below the one before: the title, the time,
+/// the distance and what the answer does.
+const DELETE_STEPS: [usize; 4] = [42, 66, 28, 38];
+
+pub fn words_forms(words: Words, at: &Scaled) -> Forms {
+    let face = |role| at.face(role);
+    let wide = |role: FaceRole, texts: &[&[u8]]| {
+        texts
+            .iter()
+            .map(|text| face(role).fit_width(text))
+            .max()
+            .unwrap_or(0)
+    };
+    let (width, height) = match words {
+        Words::Message => (
+            wide(FaceRole::Body, &[b"RIDE UNREADABLE", b"READING"])
+                .max(wide(FaceRole::Caption, &[b"ITS RECORD IS DAMAGED"])),
+            face(FaceRole::Title).fit_height() + at.unit(NOTE_UNITS),
+        ),
+        Words::Heading => (
+            wide(FaceRole::Body, &[b"NOT ALL SAVED", b"DEC 31  12:59"])
+                .max(wide(FaceRole::Caption, &[b"STORAGE FAILED AT THE END"])),
+            at.unit(HEADING_UNITS),
+        ),
+        Words::BestPower => (
+            wide(FaceRole::Caption, &[b"BEST POWER W"]),
+            face(FaceRole::Caption).fit_height(),
+        ),
+        Words::Offer => (
+            wide(FaceRole::Caption, &[b"20 MIN BEST 9999 W"])
+                .max(wide(FaceRole::Body, &[b"FTP 9999 W?"])),
+            face(FaceRole::Body).fit_height() + at.unit(OFFER_FTP_UNITS + OFFER_NOW_UNITS),
+        ),
+        Words::Delete => (
+            wide(FaceRole::Body, &[b"DELETE RIDE?", b"9999.9 KM"])
+                .max(wide(FaceRole::Value, &[b"99:59:59"]))
+                .max(wide(FaceRole::Caption, &[b"IT GOES FROM YOUR RIDES"])),
+            face(FaceRole::Caption).fit_height() + at.unit(DELETE_STEPS.iter().sum()),
+        ),
+    };
+    forms(&[Form {
+        width: width as u16,
+        height: height as u16,
+        shapes: 0,
+        runs: 5,
+    }])
+}
+
+/// Where the badge over RIDE SAVED goes in a heading placed at `rect`.
+pub fn badge(after: &After, rect: Rect, at: &Scaled) -> Option<Badge> {
+    let radius = at.unit(BADGE_UNITS) / 2;
+    (after.saving == Saving::Saved && !after.past).then_some(Badge {
+        cx: (rect.left + rect.right) / 2,
+        cy: rect.top + radius,
+        radius,
+        icon: Icon::Check,
+    })
+}
+
+pub fn words(words: Words, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Canvas) {
+    let after = facts.after;
+    let face = |role| at.face(role);
+    let (title, body, caption) = (
+        face(FaceRole::Title),
+        face(FaceRole::Body),
+        face(FaceRole::Caption),
+    );
+    // The heading's row reaches past the text margins for its widest
+    // caption; its lines keep to them, so its title takes the same face on
+    // every panel.
+    let width = match words {
+        Words::Heading => rect.width() - 2 * at.unit(HEADING_INSET_UNITS),
+        _ => rect.width(),
+    };
+    let centre = (rect.left + rect.right) / 2;
+    let mut line = |faces: &[&'static Face], text: &[u8], base: usize, color: u16| {
+        out.fit(faces, text, width, centre, base, Align::Center, color);
+    };
+    match words {
+        Words::Message => {
+            let base = rect.top + title.fit_height();
+            let (text, note): (&[u8], &[u8]) = match after.saving {
+                Saving::Reading => (b"READING", b"ONE MOMENT"),
+                Saving::Unreadable => {
+                    line(&[body], b"RIDE UNREADABLE", base, AMBER);
+                    let reason = b"ITS RECORD IS DAMAGED";
+                    line(&[caption], reason, base + at.unit(REASON_UNITS), SECONDARY);
+                    return;
+                }
+                _ => (b"SAVING", b"KEEP VANA ON"),
+            };
+            line(&[title, body], text, base, WHITE);
+            line(&[caption], note, base + at.unit(NOTE_UNITS), SECONDARY);
+        }
+        Words::Heading => {
+            let base = rect.top + at.unit(HEADING_UNITS);
+            let upper = base - at.unit(HEADING_UPPER_UNITS);
+            match (after.past, after.saving) {
+                (true, saving) => {
+                    let (text, color): (&[u8], _) = match saving {
+                        Saving::Unsynced => (b"SYNC TO SAVE", AMBER),
+                        _ => (b"SAVED RIDE", SECONDARY),
+                    };
+                    line(&[caption], text, upper, color);
+                    line(&[title, body], facts.past_title.as_bytes(), base, WHITE);
+                }
+                (false, Saving::Saved) => line(&[title, body], b"RIDE SAVED", base, WHITE),
+                (false, Saving::Unsynced) => line(&[title, body], b"SYNC TO SAVE", base, AMBER),
+                (false, _) => {
+                    let failed = base - at.unit(CAUSE_UNITS);
+                    line(&[title, body], b"NOT ALL SAVED", failed, AMBER);
+                    line(&[caption], b"STORAGE FAILED AT THE END", base, SECONDARY);
+                }
+            }
+        }
+        Words::BestPower => {
+            let base = rect.top + caption.fit_height();
+            let width = rect.width();
+            out.caption(at, b"BEST POWER W", width, rect.left, base, Align::Left);
+        }
+        Words::Offer => {
+            let Some(offer) = after.offer else {
+                return;
+            };
+            let base = rect.top + body.fit_height();
+            let mut text = Text::<24>::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut text,
+                format_args!("20 MIN BEST {} W", offer.best_watts),
+            );
+            line(&[body, caption], text.as_bytes(), base, SECONDARY);
+            let base = base + at.unit(OFFER_FTP_UNITS);
+            text = Text::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut text,
+                format_args!("FTP {} W?", offer.suggested_watts),
+            );
+            line(&[title, body], text.as_bytes(), base, POWER);
+            let base = base + at.unit(OFFER_NOW_UNITS);
+            text = Text::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut text,
+                format_args!("NOW {} W", offer.current_watts),
+            );
+            line(&[body, caption], text.as_bytes(), base, SECONDARY);
+        }
+        Words::Delete => {
+            let mut base = rect.top + caption.fit_height();
+            line(&[caption], facts.past_title.as_bytes(), base, SECONDARY);
+            base += at.unit(DELETE_STEPS[0]);
+            line(&[title, body], b"DELETE RIDE?", base, WHITE);
+            base += at.unit(DELETE_STEPS[1]);
+            let mut text = Text::<12>::new();
+            elapsed(&mut text, facts.active_secs);
+            line(
+                &[face(FaceRole::Large), face(FaceRole::Value)],
+                text.as_bytes(),
+                base,
+                WHITE,
+            );
+            base += at.unit(DELETE_STEPS[2]);
+            text = Text::new();
+            kilometres(&mut text, facts.totals.distance_mm());
+            let _ = core::fmt::Write::write_str(&mut text, " KM");
+            line(&[body], text.as_bytes(), base, WHITE);
+            base += at.unit(DELETE_STEPS[3]);
+            line(&[caption], b"IT GOES FROM YOUR RIDES", base, SECONDARY);
+        }
+    }
+}
+
+/// The profile's chart in a tile placed at `rect`: its fill ends a row
+/// above the rect's bottom, on which the baseline runs.
+pub const fn chart_rect(rect: Rect) -> Rect {
+    Rect {
+        bottom: rect.bottom - CHART_BASELINE_ROWS,
+        ..rect
+    }
+}
+
+const CHART_BASELINE_ROWS: usize = 1;
+
+/// Where the elevation page's tree places the chart on `layout`'s panel.
+pub fn chart_on(layout: &crate::screens::Layout) -> Rect {
+    use crate::compose::Flags;
+    use crate::compose::builtin::{Choices, Laid, ScreenId};
+    let laid = Laid::new(
+        ScreenId::SummaryElevation,
+        layout,
+        Choices::default(),
+        Flags::NONE,
+    );
+    let profile = laid.and_then(|laid| laid.box_of(crate::compose::registry::PROFILE));
+    chart_rect(profile.expect("the elevation page has a profile"))
+}
+/// The least room, across and down, a profile is worth drawing in.
+const PROFILE_UNITS: usize = 48;
+
+pub fn profile_forms(at: &Scaled) -> Forms {
+    forms(&[Form {
+        width: at.unit(PROFILE_UNITS) as u16,
+        height: at.unit(PROFILE_UNITS) as u16,
+        shapes: 0,
+        runs: 0,
+    }])
 }
 
 /// The pages of the summary. A ride that recorded altitude has an elevation
@@ -719,152 +822,6 @@ pub fn shows_elevation(view: &View) -> bool {
         )
 }
 
-fn elevation_page(view: &View, layout: &Layout, canvas: &mut Canvas) {
-    let totals = &view.totals;
-    let mut values: [Text<12>; 4] = core::array::from_fn(|_| Text::new());
-    let [ascent, descent, low, high] = &mut values;
-    whole(ascent, Some((totals.ascent_dm() + 5) / 10));
-    whole(descent, Some((totals.descent_dm() + 5) / 10));
-    let range = view.elevation_chart().and_then(Chart::range_m);
-    whole(low, range.map(|(low, _)| low));
-    whole(high, range.map(|(_, high)| high));
-    cells(
-        canvas,
-        layout,
-        layout.summary.elevation.cells,
-        &[
-            reading(b"ASCENT M", ascent, GRADE),
-            reading(b"DESCENT M", descent, GRADE),
-            reading(b"MIN M", low, GRADE),
-            reading(b"MAX M", high, GRADE),
-        ],
-    );
-}
-
-fn best_power(view: &View, layout: &Layout, canvas: &mut Canvas) {
-    let (at, regions) = (&layout.scaled, &layout.summary.best);
-    let header = regions.header;
-    let text = b"BEST POWER W";
-    canvas.caption(
-        at,
-        text,
-        header.width(),
-        header.left,
-        header.bottom,
-        Align::Left,
-    );
-    let after = view.after();
-    let peak = after.best.iter().flatten().max().copied().unwrap_or(0);
-    let (label_column, bar_column, value_column) = (regions.label, regions.bar, regions.value);
-    let longest = bar_column.width();
-    for ((index, best), row) in after.best.into_iter().enumerate().zip(regions.efforts) {
-        let base = row.bottom;
-        let label = effort_label(index);
-        canvas.caption(
-            at,
-            label.as_bytes(),
-            label_column.width(),
-            label_column.left,
-            base - at.unit(4),
-            Align::Left,
-        );
-        let mut value = Text::<12>::new();
-        whole(&mut value, best);
-        canvas.fit(
-            &[at.face(FaceRole::Value), at.face(FaceRole::Body)],
-            value.as_bytes(),
-            value_column.width(),
-            value_column.right,
-            base,
-            Align::Right,
-            if best.is_some() { POWER } else { TERTIARY },
-        );
-        let length = match best {
-            Some(watts) if peak > 0 => {
-                (usize::from(watts) * longest / usize::from(peak)).max(at.unit(4))
-            }
-            _ => longest,
-        };
-        canvas.shape(Shape::Bar {
-            rect: Rect {
-                top: base - at.unit(12),
-                right: bar_column.left + length,
-                bottom: base - at.unit(4),
-                ..bar_column
-            },
-            radius: at.unit(2),
-            color: if best.is_some() { POWER } else { TERTIARY },
-        });
-        // A new personal best: its own caption under the bar.
-        if after.found.power[index] {
-            canvas.fit(
-                &[at.face(FaceRole::Caption)],
-                b"BEST",
-                at.unit(BEST_WIDTH),
-                bar_column.left,
-                base + at.unit(11),
-                Align::Left,
-                POWER,
-            );
-        }
-    }
-    let mut climbs = Text::<12>::new();
-    let mut laps = Text::<12>::new();
-    whole(&mut climbs, after.climbs);
-    whole(&mut laps, after.laps);
-    cells(
-        canvas,
-        layout,
-        regions.cells,
-        &[
-            reading(b"CLIMBS", &climbs, GRADE),
-            reading(b"LAPS", &laps, WHITE),
-        ],
-    );
-}
-
-/// `FTP 245 W?`: what the new 20 min best suggests, and what it replaces.
-fn ftp_offer(view: &View, layout: &Layout, canvas: &mut Canvas) {
-    let Some(offer) = view.after().offer else {
-        return;
-    };
-    let at = &layout.scaled;
-    let [best_row, ftp_row, now_row] = layout.summary.offer;
-    let (body, caption) = (at.face(FaceRole::Body), at.face(FaceRole::Caption));
-    let mut best = Text::<24>::new();
-    let _ = core::fmt::Write::write_fmt(
-        &mut best,
-        format_args!("20 MIN BEST {} W", offer.best_watts),
-    );
-    centred(
-        canvas,
-        &[body, caption],
-        best.as_bytes(),
-        best_row,
-        SECONDARY,
-    );
-    let mut ftp = Text::<12>::new();
-    let _ = core::fmt::Write::write_fmt(&mut ftp, format_args!("FTP {} W?", offer.suggested_watts));
-    let title = at.face(FaceRole::Title);
-    centred(canvas, &[title, body], ftp.as_bytes(), ftp_row, POWER);
-    let mut now = Text::<24>::new();
-    let _ = core::fmt::Write::write_fmt(&mut now, format_args!("NOW {} W", offer.current_watts));
-    centred(canvas, &[body, caption], now.as_bytes(), now_row, SECONDARY);
-}
-
-fn centred(canvas: &mut Canvas, faces: &[&'static Face], text: &[u8], row: Rect, color: u16) {
-    let centre = (row.left + row.right) / 2;
-    canvas.fit(
-        faces,
-        text,
-        row.width(),
-        centre,
-        row.bottom,
-        Align::Center,
-        color,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -873,7 +830,7 @@ mod tests {
     use crate::screens::cue::RADIUS;
     use crate::screens::workout::Page;
 
-    const REGIONS: Regions = crate::screens::BASE.summary;
+    use crate::screens::Layout;
 
     fn extreme(page: usize, saving: Saving) -> View<'static> {
         extreme_on(&crate::screens::BASE, page, saving)
@@ -910,6 +867,7 @@ mod tests {
             },
             Text::new(),
         );
+        view.compose_main();
         view.prepare();
         view
     }
@@ -956,14 +914,14 @@ mod tests {
         }
         let saved = extreme(0, Saving::Saved);
         assert!(saved.canvas().shows("RIDE SAVED"));
-        assert!(badge(&saved).is_some());
+        assert!(saved.badge.is_some());
         let unsynced = extreme(0, Saving::Unsynced);
         let sync = unsynced.canvas().find("SYNC TO SAVE").map(|run| run.color);
         assert_eq!(sync, Some(AMBER), "a protected ride is not called saved");
-        assert!(!unsynced.canvas().shows("RIDE SAVED") && badge(&unsynced).is_none());
+        assert!(!unsynced.canvas().shows("RIDE SAVED") && unsynced.badge.is_none());
         assert!(extreme(0, Saving::Failed).canvas().shows("NOT ALL SAVED"));
         let saving = extreme(0, Saving::Writing);
-        assert!(saving.canvas().shows("SAVING") && badge(&saving).is_none());
+        assert!(saving.canvas().shows("SAVING") && saving.badge.is_none());
     }
 
     #[test]
@@ -979,12 +937,13 @@ mod tests {
             trace.add(metres * 1000, Some(-120 + (metres as i32 % 2000)));
         }
         let mut chart = Chart::default();
-        let rect = REGIONS.elevation.chart;
+        let rect = chart_on(&crate::screens::BASE);
         chart.refresh(&trace, rect);
         let with_altitude = |page| {
             let mut view = extreme(page, Saving::Saved);
             view.set_elevation_chart(&chart);
             view.after_mut().elevation = true;
+            view.compose_main();
             view.prepare();
             view
         };
@@ -992,8 +951,9 @@ mod tests {
         let want = ["ASCENT M", "DESCENT M", "MIN M", "MAX M", "-12", "186"];
         view.canvas().assert_laid_out(bounds, &want, "elevation");
         assert!(shows_elevation(&view));
+        view.compose_main();
         view.prepare().check_layout();
-        let fill = crate::screens::ride::elevation::pixel(&chart, rect, WIDTH / 2, rect.bottom - 1);
+        let fill = crate::screens::ride::elevation::pixel(&chart, WIDTH / 2, rect.bottom - 1);
         assert!(fill.is_some(), "the chart fills above its baseline");
         assert!(with_altitude(3).canvas().shows("BEST POWER W"));
         assert!(!with_altitude(1).canvas().shows("ASCENT M"));
@@ -1017,6 +977,7 @@ mod tests {
         let with = |recovery| {
             let mut view = extreme(1, Saving::Saved);
             view.after_mut().recovery = recovery;
+            view.compose_main();
             view.prepare();
             view
         };
@@ -1055,6 +1016,7 @@ mod tests {
                 },
                 title,
             );
+            view.compose_main();
             view.prepare();
             view
         };
@@ -1064,7 +1026,7 @@ mod tests {
         let first = past(0, Saving::Saved);
         let want = ["SAVED RIDE", "DEC 31  12:59", "99:59:59"];
         first.canvas().assert_laid_out(bounds, &want, "past ride");
-        assert!(!first.canvas().shows("RIDE SAVED") && badge(&first).is_none());
+        assert!(!first.canvas().shows("RIDE SAVED") && first.badge.is_none());
         assert!(past(2, Saving::Saved).canvas().shows("--"));
         let reading = past(0, Saving::Reading);
         assert!(reading.canvas().shows("READING"));
@@ -1088,7 +1050,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let longest = REGIONS.best.bar.width();
+        let longest = EFFORT_BAR_UNITS;
         assert_eq!(bars[0], (longest, POWER));
         assert_eq!(bars[1], (1500 * longest / 1999, POWER));
         assert_eq!(bars[2], (longest, TERTIARY), "no 5 min effort yet");
@@ -1195,7 +1157,7 @@ mod tests {
         ];
         for layout in crate::screens::panels::ALL {
             let mut chart = Chart::default();
-            chart.refresh(&trace, layout.summary.elevation.chart);
+            chart.refresh(&trace, chart_on(layout));
             for (page, saving, change, want) in cases {
                 let mut view = extreme_on(layout, page, saving);
                 let after = view.after_mut();
@@ -1214,6 +1176,7 @@ mod tests {
                     view.set_elevation_chart(&chart);
                 }
                 let what = std::format!("page {page} {saving:?} on {:?}", layout.scaled.panel);
+                view.compose_main();
                 view.prepare().check_layout();
                 let canvas = view.canvas();
                 for text in want {

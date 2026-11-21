@@ -560,6 +560,20 @@ impl Runtime {
         row
     }
 
+    /// Where the open saved ride stands: read back, protected, saved or
+    /// unreadable.
+    pub(super) fn past_saving(&self) -> Saving {
+        let Some((medium, replay, summary)) = &self.history.open else {
+            return Saving::default();
+        };
+        match replay.progress() {
+            Progress::Reading => Saving::Reading,
+            Progress::Done if self.sync.protects(*medium, summary.ride_id) => Saving::Unsynced,
+            Progress::Done => Saving::Saved,
+            Progress::Missing => Saving::Unreadable,
+        }
+    }
+
     /// The open ride on the summary's pages.
     pub(super) fn past_view<'a>(&'a self, view: &mut View<'a>) {
         let Some((medium, replay, summary)) = &self.history.open else {
@@ -574,15 +588,8 @@ impl Runtime {
             self.history_count().saturating_sub(self.history.cursor),
             self.preferences.options.zone,
         );
+        let saving = self.past_saving();
         let summary = Some(summary);
-        let saving = match replay.progress() {
-            Progress::Reading => Saving::Reading,
-            Progress::Done if summary.is_some_and(|s| self.sync.protects(*medium, s.ride_id)) => {
-                Saving::Unsynced
-            }
-            Progress::Done => Saving::Saved,
-            Progress::Missing => Saving::Unreadable,
-        };
         view.totals = replay.totals(*self.ride.totals());
         view.zone_time = *self.ride.zone_time();
         let active_ms = summary.map_or(0, |s| s.active_ms).max(replay.active_ms);

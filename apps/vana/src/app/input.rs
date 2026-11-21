@@ -189,18 +189,8 @@ impl Runtime {
                 self.timing.press(received);
                 self.ride_press(button, held, received, now);
             }
-            Page::Summary if button == Role::Move => self.next_summary_page(1),
-            // The FTP offer's answer, then the press ends the summary as on any page.
-            Page::Summary if self.offer_shown() => {
-                if !held {
-                    self.answer_ftp_offer(button, now);
-                }
-                self.ride_press(button, held, received, now);
-            }
-            Page::Summary => self.ride_press(button, held, received, now),
             Page::Phone => self.phone_input(button, held),
             Page::History => self.history_input(button, held, now),
-            Page::PastRide => self.past_ride_input(button, held),
             Page::Settings => self.settings_input(button, now, ant, held),
             Page::Workouts => self.workouts_input(button, now, held),
             Page::Setup => self.setup_input(button, now, ant),
@@ -208,7 +198,13 @@ impl Runtime {
             Page::Boot => self.navigation.go(To::Page(self.first_page())),
             Page::Sensors => {}
             // On the engine: `composed_press` took the press.
-            Page::Bests | Page::Form | Page::Format | Page::LoseRides | Page::DiscardRide => {}
+            Page::Bests
+            | Page::Form
+            | Page::Format
+            | Page::LoseRides
+            | Page::DiscardRide
+            | Page::Summary
+            | Page::PastRide => {}
         }
     }
 
@@ -346,11 +342,10 @@ impl Runtime {
                 self.adjust_setting(self.setting_step(), now, false)
             }
             TouchEvent::Contact(_) => {}
-            TouchEvent::Hold(Control::Map)
-                if self.navigation.page() == Page::Ride
-                    && self.navigation.ride_page() == RidePage::Map =>
-            {
-                self.stop_following_from_map(now);
+            TouchEvent::Hold(Control::Map) => {
+                if let Some(action) = self.composed_hold() {
+                    self.carry(action, true, now, now);
+                }
             }
             TouchEvent::Hold(_) => {}
             TouchEvent::Swipe(swipe) => self.swiped(swipe),

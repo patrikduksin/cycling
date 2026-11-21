@@ -1,4 +1,4 @@
-//! Ids 16–47: the ride pages' tiles.
+//! Ids 16–39: the ride pages' tiles.
 use crate::compose::tile::{Component, Erased};
 use crate::compose::tiles::{chip, effort, reading, total};
 

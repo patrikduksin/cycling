@@ -19,7 +19,8 @@ use crate::ride::medium::Medium;
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{Fetched, FilledMap, MapCache, MapRegions, MapZoom, Track};
+use crate::screens::ride::map::Ground;
+use crate::screens::ride::{Fetched, FilledMap, MapCache, MapZoom, Track};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::breadcrumb::Crumb;
@@ -459,7 +460,7 @@ pub(super) fn refresh_map(
     now: u64,
     speed_mm_s: Option<u32>,
     radar: bool,
-    map: &'static MapRegions,
+    ground: Ground,
     light: bool,
     clock: Option<fn() -> u64>,
 ) {
@@ -484,7 +485,7 @@ pub(super) fn refresh_map(
         light,
     };
     let started = clock.map(|clock| clock());
-    if state.map.update(&drawn, map) {
+    if state.map.update(&drawn, ground) {
         state.timed(started, clock, |work| &mut work.fill);
     }
 }
@@ -524,4 +525,34 @@ pub(super) fn course_placed(track: &Option<&'static mut RideTrack>) -> bool {
 
 pub(super) fn map_of<'a>(track: &'a Option<&'static mut RideTrack>) -> Option<FilledMap<'a>> {
     track.as_deref()?.map.filled()
+}
+
+#[cfg(test)]
+impl RideTrack {
+    /// Load a straight course north and ride onto it until following.
+    pub(super) fn follow_a_course(&mut self) {
+        let points = [
+            course::Point::new(0, 0).unwrap(),
+            course::Point::new(10_000, 0).unwrap(),
+        ];
+        self.follower.handle(Input::Course {
+            points: &points,
+            frame: Some(crate::ride::geo::Frame::at((0, 0))),
+            read: &mut |_| None,
+        });
+        for i in 0..9u64 {
+            self.follower.handle(Input::Observe {
+                now: i * 1_000,
+                fix: Some(Fix {
+                    at: (0.0, i as f32 * 3.0),
+                    heading: Some(0),
+                    moved: true,
+                    taken_loop_ms: i * 1_000,
+                }),
+                speed_mm_s: Some(3_000),
+                paused: false,
+            });
+        }
+        assert!(self.follower.following());
+    }
 }

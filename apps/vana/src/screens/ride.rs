@@ -35,7 +35,7 @@ pub mod elevation;
 pub(super) mod end;
 mod lap;
 mod main;
-mod map;
+pub mod map;
 pub(super) mod paused;
 pub use paused::READINGS as PAUSED_READINGS;
 pub mod slots;
@@ -156,9 +156,13 @@ pub(super) fn canvas_regions(
     page: RidePage,
 ) -> heapless::Vec<(&'static str, Rect), 3> {
     let frame = scene.frame();
-    let foot = scene.map_regions().foot.rect;
+    let at = &scene.layout().scaled;
+    let foot = Rect {
+        top: map::ground_rect(at).bottom,
+        ..at.screen()
+    };
     let regions = match (page, &scene.radar) {
-        (page, None) if page == RidePage::Map || page.tiled() => heapless::Vec::from_slice(&[(
+        (page, None) if page.tiled() => heapless::Vec::from_slice(&[(
             "page",
             Rect {
                 left: frame.radar.left,
@@ -261,7 +265,7 @@ impl RidePage {
     /// Drawn from its tree, which tiles the panel itself: it is painted
     /// unshifted, beside the radar strip's room in the tree.
     pub(crate) const fn tiled(self) -> bool {
-        matches!(self, Self::Main | Self::Climb | Self::Workout)
+        matches!(self, Self::Main | Self::Climb | Self::Workout | Self::Map)
     }
 
     /// A number unique to the page, for touch ownership.
@@ -434,9 +438,8 @@ pub(super) fn prepare(view: &mut View) {
     match view.ride_page {
         RidePage::Stats => super::workout::fill(view, stats::prepare),
         RidePage::Lap => super::workout::fill(view, lap::prepare),
-        RidePage::Map => super::workout::fill(view, map::prepare),
         // Drawn from their trees once the composition lends them.
-        RidePage::Main | RidePage::Climb | RidePage::Workout => {
+        RidePage::Main | RidePage::Climb | RidePage::Workout | RidePage::Map => {
             super::workout::fill(view, |_| Canvas::default())
         }
     }
@@ -553,8 +556,9 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         RidePage::Workout => workout::chart_parts(scene.chart(), parts),
         RidePage::Climb => climb::chart_parts(scene.climb(), parts),
         RidePage::Map => {
-            let drawn = scene.map_regions().free.drawn;
-            parts.add(drawn.top..drawn.bottom, &scene.map());
+            if let Some(ground) = scene.map().and_then(|map| map.frame().ground()) {
+                parts.add(ground.drawn.top..ground.drawn.bottom, &scene.map());
+            }
         }
     }
     scene.canvas().parts(parts);
@@ -568,9 +572,12 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
 }
 
 fn paint_map(scene: &Scene, row: &mut Row) {
-    if let Some(map) = scene.map() {
-        let shown = scene.map_regions().ground(scene.radar.is_some()).shown;
-        map::paint(map.frame(), &mut row.within(shown.left..shown.right));
+    if let Some((map, ground)) = scene
+        .map()
+        .and_then(|map| Some((map.frame(), map.frame().ground()?)))
+    {
+        let shown = ground.shown;
+        map::paint(map, &mut row.within(shown.left..shown.right));
     }
     scene.canvas().paint(row);
 }
@@ -620,7 +627,6 @@ pub use main::{
     chip as main_chip, flags as main_flags, flags_of as main_flags_of, laid as main_laid,
     status_bar as main_status_bar,
 };
-pub use map::{Regions as MapRegions, regions as map_regions};
 pub use paused::{Regions as PausedRegions, regions as paused_regions};
 pub use stats::{Regions as StatsRegions, regions as stats_regions};
 
@@ -926,7 +932,8 @@ mod tests {
         };
         let frame = Box::leak(Box::default());
         let mut map = MapCache::new(frame);
-        map.update(&track, &crate::screens::BASE.map);
+        let at = &crate::screens::scaled::BASE;
+        map.update(&track, map::ground(at, map::ground_rect(at)));
         match page {
             Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
             Some(RidePage::Climb) => view.show_climb(ClimbLent {

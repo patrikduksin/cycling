@@ -51,8 +51,6 @@ pub struct Layout {
     pub ride: ride::Frame,
     pub stats: ride::StatsRegions,
     pub lap: ride::LapRegions,
-    pub map: ride::MapRegions,
-    pub summary: ride::summary::Regions,
     pub paused: ride::PausedRegions,
     pub end: ride::EndRegions,
     pub sensors: sensors::Regions,
@@ -77,8 +75,6 @@ impl Layout {
             ride: ride::frame(&scaled),
             stats: ride::stats_regions(&scaled),
             lap: ride::lap_regions(&scaled),
-            map: ride::map_regions(&scaled),
-            summary: ride::summary::regions(&scaled, &corners),
             paused: ride::paused_regions(&scaled),
             end: ride::end_regions(&scaled),
             sensors: sensors::regions(&scaled),
@@ -133,6 +129,6 @@ pub(crate) mod panels {
     #[test]
     fn a_panel_taller_than_its_scale_lays_out() {
         let probe = Layout::of(Scaled::of(180, 320), &BASE_BUTTONS);
-        assert_eq!(probe.map.free.drawn.height(), 280);
+        assert_eq!(super::ride::map::ground_rect(&probe.scaled).height(), 281);
     }
 }

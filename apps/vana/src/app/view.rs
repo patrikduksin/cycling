@@ -30,12 +30,14 @@ use super::presentation::{
     ANIMATED_FRAME_MS, BATTERY_TOAST_MS, BRAND_MS, Display, MOTION_FRAME_MS, SCROLL_FRAME_MS,
     STATIC_FRAME_MS, arrived_sample, radar_reports,
 };
+use crate::compose::builtin::ScreenId;
+use crate::compose::registry::{MAP, PROFILE};
 use crate::ride::elevation::Trace;
 use crate::ride::log::{Sample, Status};
 use crate::screens::chrome::{Rect, Toast, Tone};
 use crate::screens::power::Sheet as PowerSheet;
-use crate::screens::ride::summary::SummaryPage;
-use crate::screens::ride::{ElevationChart, Pixels, RidePage};
+use crate::screens::ride::summary;
+use crate::screens::ride::{ElevationChart, Pixels, RidePage, map};
 use crate::screens::workout::{Page, Text};
 use crate::sensors::ant::device_type;
 use core::fmt::Write;
@@ -94,7 +96,7 @@ impl Chart {
     }
 
     fn refresh(&mut self, trace: &Trace, rect: Rect) {
-        if self.charted != Some(trace.generation()) {
+        if self.charted != Some(trace.generation()) || self.chart.rect() != Some(rect) {
             self.charted = Some(trace.generation());
             self.chart.refresh(trace, rect);
         }
@@ -116,11 +118,38 @@ impl Runtime {
         };
         let due = self.when_due(system, now, ant, position);
         match due.shows {
-            Shows::Page { radar_paired, .. } => self.compose(radar_paired, now),
+            Shows::Page { radar_paired, .. } => {
+                self.compose(radar_paired, now);
+                self.refresh_map(radar_paired, now);
+                self.refresh_chart();
+            }
             Shows::Sheet(sheet) => self.composition.show(sheet.screen(), self.layout),
         }
         let presented = self.present(system, due.shows, now);
         self.after_view(presented, frame, due.moving, now);
+    }
+
+    /// Fill the map again where the map page's tree placed it, while it
+    /// shows.
+    fn refresh_map(&mut self, radar: bool, now: u64) {
+        let Some(shown) = self
+            .composition
+            .laids()
+            .get(ScreenId::RideMap)
+            .and_then(|laid| laid.box_of(MAP))
+        else {
+            return;
+        };
+        let light = self.light();
+        super::course::refresh_map(
+            &mut self.track,
+            now,
+            self.readings.live.speed_mm_s,
+            radar,
+            map::ground(&self.layout.scaled, shown),
+            light,
+            self.micros_clock,
+        );
     }
 
     #[inline(never)]
@@ -241,7 +270,6 @@ impl Runtime {
         // A card under a resting finger lights up once the delay passes.
         self.navigation.touches_mut().tick(now);
         let moving = self.list_frame(now);
-        self.refresh_chart();
         self.power.animate(now);
         if let Some(sheet) = self.power.view() {
             return Due {
@@ -298,18 +326,6 @@ impl Runtime {
         let page = self.navigation.page();
         let gps = position.snapshot(now);
         let radar_paired = ant.channel(device_type::RADAR, now).is_some();
-        if page == Page::Ride && self.navigation.ride_page() == RidePage::Map {
-            let light = self.light();
-            super::course::refresh_map(
-                &mut self.track,
-                now,
-                self.readings.live.speed_mm_s,
-                radar_paired,
-                &self.layout.map,
-                light,
-                self.micros_clock,
-            );
-        }
         self.navigation.expire_toast(now);
         match page {
             Page::Ready | Page::Home | Page::Sensors => self.refresh_sensor_menu(ant, now),
@@ -331,12 +347,13 @@ impl Runtime {
     /// Chart the ride's trace again when it changed, as the summary page that
     /// shows it opens.
     fn refresh_chart(&mut self) {
-        let showing = matches!(self.navigation.page(), Page::Summary | Page::PastRide)
-            && SummaryPage::at(self.navigation.summary_page(), self.has_elevation())
-                == SummaryPage::Elevation;
-        if showing {
-            let rect = self.layout.summary.elevation.chart;
-            self.chart.refresh(self.ride.trace(), rect);
+        let laids = self.composition.laids();
+        let profile = [ScreenId::SummaryElevation, ScreenId::PastElevation]
+            .into_iter()
+            .find_map(|id| laids.get(id)?.box_of(PROFILE));
+        if let Some(profile) = profile {
+            self.chart
+                .refresh(self.ride.trace(), summary::chart_rect(profile));
         }
     }
 

@@ -390,7 +390,7 @@ impl<'v> Scene<'v> {
             }
             Kind::Summary { elevation, .. } => {
                 if let Some(chart) = self.elevation_chart().filter(|_| elevation) {
-                    ride::elevation::paint(chart, self.layout.summary.elevation.chart, row);
+                    ride::elevation::paint(chart, row);
                 }
                 self.canvas().paint(row);
             }
@@ -499,9 +499,7 @@ impl<'v> Scene<'v> {
                 let under = self
                     .elevation_chart()
                     .filter(|_| elevation)
-                    .and_then(|chart| {
-                        ride::elevation::pixel(chart, self.layout.summary.elevation.chart, x, y)
-                    })
+                    .and_then(|chart| ride::elevation::pixel(chart, x, y))
                     .map_or(black, |color| look.ink(color));
                 self.canvas().pixel(look, x, y, under)
             }
@@ -754,8 +752,9 @@ impl Scene<'_> {
                 },
             ));
         }
-        if elevation && self.elevation_chart().is_some() {
-            let chart = self.layout.summary.elevation.chart;
+        if let Some(chart) = self.elevation_chart().filter(|_| elevation)
+            && let Some(chart) = chart.rect()
+        {
             let with_baseline = Rect {
                 bottom: chart.bottom + 1,
                 ..chart
@@ -800,12 +799,13 @@ impl Scene<'_> {
 }
 
 impl Scene<'_> {
-    pub(super) fn frame(&self) -> &ride::Frame {
-        &self.layout.ride
+    #[cfg(any(test, feature = "invariants"))]
+    pub(super) fn layout(&self) -> &'static Layout {
+        self.layout
     }
 
-    pub(super) fn map_regions(&self) -> &ride::MapRegions {
-        &self.layout.map
+    pub(super) fn frame(&self) -> &ride::Frame {
+        &self.layout.ride
     }
 }
 
@@ -1377,6 +1377,10 @@ impl<'a> View<'a> {
             self.pause_screen,
             self.ftp_offer.is_some(),
             self.asks(),
+            match self.page {
+                Page::Summary | Page::PastRide => summary::Shown::of(self.after()),
+                _ => summary::Shown::Message,
+            },
         )
     }
 
@@ -1400,9 +1404,12 @@ impl<'a> View<'a> {
             self.bar
                 .set_pages(pages.position(self.ride_page), pages.count());
             self.marks = ride::marks(self);
-        }
-        if riding {
             ride::prepare_tiles(self, laid);
+        }
+        let after = matches!(self.page, Page::Summary | Page::PastRide).then(|| *self.after());
+        if let Some(after) = after {
+            self.bar.set_pages(after.page, summary::total_pages(&after));
+            self.marks = ride::marks(self);
         }
         fill(self, |view| {
             let mut canvas = Canvas::default();
@@ -1412,7 +1419,17 @@ impl<'a> View<'a> {
         if riding {
             ride::hide_banner(self);
         }
-        laid.controls().shown(laid.focus()).collect()
+        let heading = laid.box_of(crate::compose::registry::WORDS);
+        if let (Some(after), Some(heading)) = (after, heading)
+            && laid.id() == crate::compose::builtin::ScreenId::SummaryOverview
+        {
+            self.badge = summary::badge(&after, heading, &self.layout.scaled);
+        }
+        let send_hidden = after.is_some_and(|after| summary::send_hidden(&after));
+        laid.controls()
+            .shown(laid.focus())
+            .filter(|cue| !(send_hidden && cue.role == device_api::input::Role::Act))
+            .collect()
     }
 
     /// The screens not yet on the engine: each page's own drawing and cues.
@@ -1446,20 +1463,6 @@ impl<'a> View<'a> {
                     &ride::end::CUES
                 }
             }
-            Page::Summary => {
-                self.bar
-                    .set_pages(self.after().page, summary::total_pages(self.after()));
-                self.marks = ride::marks(self);
-                fill(self, summary::prepare);
-                self.badge = summary::badge(self);
-                if self.after().saving == summary::Saving::Writing {
-                    &[]
-                } else if summary::offer_shown(self.after()) {
-                    &summary::OFFER_CUES
-                } else {
-                    core::slice::from_ref(&summary::CUE)
-                }
-            }
             Page::Setup => {
                 fill(self, |view| super::setup::prepare(view, view.setup_step()));
                 let steps = super::setup::STEPS.len();
@@ -1477,19 +1480,8 @@ impl<'a> View<'a> {
             }
             // The runtime prepares the list with `set_canvas`.
             Page::History => &[],
-            Page::PastRide => {
-                self.bar
-                    .set_pages(self.after().page, summary::total_pages(self.after()));
-                self.marks = ride::marks(self);
-                fill(self, summary::prepare);
-                if summary::delete_shown(self.after()) {
-                    &ride::end::TRASH_CUES
-                } else if self.after().saving == summary::Saving::Reading || !self.after().send {
-                    &[]
-                } else {
-                    &summary::PAST_CUES
-                }
-            }
+            // Drawn from their trees.
+            Page::Summary | Page::PastRide => &[],
             Page::Ride if self.pause_screen => {
                 fill(self, ride::paused::prepare);
                 &ride::paused::CUES
@@ -2294,7 +2286,7 @@ mod tests {
             trace.add(metres * 1000, Some(6000 + (metres as i32 % 1500) / 2));
         }
         let mut chart = ride::ElevationChart::default();
-        chart.refresh(&trace, crate::screens::BASE.summary.elevation.chart);
+        chart.refresh(&trace, ride::summary::chart_on(&crate::screens::BASE));
         for elevation in [false, true] {
             for saving in [Saving::Writing, Saving::Saved, Saving::Failed] {
                 for page in 0..crate::screens::ride::summary::pages(elevation) {
@@ -2311,6 +2303,7 @@ mod tests {
                         Text::new(),
                     );
                     summary.set_elevation_chart(&chart);
+                    summary.compose_main();
                     summary.prepare();
                     let what = std::format!("summary {page} {saving:?}");
                     assert_paints_reference(&summary, &what);

@@ -95,6 +95,16 @@ impl Data for View<'_> {
         }
     }
 
+    fn map(&self) -> Option<&super::ride::MapFrame> {
+        View::map(self)
+    }
+
+    fn summary(&self) -> Option<super::ride::summary::Facts<'_>> {
+        use super::workout::Page;
+        matches!(self.page, Page::Summary | Page::PastRide)
+            .then(|| super::ride::summary::facts(self))
+    }
+
     fn gauge(&self, effort: Effort) -> Option<OnGauge> {
         let [power, heart] = self.marks.gauges();
         on_gauge(match effort {

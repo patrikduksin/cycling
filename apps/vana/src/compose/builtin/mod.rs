@@ -13,6 +13,7 @@ use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
 use crate::screens::ride::RidePage;
 use crate::screens::ride::slots::Slots;
+use crate::screens::ride::summary::Shown;
 use crate::screens::workout::Page;
 
 mod bests;
@@ -23,6 +24,12 @@ mod format;
 mod history;
 mod home;
 mod lose_rides;
+mod past_best;
+mod past_delete;
+mod past_effort;
+mod past_elevation;
+mod past_message;
+mod past_overview;
 mod phone;
 mod power;
 mod question;
@@ -34,12 +41,17 @@ mod ride_main;
 mod ride_map;
 mod ride_paused;
 mod ride_stats;
-mod ride_summary;
 mod ride_workout;
 mod sensors;
 mod settings;
 mod setup;
 mod sheets;
+mod summary_best;
+mod summary_effort;
+mod summary_elevation;
+mod summary_message;
+mod summary_offer;
+mod summary_overview;
 #[cfg(test)]
 mod tests;
 mod workouts;
@@ -56,7 +68,18 @@ pub enum ScreenId {
     RideMap,
     RidePaused,
     RideEnd,
-    RideSummary,
+    SummaryMessage,
+    SummaryOverview,
+    SummaryEffort,
+    SummaryElevation,
+    SummaryBest,
+    SummaryOffer,
+    PastMessage,
+    PastOverview,
+    PastEffort,
+    PastElevation,
+    PastBest,
+    PastDelete,
     Home,
     Ready,
     Setup,
@@ -97,7 +120,7 @@ pub enum Asks {
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 34;
+    pub const COUNT: usize = 45;
     pub const ALL: [Self; Self::COUNT] = [
         Self::RideMain,
         Self::RideStats,
@@ -107,7 +130,18 @@ impl ScreenId {
         Self::RideMap,
         Self::RidePaused,
         Self::RideEnd,
-        Self::RideSummary,
+        Self::SummaryMessage,
+        Self::SummaryOverview,
+        Self::SummaryEffort,
+        Self::SummaryElevation,
+        Self::SummaryBest,
+        Self::SummaryOffer,
+        Self::PastMessage,
+        Self::PastOverview,
+        Self::PastEffort,
+        Self::PastElevation,
+        Self::PastBest,
+        Self::PastDelete,
         Self::Home,
         Self::Ready,
         Self::Setup,
@@ -135,7 +169,14 @@ impl ScreenId {
         Self::Charging,
     ];
 
-    pub const fn of(page: Page, ride: RidePage, paused: bool, sheet: bool, asks: Asks) -> Self {
+    pub const fn of(
+        page: Page,
+        ride: RidePage,
+        paused: bool,
+        sheet: bool,
+        asks: Asks,
+        summary: Shown,
+    ) -> Self {
         if sheet {
             return Self::Sheets;
         }
@@ -158,7 +199,22 @@ impl ScreenId {
             Page::EndRide => Self::RideEnd,
             Page::DiscardRide if matches!(asks, Asks::Wait) => Self::Discarding,
             Page::DiscardRide => Self::Discard,
-            Page::Summary | Page::PastRide => Self::RideSummary,
+            Page::Summary => match summary {
+                Shown::Message | Shown::Delete => Self::SummaryMessage,
+                Shown::Overview => Self::SummaryOverview,
+                Shown::Effort => Self::SummaryEffort,
+                Shown::Elevation => Self::SummaryElevation,
+                Shown::Best => Self::SummaryBest,
+                Shown::Offer => Self::SummaryOffer,
+            },
+            Page::PastRide => match summary {
+                Shown::Message | Shown::Offer => Self::PastMessage,
+                Shown::Overview => Self::PastOverview,
+                Shown::Effort => Self::PastEffort,
+                Shown::Elevation => Self::PastElevation,
+                Shown::Best => Self::PastBest,
+                Shown::Delete => Self::PastDelete,
+            },
             Page::Settings => Self::Settings,
             Page::Bests => match asks {
                 Asks::Question => Self::ClearBests,
@@ -190,7 +246,18 @@ impl ScreenId {
                 | Self::RideClimb
                 | Self::RideWorkout
                 | Self::RideMap
-                | Self::RideSummary
+                | Self::SummaryMessage
+                | Self::SummaryOverview
+                | Self::SummaryEffort
+                | Self::SummaryElevation
+                | Self::SummaryBest
+                | Self::SummaryOffer
+                | Self::PastMessage
+                | Self::PastOverview
+                | Self::PastEffort
+                | Self::PastElevation
+                | Self::PastBest
+                | Self::PastDelete
         )
     }
 
@@ -212,7 +279,29 @@ impl ScreenId {
 
             Self::RideEnd => ride_end::BUILTIN,
 
-            Self::RideSummary => ride_summary::BUILTIN,
+            Self::SummaryMessage => summary_message::BUILTIN,
+
+            Self::SummaryOverview => summary_overview::BUILTIN,
+
+            Self::SummaryEffort => summary_effort::BUILTIN,
+
+            Self::SummaryElevation => summary_elevation::BUILTIN,
+
+            Self::SummaryBest => summary_best::BUILTIN,
+
+            Self::SummaryOffer => summary_offer::BUILTIN,
+
+            Self::PastMessage => past_message::BUILTIN,
+
+            Self::PastOverview => past_overview::BUILTIN,
+
+            Self::PastEffort => past_effort::BUILTIN,
+
+            Self::PastElevation => past_elevation::BUILTIN,
+
+            Self::PastBest => past_best::BUILTIN,
+
+            Self::PastDelete => past_delete::BUILTIN,
 
             Self::Home => home::BUILTIN,
 

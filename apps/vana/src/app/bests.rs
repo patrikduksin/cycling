@@ -17,7 +17,7 @@ use crate::screens::bests::Mode;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::summary;
 use crate::screens::workout::{Page, Text};
-use crate::workout::ftp::{Offer, Question, Source};
+use crate::workout::ftp::{Offer, Source};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::input::Role;
@@ -105,8 +105,12 @@ impl Runtime {
     }
 
     /// Whether the summary shows the FTP offer now.
+    #[cfg(test)]
     pub(super) fn offer_shown(&self) -> bool {
-        matches!(self.ftp_question(), Some(Question::Summary(_)))
+        matches!(
+            self.ftp_question(),
+            Some(crate::workout::ftp::Question::Summary(_))
+        )
     }
 
     /// ACT takes the suggested FTP, BACK keeps the one in force. Either way

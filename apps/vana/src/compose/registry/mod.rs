@@ -4,6 +4,7 @@
 use super::tile::Component;
 
 mod climb_workout;
+mod map_summary;
 mod primitive;
 mod ride;
 mod script;
@@ -11,7 +12,9 @@ mod scroll;
 mod statics;
 
 #[allow(unused_imports)]
-pub use {climb_workout::*, primitive::*, ride::*, script::*, scroll::*, statics::*};
+pub use {
+    climb_workout::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*, statics::*,
+};
 
 /// A family's block of ids and its tiles, the first at the block's start.
 struct Family {
@@ -35,6 +38,7 @@ const FAMILIES: &[Family] = &[
     ),
     family(16, 32, ride::TILES),
     family(32, 40, climb_workout::TILES),
+    family(40, 48, map_summary::TILES),
     family(48, 56, statics::TILES),
     family(statics::LINE, 64, statics::QUESTIONS),
     family(64, 80, scroll::TILES),

@@ -2,7 +2,6 @@
 //! above bars of the time spent in each power and heart rate zone.
 use super::zones::{BAR_WIDTH, Bar, COLOURS};
 use super::{cell, kilometres, lap_time, speed, whole};
-use crate::screens::Layout;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{Align, GRADE, HEART, POWER, Rect, SPEED, TERTIARY, WHITE};
 use crate::screens::scaled::{Scaled, Track};
@@ -114,7 +113,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let left = layout.ride.text.left;
     zone_bar(
         &mut canvas,
-        layout,
+        &layout.scaled,
         b"PWR",
         left,
         regions.power_bar,
@@ -122,7 +121,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     );
     zone_bar(
         &mut canvas,
-        layout,
+        &layout.scaled,
         b"HR",
         left,
         regions.heart_bar,
@@ -145,13 +144,12 @@ fn hundredths(value: &mut Text<12>, reading: Option<u16>) {
 /// before any time is recorded.
 pub(super) fn zone_bar<const N: usize>(
     canvas: &mut Canvas,
-    layout: &Layout,
+    at: &Scaled,
     caption: &[u8],
     caption_left: usize,
     rect: Rect,
     bar: Bar<N>,
 ) {
-    let at = &layout.scaled;
     // The caption's capitals centre on the bar.
     canvas.caption(
         at,

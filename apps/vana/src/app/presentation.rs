@@ -729,19 +729,22 @@ impl Runtime {
         self.ride.trace().len() >= 2
     }
 
-    /// What the summary shows beyond the totals.
-    pub(super) fn after(&self, now: u64) -> After {
-        let status = self.ride.active().status();
-        let saving = match status {
+    /// Where the ride just finished stands.
+    pub(super) fn saving(&self) -> Saving {
+        match self.ride.active().status() {
             _ if self.ride.pending() => Saving::Writing,
             Status::Recording | Status::Paused => Saving::Writing,
             Status::Error => Saving::Failed,
             _ if self.shown_ride_unsynced() => Saving::Unsynced,
             _ => Saving::Saved,
-        };
+        }
+    }
+
+    /// What the summary shows beyond the totals.
+    pub(super) fn after(&self, now: u64) -> After {
         After {
             page: self.navigation.summary_page(),
-            saving,
+            saving: self.saving(),
             best: self.ride.efforts().best(),
             climbs: Some(self.ride.climbing().count),
             // The open lap counts: a ride without a lap press is one lap.

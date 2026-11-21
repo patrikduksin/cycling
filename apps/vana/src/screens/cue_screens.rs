@@ -161,6 +161,7 @@ fn summaries(
             let _ = title.push_str("DEC 31  12:59");
             view.show_summary(after, title);
             view.set_elevation_chart(chart);
+            view.compose_main();
             (std::format!("{page:?} page {}", after.page), view)
         })
         .collect()
@@ -184,7 +185,7 @@ fn every_cue_screen_lays_out_clear_of_its_cues_for_every_button_arrangement() {
     assert_eq!(layouts.len(), 24 * super::panels::ALL.len());
     for layout in layouts {
         let chart = Box::leak(Box::default());
-        super::ride::ElevationChart::refresh(chart, &trace, layout.summary.elevation.chart);
+        super::ride::ElevationChart::refresh(chart, &trace, super::ride::summary::chart_on(layout));
         let mut screens = ready(layout);
         screens.extend(ride_questions(layout));
         screens.extend(summaries(layout, chart));

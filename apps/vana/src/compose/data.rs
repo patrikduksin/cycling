@@ -39,6 +39,14 @@ pub trait Data {
     fn count(&self, _: Count) -> Option<i32> {
         None
     }
+    /// The map as last filled, on the map page.
+    fn map(&self) -> Option<&ride::MapFrame> {
+        None
+    }
+    /// What the summary shown adds up, on a summary page.
+    fn summary(&self) -> Option<ride::summary::Facts<'_>> {
+        None
+    }
 }
 
 /// What a tile reads, for a trace's shown line: a metric, or whatever the

@@ -50,7 +50,10 @@ impl Detail {
     }
 }
 
-const ROADS_FETCHED_FOR: super::Ground = crate::screens::BASE.map.free;
+const ROADS_FETCHED_FOR: super::Ground = {
+    let at = crate::screens::scaled::BASE;
+    super::ground(&at, super::ground_rect(&at))
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Held {

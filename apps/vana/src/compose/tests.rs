@@ -1,6 +1,7 @@
 use super::bench::{MAIN, MAIN_BYTES};
 use super::data::{Data, Effort, ListKind, Metric, Nothing, OnGauge};
 use super::input::{Action, Button, Buttons, Controls, OnPage};
+use super::list;
 use super::node::{Flags, MAX_NODES, Node, Size, Sizing, What, When};
 use super::parse::{self, Anchor, Hold, Layer, Screen, Screens, VERSION};
 use super::registry::{
@@ -24,6 +25,8 @@ use std::format;
 use std::string::ToString;
 use std::vec;
 use std::vec::Vec;
+
+mod scroll;
 
 fn panels() -> Vec<Scaled> {
     PANELS
@@ -904,13 +907,13 @@ fn a_stack_shows_its_first_present_child_and_fits_every_child() {
 }
 
 #[test]
-fn a_scroll_places_one_item_of_its_template_at_its_top() {
+fn a_scroll_places_one_item_of_its_template_one_gap_under_its_top_a_gutter_in() {
     let at = BASE;
     let nodes = [
         Node::col(2, Size::grow(1)),
         tile(SPACE, 0, Size::units(22)),
-        Node::scroll(ListKind::Rides, Size::grow(1)),
-        Node::row(2, Size::CONTENT),
+        Node::scroll(ListKind::Workouts, Size::grow(1)),
+        Node::row(2, Size::units(40)),
         tile(CAPTION, Metric::Distance as u8, Size::CONTENT),
         tile(VALUE, Metric::Distance as u8, Size::CONTENT),
     ];
@@ -924,22 +927,24 @@ fn a_scroll_places_one_item_of_its_template_at_its_top() {
         right: 240,
         bottom: 320,
     };
-    let item = forms_of(nodes[5], &at).last().unwrap().height;
+    let (gap, gutter) = (list::gap(&at), list::gutter(&at));
     assert_eq!(
         (scroll.node, scroll.viewport, scroll.template),
         (
             2,
             viewport,
             Rect16 {
-                bottom: 22 + item,
-                ..viewport
+                left: gutter,
+                top: 22 + gap,
+                right: 240 - gutter,
+                bottom: 22 + gap + 40,
             }
         )
     );
     assert_eq!(template, &solved.leaves()[1..]);
     assert_eq!(template.len(), 2);
     for placed in template {
-        assert_eq!(placed.rect.bottom, 22 + item);
+        assert_eq!(placed.rect.bottom, 22 + gap + 40);
     }
 }
 
@@ -1197,7 +1202,14 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
             "form band",
             "form trend",
             "power ring",
-            "script"
+            "heading",
+            "entry",
+            "glance",
+            "saving",
+            "edited",
+            "pad",
+            "section",
+            "script",
         ]
     );
     assert_eq!(registry::tile(registry::MAP).name(), "map");

@@ -41,7 +41,8 @@ const FAMILIES: &[Family] = &[
     family(40, 48, map_summary::TILES),
     family(48, 56, statics::TILES),
     family(statics::LINE, 64, statics::QUESTIONS),
-    family(64, 80, scroll::TILES),
+    family(64, 76, scroll::TILES),
+    family(76, 80, scroll::SENSORS),
     family(80, 96, script::TILES),
 ];
 

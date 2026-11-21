@@ -321,6 +321,7 @@ impl Runtime {
                 let changed = overrides.shown().screen(named.key());
                 let choices = Choices {
                     main_slots: self.preferences.options.main_slots,
+                    ..Choices::default()
                 };
                 let builtin = named.builtin(&choices);
                 let nodes = changed.map_or(&builtin[..], |screen| screen.tree().nodes());

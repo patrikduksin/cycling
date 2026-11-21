@@ -19,6 +19,5 @@
 "<vana::screens::workout::View>::new" = 5040
 "vana::screens::workout::fill::<*>" = 8912
 "vana::screens::ride::climb_frame" = 4208
-"<vana::app::Runtime>::history_canvas" = 5424
 "<firmware_shell::storage::Store<*> as firmware_shell::storage::Settings>::load" = 5792
 "*" = 5520

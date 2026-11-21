@@ -6078,13 +6078,14 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
     sim.advance(seconds(20));
     sim.expect_text("1/44");
     sim.checkpoint("every saved ride of both journals");
-    // The list follows the finger: dragged up and held still, the header
-    // folds into the pinned RIDES band and later rides come up.
+    // The list follows the finger: dragged up and held still, later rides
+    // come up under the week, which stays put over the list.
+    let top = sim.screen().text();
     sim.drag((120, 280), (120, 80), 400, 200);
     sim.advance(seconds(1));
-    sim.expect_text("RIDES");
     let dragged = sim.screen().text();
-    assert!(!dragged.contains("THIS WEEK"), "{dragged}");
+    assert!(dragged.contains("THIS WEEK"), "{dragged}");
+    assert_ne!(dragged, top, "the rides scrolled");
     sim.checkpoint("dragged up the list");
     // A flick coasts on well past where the finger stopped, then rests with
     // the focus on a card in view.
@@ -6093,12 +6094,13 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
     let coasted = sim.screen().text();
     assert_ne!(coasted, dragged);
     sim.checkpoint("flicked and coasted");
-    // Pulled back down hard, it lands on the top: the header and 1/44.
+    // Pulled back down hard on the list under the week, it lands on the
+    // top: the newest rides again.
     for _ in 0..4 {
-        sim.drag((120, 60), (120, 300), 60, 0);
+        sim.drag((120, 160), (120, 310), 60, 0);
     }
     sim.advance(seconds(3));
-    sim.expect_text("THIS WEEK");
+    assert_eq!(sim.screen().text(), top, "back on the top");
     sim.checkpoint("flicked back to the top");
     // Held MOVE pages through the list; MOVE then steps to the oldest.
     sim.hold(Role::Move, 3000);
@@ -6215,16 +6217,18 @@ fn rides_list_opens_on_this_week_and_home_names_its_distance() {
     sim.expect_text("3 RIDES");
     sim.expect_text("LAST WEEK 61 KM");
     sim.expect_text("1/5");
+    sim.expect_text("OCT 21  8:00");
     sim.checkpoint("the rides list opens on this week");
-    // The header gives way to the headline from the fourth ride on.
+    // The week stays put over the list: from the fourth ride on, the rides
+    // scroll under it and the newest leaves the view.
     sim.press(Role::Move);
     sim.press(Role::Move);
     sim.expect_text("3/5");
-    sim.expect_text("THIS WEEK");
     sim.press(Role::Move);
     sim.expect_text("4/5");
-    sim.expect_no_text("THIS WEEK");
-    sim.checkpoint("scrolled past the header");
+    sim.expect_text("THIS WEEK");
+    sim.expect_no_text("OCT 21  8:00");
+    sim.checkpoint("scrolled under the week");
     // ACT opens the focused ride.
     sim.press(Role::Act);
     assert_eq!(sim.vana_page(), "past_ride");

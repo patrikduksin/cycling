@@ -1,3 +1,4 @@
+use crate::ride::week::{DAYS, Weeks};
 use crate::screens::chrome::{ACCENT, CADENCE, GRADE, HEART, POWER, SECONDARY, SPEED, WHITE};
 use crate::screens::ride::{self, ClimbRoad as Road, LapBar, Training};
 use crate::screens::workout::Text;
@@ -10,6 +11,37 @@ pub trait Data {
     /// The zone, from 1, that the effort sits in.
     fn zone(&self, effort: Effort) -> Option<u8>;
     fn list(&self, list: ListKind) -> u16;
+    /// How the list shows now: its scroll, its focus and the item under a
+    /// finger.
+    fn listed(&self, _: ListKind) -> Listed {
+        Listed::REST
+    }
+    /// Item `index` of the list, while it is in view.
+    fn entry(&self, _: ListKind, _: u16) -> Option<Entry<'_>> {
+        None
+    }
+    /// The item a list's template draws, as the list hands it to its tiles.
+    fn row(&self) -> Option<Row> {
+        None
+    }
+    /// This week and last at a glance.
+    fn glance(&self) -> Glance {
+        Glance::UNKNOWN
+    }
+    /// What the list's heading says: its name, or the section a list of
+    /// sections shows.
+    fn heading(&self, list: ListKind) -> &str {
+        list.name()
+    }
+    /// Whether what the rider changed is saved, and whether that is fine;
+    /// none while a toast covers the foot.
+    fn saving(&self) -> Option<(&str, bool)> {
+        None
+    }
+    /// The number being edited.
+    fn edited(&self) -> Option<Edited<'_>> {
+        None
+    }
     /// Where the effort's gliding reading sits on its zone gauge.
     fn gauge(&self, _: Effort) -> Option<OnGauge> {
         None
@@ -105,6 +137,122 @@ pub enum Count {
     Charge,
     ChargeFill,
     Charging,
+}
+
+/// A list's state as a frame shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Listed {
+    /// How far the page is scrolled, in pixels; negative past its top.
+    pub offset: i32,
+    /// The item the buttons act on.
+    pub focus: Option<u16>,
+    /// The item under a resting finger.
+    pub pressed: Option<u16>,
+}
+
+impl Listed {
+    pub const REST: Self = Self {
+        offset: 0,
+        focus: None,
+        pressed: None,
+    };
+}
+
+/// What an item of a list says: its name, a line under it, a note at the
+/// right of its name in the note's colour, and whether it is the one chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entry<'a> {
+    pub title: &'a str,
+    pub detail: &'a str,
+    pub note: &'a str,
+    pub note_color: u16,
+    /// The note keeps its room before the title takes the rest.
+    pub note_first: bool,
+    pub chosen: bool,
+}
+
+/// A number being edited: what it is, its value, a note on it and the
+/// step a pad moves it by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edited<'a> {
+    pub label: &'a str,
+    pub value: &'a str,
+    pub note: &'a str,
+    pub step: u16,
+}
+
+/// The rides' week, or none while the clock is unknown, and whether the
+/// index is still reading rides, so the week may grow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Glance {
+    pub week: Option<Week>,
+    pub reading: bool,
+}
+
+impl Glance {
+    pub const UNKNOWN: Self = Self {
+        week: None,
+        reading: false,
+    };
+
+    pub fn of(weeks: Option<&Weeks>, reading: bool) -> Self {
+        Self {
+            week: weeks.map(Week::of),
+            reading,
+        }
+    }
+}
+
+/// This week as its glance shows it, with last week's distance: a frame
+/// keeps this, not the weeks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Week {
+    pub rides: u32,
+    pub distance_mm: u64,
+    pub active_ms: u64,
+    /// The stress of the rides that had power; none without one.
+    pub stress: Option<u32>,
+    pub last_mm: u64,
+    /// Monday 0.
+    pub today: u8,
+    /// Each day's distance in metres, Monday first.
+    pub day_m: [u32; DAYS],
+    /// The days ridden, Monday the lowest bit.
+    pub ridden: u8,
+}
+
+impl Week {
+    pub fn of(weeks: &Weeks) -> Self {
+        let this = &weeks.this;
+        let mut ridden = 0;
+        for (day, &rides) in this.day_rides.iter().enumerate() {
+            ridden |= u8::from(rides > 0) << day;
+        }
+        Self {
+            rides: this.rides,
+            distance_mm: this.distance_mm,
+            active_ms: this.active_ms,
+            stress: (this.powered > 0).then_some(this.stress),
+            last_mm: weeks.last.distance_mm,
+            today: weeks.today as u8,
+            day_m: this
+                .day_mm
+                .map(|mm| u32::try_from(mm / 1000).unwrap_or(u32::MAX)),
+            ridden,
+        }
+    }
+
+    pub const fn rode(&self, day: usize) -> bool {
+        self.ridden & (1 << day) != 0
+    }
+}
+
+/// The item a template's tiles draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub list: ListKind,
+    pub index: u16,
+    pub focused: bool,
 }
 
 /// A point on an effort's zone gauge: the zone it falls in, from 1, and
@@ -587,6 +735,17 @@ impl Effort {
     }
 }
 
+const SECTION_TITLES: [&str; crate::screens::settings::SECTIONS.len()] = {
+    let sections = &crate::screens::settings::SECTIONS;
+    let mut titles = [""; crate::screens::settings::SECTIONS.len()];
+    let mut at = 0;
+    while at < titles.len() {
+        titles[at] = sections[at].0;
+        at += 1;
+    }
+    titles
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ListKind {
     Rides,
@@ -596,6 +755,49 @@ pub enum ListKind {
 }
 
 impl ListKind {
+    /// What its heading calls it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Rides => "RIDES",
+            Self::Workouts => "WORKOUTS",
+            Self::Settings => "SETTINGS",
+            Self::Sensors => "SENSORS",
+        }
+    }
+
+    /// Every heading the list may show, for its widest.
+    pub const fn headings(self) -> &'static [&'static str] {
+        match self {
+            Self::Rides => &["RIDES"],
+            Self::Workouts => &["WORKOUTS"],
+            Self::Settings => &SECTION_TITLES,
+            Self::Sensors => &["SENSORS"],
+        }
+    }
+
+    /// Whether the heading says where the focus is among the items.
+    pub const fn placed(self) -> bool {
+        !matches!(self, Self::Settings)
+    }
+
+    /// Cards a frame keeps of this list: accept refuses a scroll that
+    /// shows more at once.
+    pub const fn most_in_view(self) -> usize {
+        match self {
+            Self::Rides => 6,
+            Self::Workouts | Self::Settings | Self::Sensors => super::list::MOST_IN_VIEW,
+        }
+    }
+
+    /// What the viewport says while the list is empty: a line and a caption
+    /// under it.
+    pub const fn empty(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::Rides => Some(("NO RIDES YET", "SAVED RIDES SHOW HERE")),
+            Self::Workouts | Self::Settings | Self::Sensors => None,
+        }
+    }
+
     pub const fn from_id(id: u8) -> Option<Self> {
         match id {
             0 => Some(Self::Rides),

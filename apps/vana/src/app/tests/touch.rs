@@ -224,18 +224,18 @@ fn workouts() -> (Runtime, Radio) {
 }
 
 /// Screen row of card `index`'s middle with the page at `offset`.
-fn card_y(index: usize, offset: i32) -> u16 {
-    let layout = crate::screens::BASE.workouts.list;
+fn card_y(runtime: &Runtime, index: usize, offset: i32) -> u16 {
+    let layout = runtime.list_layout(List::Workouts);
     let (top, bottom) = layout.span(index);
     (layout.top as i32 + (top + bottom) / 2 - offset) as u16
 }
 
-use crate::screens::touch::{Control, List};
+use crate::screens::touch::List;
 
 #[test]
 fn scrolling_from_a_card_never_focuses_or_chooses_it() {
     let (mut runtime, mut radio) = workouts();
-    let start = card_y(2, 0);
+    let start = card_y(&runtime, 2, 0);
     // The finger rests on the third card until it lights up...
     runtime.input_received(
         Input::Touch(Point { x: 120, y: start }),
@@ -246,7 +246,7 @@ fn scrolling_from_a_card_never_focuses_or_chooses_it() {
     runtime.navigation.touches_mut().tick(1000 + 160);
     assert_eq!(
         runtime.navigation.touches().pressed(),
-        Some(Control::Workout(2))
+        runtime.composed_item(2)
     );
     // ...then drags the list up and lets go still.
     let lift = drag(
@@ -291,7 +291,7 @@ fn a_press_first_brings_a_focus_that_scrolled_away_back() {
     );
     runtime.list_frame(lift + 2000);
     let offset = runtime.list_offset(List::Workouts, lift + 2000);
-    let layout = crate::screens::BASE.workouts.list;
+    let layout = runtime.list_layout(List::Workouts);
     assert!(!layout.whole(0, offset), "the focus scrolled away");
     // ACT scrolls the focus back into view and chooses nothing.
     runtime.input_received(press(Role::Act), lift + 2100, lift + 2100, &mut radio);
@@ -342,14 +342,10 @@ fn a_tap_chooses_its_card_but_a_tap_that_stops_a_coasting_list_does_not() {
     assert!(!runtime.kinetic(List::Workouts).moving());
     // On the list at rest, a tap chooses the card under it and focuses it.
     let offset = runtime.list_offset(List::Workouts, lift + 300);
-    let layout = crate::screens::BASE.workouts.list;
+    let layout = runtime.list_layout(List::Workouts);
     let card = layout.first_whole(runtime.training.rows(), offset).unwrap();
-    touch(
-        &mut runtime,
-        &mut radio,
-        &[(120, card_y(card, offset))],
-        lift + 400,
-    );
+    let y = card_y(&runtime, card, offset);
+    touch(&mut runtime, &mut radio, &[(120, y)], lift + 400);
     assert!(runtime.navigation.page() == Page::Ready);
     assert_eq!(runtime.training.picker_cursor, card);
 }

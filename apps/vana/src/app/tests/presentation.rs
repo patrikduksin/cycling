@@ -325,7 +325,18 @@ fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
     runtime.input_received(touch(120, 86), 1000, 1000, &mut radio);
     runtime.input_received(Input::Release, 1050, 1050, &mut radio);
     assert!(runtime.navigation.editing());
-    runtime.input_received(touch(60, 237), 1500, 1500, &mut radio);
+    runtime.compose_shown();
+    let lower = runtime
+        .composition
+        .laids()
+        .get(crate::compose::builtin::ScreenId::Settings)
+        .and_then(|laid| laid.box_of(crate::compose::registry::PAD))
+        .expect("the editor's minus pad");
+    let (x, y) = (
+        lower.center_x() as u16,
+        (lower.top + lower.bottom) as u16 / 2,
+    );
+    runtime.input_received(touch(x, y), 1500, 1500, &mut radio);
     assert_eq!(runtime.preferences.profile.ftp_watts, 210);
     runtime.input_received(press(Role::Back), 2000, 2000, &mut radio);
     runtime.input_received(press(Role::Back), 3000, 3000, &mut radio);

@@ -60,6 +60,7 @@ impl Runtime {
         let hit = match input {
             Input::Touch(point) => {
                 let radar = ant.channel(device_type::RADAR, now).is_some();
+                self.compose_shown();
                 self.hit_test(point, now, radar)
             }
             _ => Hit::default(),
@@ -175,7 +176,7 @@ impl Runtime {
         self.display.redraw();
         if let Some(pressed) = self.composed_press(button) {
             if let super::composition::Pressed::Asks(action) = pressed {
-                self.carry(action, held, received, now);
+                self.act(action, held, received, now, ant);
             }
             return;
         }
@@ -190,9 +191,7 @@ impl Runtime {
                 self.ride_press(button, held, received, now);
             }
             Page::Phone => self.phone_input(button, held),
-            Page::History => self.history_input(button, held, now),
-            Page::Settings => self.settings_input(button, now, ant, held),
-            Page::Workouts => self.workouts_input(button, now, held),
+            Page::Settings => self.settings_input(button, now, held),
             Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.go(To::Page(self.first_page())),
@@ -204,7 +203,9 @@ impl Runtime {
             | Page::LoseRides
             | Page::DiscardRide
             | Page::Summary
-            | Page::PastRide => {}
+            | Page::PastRide
+            | Page::History
+            | Page::Workouts => {}
         }
     }
 
@@ -275,20 +276,6 @@ impl Runtime {
                 .setup_step()
                 .and_then(|step| crate::screens::setup::target(&self.layout.setup, x, y, step))
                 .map(Control::Setup),
-            Page::Settings if navigation.editing() => {
-                match navigation.sections().target(
-                    &self.layout.settings,
-                    x,
-                    y,
-                    navigation.settings_field(),
-                    true,
-                    0,
-                ) {
-                    Some(settings::Target::Lower) => Some(Control::Lower),
-                    Some(settings::Target::Raise) => Some(Control::Raise),
-                    _ => None,
-                }
-            }
             Page::Ride if paused_screen => None,
             Page::Ride if navigation.ride_page() == RidePage::Map => Some(Control::Map),
             Page::Ride if self.sign_at(x, y, now, radar) => Some(Control::Sign),
@@ -309,13 +296,9 @@ impl Runtime {
                 let count = self.list_count(list);
                 let offset = self.list_offset(list, now);
                 hit.list = Some(list);
-                hit.control = layout.card_at(count, offset, x, y).map(|index| match list {
-                    List::Rides => Control::Ride(index),
-                    List::Workouts => Control::Workout(index),
-                    List::Settings => Control::Setting(
-                        navigation.sections().rows(navigation.settings_field()).1 + index,
-                    ),
-                });
+                hit.control = layout
+                    .card_at(count, offset, x, y)
+                    .and_then(|index| self.composed_item(index));
             }
         }
         hit
@@ -358,7 +341,7 @@ impl Runtime {
         match control {
             Control::Composed(action, focus) => {
                 self.composed_focus(focus);
-                self.carry(action, false, now, now);
+                self.act(action, false, now, now, ant);
             }
             Control::Tile(tile) => {
                 self.navigation.go(To::HomeCursor(match tile {
@@ -376,12 +359,6 @@ impl Runtime {
             }
             Control::ReadySensors => self.open_sensors(false, ant, now),
             Control::Phone => self.phone_touch(),
-            Control::Ride(index) => self.open_past_ride(index),
-            Control::Workout(index) => self.choose_workout(index),
-            Control::Setting(field) => {
-                self.navigation.go(To::Field(field));
-                self.act_on_setting(now, ant);
-            }
             Control::Setup(card) => self.setup_card(card, now, ant),
             Control::Menu(point) => {
                 self.refresh_sensor_menu(ant, now);
@@ -489,19 +466,9 @@ impl Runtime {
         }
     }
 
-    /// Choosing a row: BottomLeft moves to the next, BottomRight acts on it,
-    /// TopLeft goes Home. Editing a number: BottomLeft lowers and
-    /// BottomRight raises it by `settings::STEP`, TopLeft finishes.
-    fn settings_input(&mut self, button: Role, now: u64, ant: &mut impl Ant, held: bool) {
-        if !self.navigation.editing() {
-            match button {
-                Role::Move => self.settings_move(now),
-                Role::Act if self.list_act(List::Settings, now) => self.act_on_setting(now, ant),
-                Role::Back => self.navigation.go(To::Page(Page::Home)),
-                _ => {}
-            }
-            return;
-        }
+    /// The number editor's buttons: MOVE lowers, ACT raises, holding
+    /// repeats, and BACK finishes. Settings' rows take theirs from its tree.
+    fn settings_input(&mut self, button: Role, now: u64, held: bool) {
         match button {
             Role::Move => self.adjust_setting(-self.setting_step(), now, held),
             Role::Act => self.adjust_setting(self.setting_step(), now, held),
@@ -511,7 +478,7 @@ impl Runtime {
     }
 
     /// Act on the selected row: edit a number, step a choice or open a page.
-    fn act_on_setting(&mut self, now: u64, ant: &mut impl Ant) {
+    pub(super) fn act_on_setting(&mut self, now: u64, ant: &mut impl Ant) {
         use settings::{Kind, SettingsAction};
         let row = self.navigation.setting();
         match (row.kind(), row.action()) {

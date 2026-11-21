@@ -4,10 +4,12 @@
 //!
 //! A [`Layout`] is a page of equal cards seen through the viewport, the
 //! screen rows `top..bottom`, scrolled by an offset that `Kinetic` drives:
-//! page row `p` shows on screen row `top + p - offset`. Screens prepare the
-//! page's runs and shapes at canvas row `PAGE + p`, clear of everything that
-//! stays put (a title, a status line, a pinned band), which keeps its screen
-//! rows; `canvas_row` says which canvas row each screen row paints.
+//! page row `p` shows on screen row `top + p - offset`. A frame prepares
+//! only the cards in view, at the offset it shows, so a card's canvas rows
+//! are where it shows in the viewport, from canvas row `PAGE`: clear of
+//! everything that stays put (a title, a status line, a pinned band), which
+//! keeps its screen rows, and never further down however long the page.
+//! `canvas_row` says which canvas row each screen row paints.
 //!
 //! Focus is the buttons' first responder and scrolling never moves it, so the
 //! focused card may scroll out of view. A button press then first brings it
@@ -16,8 +18,8 @@
 use super::chrome::Rect;
 use core::ops::Range;
 
-/// Canvas row of page row 0: below every screen row, with room above it for
-/// the rubber band's stretch past the top.
+/// Canvas row of the viewport's top: below every screen row, with room
+/// above it for the card the viewport's top cuts.
 pub const PAGE: usize = 1024;
 
 /// A column of equal cards: where each slot sits and which one a touch hits.
@@ -95,10 +97,16 @@ impl Layout {
         self.bottom - self.top
     }
 
-    /// The first canvas row the viewport can show: the rubber band pulls the
-    /// page down past its top by less than a viewport.
+    /// The first canvas row a card in view reaches: the viewport's top cuts
+    /// a card shorter than the viewport.
     pub const fn stretched_top(&self) -> usize {
         PAGE - self.viewport()
+    }
+
+    /// The canvas row past the last a card in view reaches: the viewport's
+    /// bottom cuts a card shorter than the viewport.
+    pub const fn stretched_bottom(&self) -> usize {
+        PAGE + 2 * self.viewport()
     }
 
     /// The page's height with `count` cards.
@@ -115,12 +123,13 @@ impl Layout {
         (rect.top as i32, rect.bottom as i32)
     }
 
-    /// Card `index` on the canvas.
-    pub const fn rect(&self, index: usize) -> Rect {
+    /// Card `index`, in view at `offset`, on the canvas.
+    pub const fn on_canvas(&self, index: usize, offset: i32) -> Rect {
         let rect = self.column.rect(index);
+        let top = (PAGE as i32 + rect.top as i32 - offset) as usize;
         Rect {
-            top: PAGE + rect.top,
-            bottom: PAGE + rect.bottom,
+            top,
+            bottom: top + rect.height(),
             ..rect
         }
     }
@@ -174,18 +183,6 @@ impl Layout {
         first.min(end)..end
     }
 
-    /// Whether something on canvas rows `rows` can show at `offset`: what
-    /// stays put always, the page's rows while they reach the viewport below
-    /// the pinned band.
-    pub fn shows(&self, rows: Range<usize>, offset: i32) -> bool {
-        if rows.start < self.stretched_top() {
-            return true;
-        }
-        let top = PAGE as i32 + offset + self.inset(offset);
-        let bottom = PAGE as i32 + offset + self.viewport() as i32;
-        (rows.start as i32) < bottom && (rows.end as i32) > top
-    }
-
     /// The card under a touch at screen (`x`, `y`) at `offset`.
     pub fn card_at(&self, count: usize, offset: i32, x: usize, y: usize) -> Option<usize> {
         if y < self.top + self.inset(offset) as usize || y >= self.bottom {
@@ -206,13 +203,13 @@ impl Layout {
         if !self.on_page(y) || y < self.top + self.inset(offset) as usize {
             return Some(y);
         }
-        usize::try_from(PAGE as i32 + y as i32 - self.top as i32 + offset).ok()
+        Some(self.held(y))
     }
 
-    /// The canvas row that shows on screen row `y` of the viewport at
-    /// `offset`: for marks that stay put over the page, such as a scroll bar.
-    pub fn held(&self, y: usize, offset: i32) -> usize {
-        (PAGE as i32 + y as i32 - self.top as i32 + offset).max(0) as usize
+    /// The canvas row that shows on screen row `y` of the viewport: for
+    /// marks that stay put over the page, such as a scroll bar.
+    pub const fn held(&self, y: usize) -> usize {
+        PAGE + y - self.top
     }
 
     /// Where a scroll bar's thumb sits in the viewport's rows at `offset`,
@@ -309,10 +306,15 @@ mod tests {
         assert_eq!(LAYOUT.canvas_row(10, 300), Some(10), "the status bar");
         assert_eq!(LAYOUT.canvas_row(24, 0), Some(PAGE));
         assert_eq!(LAYOUT.canvas_row(100, 0), Some(PAGE + 76));
-        assert_eq!(LAYOUT.canvas_row(100, -30), Some(PAGE + 46), "stretched");
+        assert_eq!(LAYOUT.canvas_row(100, 90_000), Some(PAGE + 76), "far down");
         assert_eq!(LAYOUT.canvas_row(30, 300), Some(30), "the pinned band");
-        assert_eq!(LAYOUT.canvas_row(48, 300), Some(PAGE + 324));
-        assert_eq!(LAYOUT.canvas_row(30, 10), Some(PAGE + 16), "not pinned yet");
+        assert_eq!(LAYOUT.canvas_row(48, 300), Some(PAGE + 24));
+        assert_eq!(LAYOUT.canvas_row(30, 10), Some(PAGE + 6), "not pinned yet");
+        // A card shows on the canvas where it shows in the viewport.
+        let (top, _) = LAYOUT.span(1500);
+        let card = LAYOUT.on_canvas(1500, top - 76);
+        assert_eq!(LAYOUT.canvas_row(100, top - 76), Some(card.top));
+        assert_eq!(LAYOUT.on_canvas(0, -30).top, PAGE + 130, "stretched");
     }
 
     #[test]

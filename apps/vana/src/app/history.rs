@@ -14,12 +14,13 @@
 use super::Runtime;
 use super::navigation::To;
 use crate::clock::Zone;
+use crate::compose::data::Glance;
 use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
 use crate::ride::medium::Medium;
 use crate::ride::replay::{Progress, Replay};
 use crate::ride::week::Weeks;
-use crate::screens::history::{self, List, Row};
+use crate::screens::history::{self, Row};
 use crate::screens::kinetic::Kinetic;
 use crate::screens::ride::summary::{After, Saving};
 use crate::screens::touch::List as Scrolling;
@@ -295,18 +296,6 @@ impl Runtime {
     /// MOVE focuses the next ride (held, `SHOWN` on; past the last, the
     /// first) and scrolls it into view, ACT opens it, BACK goes Home. Either
     /// press first brings a focus that scrolled away back into view.
-    pub(super) fn history_input(&mut self, button: Role, held: bool, now: u64) {
-        let count = self.history_count();
-        match button {
-            Role::Move if count > 0 => self.list_move(Scrolling::Rides, history::SHOWN, held, now),
-            Role::Act if count > 0 && self.list_act(Scrolling::Rides, now) => {
-                self.open_past_ride(self.history.cursor)
-            }
-            Role::Back => self.navigation.go(To::Page(Page::Home)),
-            _ => {}
-        }
-    }
-
     pub(super) fn open_past_ride(&mut self, index: usize) {
         let Some((medium, summary)) = self.listed(index) else {
             return;
@@ -508,29 +497,16 @@ impl Runtime {
         Some(weeks)
     }
 
-    /// The ride list, its cards made on demand.
+    /// The rides as a frame shows them: the week, and the cards in view.
     #[inline(never)]
-    pub(super) fn history_canvas(
-        &self,
-        offset: i32,
-        pressed: Option<usize>,
-    ) -> crate::screens::canvas::Canvas {
+    pub(super) fn history_rides(&self, offset: i32, pressed: Option<usize>) -> history::Rides {
         let count = self.history_count();
-        let layout = self.layout;
-        history::prepare(&List {
-            layout,
-            count,
-            cursor: self.history.cursor,
-            offset,
-            pressed,
-            row: |index| self.history_row(index, count),
-            weeks: if count > 0 && history::header_shows(&layout.history.list, offset) {
-                self.weeks()
-            } else {
-                None
-            },
-            reading: !self.counted(),
-        })
+        let list = self.list_layout(Scrolling::Rides);
+        let row = |index| self.history_row(index, count);
+        let mut rides = history::Rides::new(&list, count, self.history.cursor, offset, row);
+        rides.pressed = pressed;
+        rides.glance = Glance::of(self.weeks().as_ref(), !self.counted());
+        rides
     }
 
     fn history_row(&self, index: usize, count: usize) -> Row {

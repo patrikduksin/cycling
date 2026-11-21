@@ -1178,6 +1178,7 @@ fn learn_radio_in_a_phone_pass(
 
 fn device_rows(runtime: &Runtime) -> (bool, Vec<&'static str>) {
     let mut view = runtime.navigation.view(None);
+    view.compose_main();
     let _ = view.show_settings();
     view.prepare();
     let canvas = view.canvas();

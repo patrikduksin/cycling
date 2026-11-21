@@ -75,6 +75,19 @@ pub enum Why {
     Scroll {
         node: u8,
     },
+    /// A scroll laid across; lists scroll down.
+    Across {
+        node: u8,
+    },
+    /// A scroll's item template of more tiles than a card draws.
+    Template {
+        node: u8,
+    },
+    /// A scroll's viewport shows more items than a frame keeps.
+    InView {
+        node: u8,
+        items: u8,
+    },
     Formless {
         node: u8,
     },
@@ -168,6 +181,14 @@ impl fmt::Display for Why {
             Self::Hero { node } => write!(f, "node {node} cannot be the hero"),
             Self::Heavy { node } => write!(f, "node {node} is a second map or chart"),
             Self::Scroll { node } => write!(f, "node {node} is a second scroll"),
+            Self::Across { node } => write!(f, "node {node} scrolls across; lists scroll down"),
+            Self::Template { node } => write!(f, "node {node}'s item holds too many tiles"),
+            Self::InView { node, items } => {
+                write!(
+                    f,
+                    "node {node} shows {items} items at once, more than a frame keeps"
+                )
+            }
             Self::Formless { node } => write!(f, "node {node} has no look"),
             Self::Push => f.write_str("only a top or bottom band can push the tiles"),
             Self::Header(byte) => write!(f, "layer byte {byte} names nothing"),

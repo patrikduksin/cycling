@@ -1,5 +1,6 @@
-use super::data::Data;
+use super::data::{Data, ListKind};
 use super::input::{Action, Cues};
+use super::list::Costed;
 use super::node::{Flags, MAX_DEPTH, MAX_NODES, Node, Sizing, What};
 use super::parse::{Anchor, Tree};
 use super::registry;
@@ -105,6 +106,18 @@ pub struct Scroll {
     count: u8,
 }
 
+impl Scroll {
+    /// The page of items its viewport shows, on this panel.
+    pub fn page(&self, at: &Scaled) -> crate::screens::scroll::Layout {
+        super::list::page(self.viewport, self.template, at)
+    }
+
+    /// Where its template's tiles sit among the layout's tiles.
+    pub fn tiles(&self) -> core::ops::Range<usize> {
+        usize::from(self.first)..usize::from(self.first + self.count)
+    }
+}
+
 /// A tree solved under one set of flags. Preorder of its tiles is the
 /// focus order of those with an action.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,22 +151,13 @@ impl Solved<'_> {
     /// The scroll and the tiles of its template.
     pub fn scroll(&self) -> Option<(Scroll, &[Placed])> {
         let scroll = self.scroll?;
-        let first = usize::from(scroll.first);
-        Some((
-            scroll,
-            &self.leaves[first..first + usize::from(scroll.count)],
-        ))
+        Some((scroll, &self.leaves[scroll.tiles()]))
     }
 
-    /// Draw each tile onto `out`.
+    /// Draw each tile onto `out`, a scroll's template once a card.
     pub fn prepare(&self, data: &dyn Data, out: &mut Canvas) {
-        let Some(tree) = self.tree else {
-            return;
-        };
-        for placed in &self.leaves {
-            if let Some((tile, arg)) = component(tree.nodes()[usize::from(placed.node)]) {
-                tile.prepare(arg, placed, tree.at(), data, out);
-            }
+        if let Some(tree) = self.tree {
+            prepare(tree, &self.leaves, self.scroll.as_ref(), data, out);
         }
     }
 
@@ -232,6 +236,29 @@ pub(crate) fn solve<'a>(
     solver.upgrade(at, area);
     sink.start(tree, flags);
     solver.place(at, area, balance, cues, sink)
+}
+
+/// Draw `leaves`, solved from `tree`, onto `out`: each tile once, but the
+/// template of `scroll` once on each card in view.
+pub fn prepare(
+    tree: &Tree,
+    leaves: &[Placed],
+    scroll: Option<&Scroll>,
+    data: &dyn Data,
+    out: &mut Canvas,
+) {
+    let template = scroll.map_or(0..0, Scroll::tiles);
+    for (index, placed) in leaves.iter().enumerate() {
+        if template.contains(&index) {
+            continue;
+        }
+        if let Some((tile, arg)) = component(tree.nodes()[usize::from(placed.node)]) {
+            tile.prepare(arg, placed, tree.at(), data, out);
+        }
+    }
+    if let Some(scroll) = scroll {
+        super::list::prepare(tree, scroll, &leaves[template], data, out);
+    }
 }
 
 pub(crate) fn band(tree: &Tree, flags: Flags, anchor: Anchor) -> Result<Rect16, Why> {
@@ -366,6 +393,15 @@ impl<'a> Solver<'a> {
         })
     }
 
+    /// An item's height down its scroll, which place refuses to lay
+    /// across: the template's units when it names them, else its look.
+    fn item_length(&self, template: usize, at: &Scaled) -> u16 {
+        match self.nodes[template].size().get() {
+            Sizing::Units(n) => at.unit(usize::from(n)) as u16,
+            Sizing::Content | Sizing::Grow(_) => self.want[template][index(Axis::Down)],
+        }
+    }
+
     fn misfit(&self, node: usize, axis: Axis, gets: u16, needs: u16) -> Why {
         Why::Misfit(Misfit {
             node: node as u8,
@@ -413,12 +449,27 @@ impl<'a> Solver<'a> {
                 What::Leaf { .. } => continue,
                 What::Row { .. } => self.line(i, Axis::Across, at, &mut bands),
                 What::Col { .. } => self.line(i, Axis::Down, at, &mut bands),
-                What::Stack { .. } | What::Scroll { .. } => {
+                What::Stack { .. } => {
                     let mut want = [0, 0];
                     for child in self.children(i) {
                         want[0] = want[0].max(self.want[child][0]);
                         want[1] = want[1].max(self.want[child][1]);
                     }
+                    want
+                }
+                // A card's slot holds its template, or what the list says
+                // while empty, with gaps above and below and a gutter either
+                // side.
+                What::Scroll { list } => {
+                    let (across, down) = (index(Axis::Across), index(Axis::Down));
+                    let mut want = super::list::empty_size(list, at);
+                    for child in self.children(i) {
+                        want[across] = want[across].max(self.want[child][across]);
+                        let item = self.want[child][down].max(self.item_length(child, at));
+                        want[down] = want[down].max(item);
+                    }
+                    want[across] += 2 * super::list::gutter(at);
+                    want[down] += 2 * super::list::gap(at);
                     want
                 }
             };
@@ -515,7 +566,7 @@ impl<'a> Solver<'a> {
                 .is_some_and(|frame| usize::from(frame.end) <= i)
             {
                 if let Some(frame) = frames.pop() {
-                    frame.close(&mut cost, sink);
+                    frame.close(at, &mut cost, sink)?;
                 }
             }
             if !self.is_present(i) {
@@ -531,14 +582,21 @@ impl<'a> Solver<'a> {
             };
             sink.node(i as u8, rect);
             let node = self.nodes[i];
-            if let Some((tile, arg)) = component(node) {
+            let tile = component(node);
+            if tile.is_some() || matches!(node.known(), What::Scroll { .. }) {
                 for axis in [Axis::Across, Axis::Down] {
                     let (has, wants) = (rect.len(axis), self.want[i][index(axis)]);
                     if wants > has {
                         return Err(self.misfit(i, axis, has, wants));
                     }
                 }
+            }
+            if let Some((tile, arg)) = tile {
+                let before = cost;
                 self.leaf(i, rect, hidden, (tile, arg), at, cues, &mut cost, sink)?;
+                if let Some(frame) = frames.iter_mut().rev().find(|frame| frame.scrolls()) {
+                    frame.template_tile(rect, before, cost)?;
+                }
             } else {
                 let how = Open { at, balance, cost };
                 let frame = Frame::open(self, i, rect, hidden, axis, how);
@@ -549,7 +607,7 @@ impl<'a> Solver<'a> {
             i += 1;
         }
         while let Some(frame) = frames.pop() {
-            frame.close(&mut cost, sink);
+            frame.close(at, &mut cost, sink)?;
         }
         if cost.shapes > MAX_SHAPES || cost.runs > MAX_RUNS {
             return Err(Why::Canvas {
@@ -620,9 +678,14 @@ enum Kind {
         base: Cost,
         most: Cost,
     },
+    /// `base` is the cost before the template; `tiles` are the template's,
+    /// which `list::most` charges for every card in view.
     Scroll {
+        list: ListKind,
         first: u8,
         template: Rect16,
+        base: Cost,
+        tiles: heapless::Vec<Costed, { super::list::MOST_TEMPLATE_TILES }>,
     },
 }
 
@@ -666,11 +729,14 @@ impl Frame {
                     most: Cost::default(),
                 },
             ),
-            What::Scroll { .. } => (
+            What::Scroll { list } => (
                 parent,
                 Kind::Scroll {
+                    list,
                     first: how.cost.shown,
-                    template: rect.with_span(parent, rect.start(parent), rect.start(parent)),
+                    template: super::list::template_at(rect, how.at),
+                    base: how.cost,
+                    tiles: heapless::Vec::new(),
                 },
             ),
             What::Leaf { .. } => unreachable!("a leaf opens no frame"),
@@ -683,6 +749,30 @@ impl Frame {
             axis,
             kind,
         }
+    }
+
+    fn scrolls(&self) -> bool {
+        matches!(self.kind, Kind::Scroll { .. })
+    }
+
+    /// Note a tile of the scroll's template: where it sits on its card and
+    /// what it cost the canvas.
+    fn template_tile(&mut self, rect: Rect16, before: Cost, after: Cost) -> Result<(), Why> {
+        let Kind::Scroll {
+            template, tiles, ..
+        } = &mut self.kind
+        else {
+            unreachable!("only a scroll's frame notes its template's tiles");
+        };
+        let costed = Costed {
+            top: rect.top - template.top,
+            bottom: rect.bottom - template.top,
+            shapes: (after.shapes - before.shapes) as u8,
+            runs: (after.runs - before.runs) as u8,
+        };
+        tiles
+            .push(costed)
+            .map_err(|_| Why::Template { node: self.node })
     }
 
     fn hides(&self) -> bool {
@@ -708,31 +798,61 @@ impl Frame {
                 Ok(rect)
             }
             Kind::Scroll { template, .. } => {
-                let start = rect.start(main);
-                let pitch = want[index(main)].min(rect.len(main));
-                *template = rect.with_span(main, start, start + pitch);
+                if main == Axis::Across {
+                    return Err(Why::Across { node: self.node });
+                }
+                let item = solver.item_length(child, at);
+                if let Sizing::Units(_) = solver.nodes[child].size().get()
+                    && want[index(main)] > item
+                {
+                    return Err(solver.misfit(child, main, item, want[index(main)]));
+                }
+                // Place refused a viewport too small for the item, its gaps
+                // and gutters before it opened this frame.
+                template.bottom = template.top + item;
                 Ok(*template)
             }
             Kind::Line(line) => line.next(solver, child, main, rect, at),
         }
     }
 
-    fn close<'a>(self, cost: &mut Cost, sink: &mut impl Sink<'a>) {
+    fn close<'a>(self, at: &Scaled, cost: &mut Cost, sink: &mut impl Sink<'a>) -> Result<(), Why> {
         match self.kind {
             Kind::Stack { base, mut most, .. } => {
                 slide_ends(cost, base, &mut most);
                 cost.shapes += most.shapes;
                 cost.runs += most.runs;
             }
-            Kind::Scroll { first, template } if !self.hidden => sink.scroll(Scroll {
-                node: self.node,
-                viewport: self.rect,
-                template,
+            Kind::Scroll {
+                list,
                 first,
-                count: cost.shown - first,
-            }),
-            _ => {}
+                template,
+                base,
+                tiles,
+            } => {
+                let items = super::list::in_view(self.rect, template, at);
+                if items > list.most_in_view() {
+                    return Err(Why::InView {
+                        node: self.node,
+                        items: items as u8,
+                    });
+                }
+                let (shapes, runs) = super::list::most(list, self.rect, template, &tiles, at);
+                cost.shapes = base.shapes + shapes;
+                cost.runs = base.runs + runs;
+                if !self.hidden {
+                    sink.scroll(Scroll {
+                        node: self.node,
+                        viewport: self.rect,
+                        template,
+                        first,
+                        count: cost.shown - first,
+                    });
+                }
+            }
+            Kind::Line(_) => {}
         }
+        Ok(())
     }
 }
 

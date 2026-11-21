@@ -41,7 +41,10 @@ pub fn flags_of(view: &View) -> Flags {
 
 /// The main page on `layout` for the lower line `slots` and `flags`.
 pub fn laid(layout: &Layout, slots: Slots, flags: Flags) -> Laid {
-    let choices = Choices { main_slots: slots };
+    let choices = Choices {
+        main_slots: slots,
+        ..Choices::default()
+    };
     Laid::new(ScreenId::RideMain, layout, choices, flags, None).expect("the main page has a tree")
 }
 

@@ -460,6 +460,7 @@ fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
             left: Metric::AvgPower,
             ..initial.main_slots
         },
+        ..initial
     };
     laids.update(choices, Flags::NONE, overrides.shown());
     assert_eq!(

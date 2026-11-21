@@ -7,7 +7,7 @@ use super::input::{Buttons, Controls, Focus};
 use super::node::{Flags, MAX_NODES, Node, What};
 use super::parse::{Screen, Screens};
 use super::registry;
-use super::solve::{MAX_LEAVES, Placed, Rect16, Solved};
+use super::solve::{MAX_LEAVES, Placed, Rect16, Scroll, Solved};
 use crate::screens::Layout;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
@@ -378,6 +378,8 @@ pub type Nodes = heapless::Vec<Node, MAX_NODES>;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Choices {
     pub main_slots: Slots,
+    /// Settings edits a number: its tree is the editor's.
+    pub editing: bool,
 }
 
 /// A shipped screen: its tree for the rider's choices, and what its
@@ -401,6 +403,8 @@ pub struct Laid {
     choices: Choices,
     flags: Flags,
     leaves: heapless::Vec<Placed, MAX_LEAVES>,
+    /// The scroll shown, and the page of cards it scrolls.
+    list: Option<(Scroll, crate::screens::scroll::Layout)>,
     focus: Focus,
 }
 
@@ -430,6 +434,7 @@ impl Laid {
             choices,
             flags,
             leaves: heapless::Vec::new(),
+            list: None,
             focus: Focus::default(),
         };
         laid.solve();
@@ -472,6 +477,8 @@ impl Laid {
         let mut solved = Solved::EMPTY;
         self.screen.solve(self.flags, &mut solved);
         self.leaves = solved.leaves().iter().copied().collect();
+        let at = self.screen.tree().at();
+        self.list = solved.scroll().map(|(scroll, _)| (scroll, scroll.page(at)));
     }
 
     pub fn solved(&self) -> Solved<'_> {
@@ -516,22 +523,36 @@ impl Laid {
         &mut self.focus
     }
 
+    /// The scroll shown, if the screen has one.
+    pub fn scroll(&self) -> Option<&Scroll> {
+        self.list.as_ref().map(|(scroll, _)| scroll)
+    }
+
+    /// The page of cards the scroll shown scrolls.
+    pub fn page(&self) -> Option<&crate::screens::scroll::Layout> {
+        self.list.as_ref().map(|(_, page)| page)
+    }
+
+    /// The tiles placed once each, leaving out a scroll's template, which
+    /// draws once a card.
     fn tiles(&self) -> impl Iterator<Item = (u8, u8, &Placed)> {
         let nodes = self.screen.tree().nodes();
-        self.leaves.iter().filter_map(move |placed| {
-            match nodes[usize::from(placed.node)].what()? {
-                What::Leaf { component, arg } => Some((component, arg, placed)),
-                _ => None,
-            }
-        })
+        let template = self.scroll().map_or(0..0, Scroll::tiles);
+        let leaves = self.leaves.iter().enumerate();
+        leaves
+            .filter(move |(index, _)| !template.contains(index))
+            .filter_map(
+                move |(_, placed)| match nodes[usize::from(placed.node)].what()? {
+                    What::Leaf { component, arg } => Some((component, arg, placed)),
+                    _ => None,
+                },
+            )
     }
 
     /// Draw every tile onto `out`.
     pub fn prepare(&self, data: &dyn Data, out: &mut Canvas) {
-        let at = self.screen.tree().at();
-        for (component, arg, placed) in self.tiles() {
-            registry::tile(component).prepare(arg, placed, at, data, out);
-        }
+        let tree = self.screen.tree();
+        super::solve::prepare(tree, &self.leaves, self.scroll(), data, out);
     }
 
     /// Where each gliding tile lands for `data`, in the tree's order.
@@ -588,6 +609,7 @@ impl Laids {
             choices: Choices::default(),
             flags,
             leaves: heapless::Vec::new(),
+            list: None,
             focus: Focus::default(),
         };
         main.solve();

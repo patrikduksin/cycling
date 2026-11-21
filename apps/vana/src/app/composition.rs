@@ -4,7 +4,8 @@
 //! device keeps in PSRAM, so a frame only reads where the tiles go.
 use super::Runtime;
 use crate::compose::builtin::{Asks, Choices, Laid, Laids, ScreenId};
-use crate::compose::input::{self, Action, Focus, Go, OnPage, Owners};
+use crate::compose::input::{self, Action, Focus, Go, ListAct, OnPage, Owners};
+use crate::compose::node::What;
 use crate::compose::{Flags, Screens};
 use crate::ride::course::nav::Sign;
 use crate::screens::ride::main_flags;
@@ -67,6 +68,7 @@ impl Runtime {
         let flags = main_flags(course, radar, workout, arrived);
         let choices = Choices {
             main_slots: self.preferences.options.main_slots,
+            editing: self.editing_number(),
         };
         let shown = self.screen_id();
         let changed = super::overrides::shown(&self.overrides);
@@ -78,15 +80,36 @@ impl Runtime {
         laids.show(shown, self.layout, changed);
     }
 
+    /// Solve the screen shown for what the rider chose, keeping what the
+    /// ride shows: a press or a touch may come before the frame that shows
+    /// a screen just opened or an editor just entered.
+    pub(super) fn compose_shown(&mut self) {
+        let choices = Choices {
+            main_slots: self.preferences.options.main_slots,
+            editing: self.editing_number(),
+        };
+        let flags = self.composition.main().flags();
+        let shown = self.screen_id();
+        let changed = super::overrides::shown(&self.overrides);
+        let laids = &mut self.composition.laids;
+        laids.update(choices, flags, changed);
+        laids.show(shown, self.layout, changed);
+    }
+
     /// A press of `role` on the built-in shown, if one is.
     pub(super) fn composed_press(&mut self, role: Role) -> Option<Pressed> {
+        // The number editor's MOVE lowers and ACT raises, holding repeats:
+        // its own owner takes them.
+        if self.editing_number() {
+            return None;
+        }
         let id = self.screen_id();
         // A press may come before the frame that shows a screen just opened.
-        let changed = super::overrides::shown(&self.overrides);
-        self.composition.laids.show(id, self.layout, changed);
+        self.compose_shown();
+        let cursor = self.list_cursor_at();
         let laid = self.composition.laids.get_mut(id)?;
         let mut focus = laid.focus();
-        let asked = input::press(role, laid.buttons(), &laid.solved(), &mut focus);
+        let asked = input::press(role, laid.buttons(), &laid.solved(), &mut focus, cursor);
         *laid.focus_mut() = focus;
         Some(match asked {
             Some(action) => Pressed::Asks(action),
@@ -98,7 +121,65 @@ impl Runtime {
     pub(super) fn composed_hit(&self, point: device_api::input::Point) -> Option<Control> {
         let laid = self.composition.laids.get(self.screen_id())?;
         let (focus, action) = input::hit(laid.buttons(), &laid.solved(), point.x, point.y)?;
-        Some(Control::Composed(action, focus))
+        // A pad steps the number while the finger rests on it, not as a tap.
+        Some(match action {
+            Action::Page(OnPage::Lower) => Control::Lower,
+            Action::Page(OnPage::Raise) => Control::Raise,
+            _ => Control::Composed(action, focus),
+        })
+    }
+
+    /// Settings shows the number editor.
+    pub(super) fn editing_number(&self) -> bool {
+        let navigation = &self.navigation;
+        navigation.page() == Page::Settings
+            && navigation.editing()
+            && navigation.setting().kind() == crate::screens::settings::Kind::Number
+    }
+
+    /// Carry out what a press or a tap on a built-in asked for: a list's
+    /// owner takes its items, which may open sensors over the radio.
+    pub(super) fn act(
+        &mut self,
+        action: Action,
+        held: bool,
+        received: u64,
+        now: u64,
+        ant: &mut impl device_api::ant::Ant,
+    ) {
+        match (action, self.page_list()) {
+            (Action::List(act), Some(list)) => self.list_input(list, act, held, now, ant),
+            _ => self.carry(action, held, received, now),
+        }
+    }
+
+    /// The page of cards built-in `id` scrolls, solved afresh when it is
+    /// not the screen shown.
+    #[inline(never)]
+    pub(super) fn composed_page(&self, id: ScreenId) -> crate::screens::scroll::Layout {
+        let laids = &self.composition.laids;
+        let page = |laid: &Laid| laid.page().copied();
+        let shown = laids.get(id).and_then(page);
+        let main = laids.main();
+        let choices = Choices {
+            editing: false,
+            ..main.choices()
+        };
+        let changed = super::overrides::shown(&self.overrides).screen(id.key());
+        shown
+            .or_else(|| page(&Laid::new(id, self.layout, choices, main.flags(), changed)?))
+            .expect("a list screen's built-in has a scroll")
+    }
+
+    /// A tap on card `index` of the built-in shown, which focuses its list.
+    pub(super) fn composed_item(&self, index: usize) -> Option<Control> {
+        let id = self.screen_id();
+        let tree = (id.builtin()?.tree)(&self.composition.main().choices());
+        let node = tree
+            .iter()
+            .position(|node| matches!(node.what(), Some(What::Scroll { .. })))?;
+        let action = Action::List(ListAct::Tap(index as u16));
+        Some(Control::Composed(action, Focus::Tile(node as u8)))
     }
 
     /// What holding MOVE does on the built-in shown, when its owner would
@@ -273,5 +354,9 @@ impl Owners for Carried<'_> {
             (Page::PastRide, OnPage::Back) => runtime.past_ride_input(Role::Back, held),
             _ => why!("compose.unowned", act),
         }
+    }
+
+    fn list(&mut self, act: ListAct) {
+        why!("compose.unowned", act);
     }
 }

@@ -8,6 +8,8 @@ use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::app::Store;
+use vana::compose::Flags;
+use vana::compose::builtin::{Choices, Laid, ScreenId};
 use vana::screens::workout::Page;
 
 const KINDS: [&str; 4] = ["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"];
@@ -564,6 +566,33 @@ fn with_rides(model: Model) -> Twin {
     twin
 }
 
+/// The number editor's plus pad on `model`'s panel.
+fn raise_pad(model: Model) -> vana::screens::chrome::Rect {
+    let choices = Choices {
+        editing: true,
+        ..Choices::default()
+    };
+    let laid =
+        Laid::new(ScreenId::Settings, model.layout, choices, Flags::NONE, None).expect("Settings");
+    let nodes = laid.screen().tree().nodes();
+    let pads = laid.leaves().iter().filter(|placed| {
+        let what = nodes[usize::from(placed.node)].what();
+        what == Some(vana::compose::node::What::Leaf {
+            component: vana::compose::registry::PAD,
+            arg: 1,
+        })
+    });
+    pads.map(|placed| placed.rect.rect())
+        .next()
+        .expect("the plus pad")
+}
+
+/// The page of cards built-in `id` scrolls on `model`'s panel.
+fn composed_list(model: Model, id: ScreenId) -> vana::screens::scroll::Layout {
+    let laid = Laid::new(id, model.layout, Choices::default(), Flags::NONE, None);
+    *laid.expect("a built-in").page().expect("a list screen")
+}
+
 fn card_middle(list: &vana::screens::scroll::Layout, index: usize) -> u16 {
     let (top, bottom) = list.span(index);
     (list.top as i32 + (top + bottom) / 2) as u16
@@ -580,7 +609,7 @@ fn the_rides_list_draws_and_scrolls_on_both_test_panels() {
         });
         shows(
             &twin.sim,
-            &["RIDES", "NO RIDES YET", "SAVED RIDES SHOW HERE"],
+            &["THIS WEEK", "NO RIDES YET", "SAVED RIDES SHOW HERE"],
         );
         twin.sim.checkpoint(&format!("no rides on {name}"));
 
@@ -593,7 +622,7 @@ fn the_rides_list_draws_and_scrolls_on_both_test_panels() {
         assert_eq!(twin.sim.device.sdk.page(), Page::History);
         shows(&twin.sim, &["THIS WEEK", "RIDES", "KM", "LAST WEEK"]);
         twin.sim.checkpoint(&format!("rides on {name}"));
-        let list = &model.layout.history.list;
+        let list = &composed_list(model, ScreenId::History);
         let header = twin.sim.screen().run("THIS WEEK").expect("the header").y;
 
         twin.guide(|sim| {
@@ -603,8 +632,8 @@ fn the_rides_list_draws_and_scrolls_on_both_test_panels() {
             sim.wait_for("8/8", seconds(2)).unwrap();
             sim.advance(seconds(2));
         });
-        assert!(!twin.sim.screen().contains("THIS WEEK"), "{name} scrolled");
-        shows(&twin.sim, &["RIDES"]);
+        // The week stays over the rides as they scroll.
+        shows(&twin.sim, &["THIS WEEK"]);
         twin.sim.checkpoint(&format!("rides scrolled on {name}"));
 
         twin.guide(|sim| {
@@ -617,7 +646,7 @@ fn the_rides_list_draws_and_scrolls_on_both_test_panels() {
         twin.sim.drag((x, low), (x, low - 60), 300, 200);
         twin.sim.advance(seconds(2));
         let moved = twin.sim.screen().run("THIS WEEK").map(|run| run.y);
-        assert!(moved.is_none_or(|y| y < header), "{name}: {moved:?}");
+        assert_eq!(moved, Some(header), "{name}: the week stays put");
 
         twin.sim.drag((x, low - 60), (x, low), 300, 200);
         twin.sim.advance(seconds(2));
@@ -649,7 +678,7 @@ fn settings_draw_scroll_and_edit_on_both_test_panels() {
         });
         shows(&twin.sim, &["PROFILE", "FTP WATTS", "215"]);
         twin.sim.checkpoint(&format!("number editor on {name}"));
-        let raise = model.layout.settings.editor.raise;
+        let raise = raise_pad(model);
         let middle = (raise.top + raise.height() / 2) as u16;
         twin.sim.tap(raise.center_x() as u16, middle);
         twin.sim.advance(seconds(1));

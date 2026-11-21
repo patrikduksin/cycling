@@ -69,12 +69,6 @@ pub enum Control {
     ReadySensors,
     /// The phone code, or anywhere once a session ended.
     Phone,
-    /// A saved ride's card.
-    Ride(usize),
-    /// A workout's card.
-    Workout(usize),
-    /// A Settings row, by cursor position.
-    Setting(usize),
     /// The number editor's minus and plus pads, which act on contact.
     Lower,
     Raise,
@@ -466,7 +460,10 @@ mod tests {
     use TouchEvent::{Activated, Hold, Pressed, Released};
 
     const A: Owner = Owner(1);
-    const CARD: Control = Control::Ride(3);
+    const CARD: Control = Control::Composed(
+        crate::compose::input::Action::List(crate::compose::input::ListAct::Tap(3)),
+        crate::compose::input::Focus::Tile(6),
+    );
     /// The workout page's time left, which extends the step.
     const EXTEND: Control = Control::Composed(
         crate::compose::input::Action::ExtendStep,

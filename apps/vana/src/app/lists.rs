@@ -7,11 +7,14 @@
 //! back (`scroll::Layout::next` and `act`).
 use super::Runtime;
 use super::navigation::To;
+use crate::compose::builtin::ScreenId;
+use crate::compose::input::{Cursor, ListAct};
 use crate::screens::kinetic::Kinetic;
 use crate::screens::scroll::{Layout, Press};
 use crate::screens::settings::Kind;
 use crate::screens::touch::{List, Pan};
 use crate::screens::workout::Page;
+use device_api::ant::Ant;
 
 impl Runtime {
     /// The list the page shows, if any.
@@ -29,11 +32,50 @@ impl Runtime {
         }
     }
 
-    pub(super) fn list_layout(&self, list: List) -> &'static Layout {
+    /// The page of cards the list's built-in scrolls.
+    pub(super) fn list_layout(&self, list: List) -> Layout {
         match list {
-            List::Rides => &self.layout.history.list,
-            List::Workouts => &self.layout.workouts.list,
-            List::Settings => &self.layout.settings.list,
+            List::Rides => self.composed_page(ScreenId::History),
+            List::Workouts => self.composed_page(ScreenId::Workouts),
+            List::Settings => self.composed_page(ScreenId::Settings),
+        }
+    }
+
+    /// What the list's owner does with a press or a tap on its items.
+    pub(super) fn list_input(
+        &mut self,
+        list: List,
+        act: ListAct,
+        held: bool,
+        now: u64,
+        ant: &mut impl Ant,
+    ) {
+        match act {
+            // Held, MOVE pages by the cards a list shows at rest.
+            ListAct::Step => match list {
+                List::Rides => self.list_move(list, crate::screens::history::SHOWN, held, now),
+                List::Workouts => {
+                    self.list_move(list, crate::screens::workouts::VISIBLE, held, now)
+                }
+                List::Settings => self.settings_move(now),
+            },
+            ListAct::Enter => self.list_enter(list, now),
+            ListAct::Act if self.list_act(list, now) => {
+                self.list_chosen(list, self.list_cursor(list), now, ant);
+            }
+            ListAct::Act => {}
+            ListAct::Tap(index) => self.list_chosen(list, usize::from(index), now, ant),
+        }
+    }
+
+    fn list_chosen(&mut self, list: List, index: usize, now: u64, ant: &mut impl Ant) {
+        match list {
+            List::Workouts => self.choose_workout(index),
+            List::Rides => self.open_past_ride(index),
+            List::Settings => {
+                self.set_list_cursor(List::Settings, index);
+                self.act_on_setting(now, ant);
+            }
         }
     }
 
@@ -152,6 +194,39 @@ impl Runtime {
                 self.kinetic_mut(list).reveal(offset as f32, now);
             }
         }
+    }
+
+    /// Where the list shown keeps its focus, for MOVE to step it or leave
+    /// it: on its last item once that shows whole. A screen without a list
+    /// has none to step.
+    pub(super) fn list_cursor_at(&self) -> Cursor {
+        let Some(list) = self.page_list() else {
+            return Cursor::Last;
+        };
+        let (count, cursor) = (self.list_count(list), self.list_cursor(list));
+        let last = match list {
+            List::Settings => {
+                let navigation = &self.navigation;
+                navigation.settings_field() + 1 == navigation.sections().fields()
+            }
+            List::Rides | List::Workouts => cursor + 1 >= count,
+        };
+        let layout = self.list_layout(list);
+        if count == 0 || (last && layout.whole(cursor, self.list_rest(list))) {
+            Cursor::Last
+        } else {
+            Cursor::Within
+        }
+    }
+
+    /// The ring came to the list: its first item takes the focus and the
+    /// list shows from its top.
+    fn list_enter(&mut self, list: List, now: u64) {
+        match list {
+            List::Settings => self.navigation.go(To::Field(0)),
+            List::Rides | List::Workouts => self.set_list_cursor(list, 0),
+        }
+        self.kinetic_mut(list).reveal(0.0, now);
     }
 
     /// ACT on a list: true when the focused card shows whole, for the caller

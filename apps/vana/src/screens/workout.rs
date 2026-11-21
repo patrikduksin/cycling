@@ -163,6 +163,8 @@ pub(super) enum Extra<'a> {
     Ready(Readiness),
     /// The workout picker's rows.
     Workouts(super::workouts::Picker),
+    /// The saved rides in view and the week.
+    History(super::history::Rides),
     /// The rider's personal bests, for the BESTS page.
     Bests {
         bests: Bests,
@@ -215,6 +217,7 @@ impl<'a> Extra<'a> {
         setup_step -> super::setup::Step = Self::Setup { step, .. } => *step;
         readiness -> &Readiness = Self::Ready(readiness) => readiness;
         picker -> &super::workouts::Picker = Self::Workouts(picker) => picker;
+        rides -> &super::history::Rides = Self::History(rides) => rides;
         bests -> &Bests = Self::Bests { bests, .. } => bests;
         bests_mode -> super::bests::Mode = Self::Bests { mode, .. } => *mode;
         form -> super::form::Mode = Self::Form(mode) => *mode;
@@ -227,7 +230,7 @@ impl<'a> Extra<'a> {
 #[derive(Hash)]
 pub struct Scene<'v> {
     layout: &'static Layout,
-    kind: Kind,
+    kind: Kind<'v>,
     look: Look,
     pub(super) bar: Option<&'v StatusBar>,
     /// The rows the main page's tree gives its status bar.
@@ -242,7 +245,7 @@ pub struct Scene<'v> {
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
-enum Kind {
+enum Kind<'v> {
     PageUnderBar,
     Scrolled,
     Home,
@@ -252,7 +255,7 @@ enum Kind {
         elevation: bool,
     },
     List {
-        layout: &'static super::scroll::Layout,
+        layout: &'v super::scroll::Layout,
         scroll: i32,
     },
 }
@@ -304,6 +307,7 @@ impl Extra<'_> {
             Self::Setup { step: _, lines: _ } => Painted::Setup,
             Self::Ready(_) => Painted::Ready,
             Self::Workouts(_) => Painted::Workouts,
+            Self::History(_) => Painted::None,
             Self::Bests { bests: _, mode: _ } => Painted::Bests,
             Self::Form(_) => Painted::Form,
             Self::Summary {
@@ -317,7 +321,7 @@ impl Extra<'_> {
 
 #[derive(Hash)]
 struct WholePage<'v> {
-    kind: Kind,
+    kind: Kind<'v>,
     look: Look,
     radar: bool,
     cues: &'v [Cue],
@@ -712,7 +716,7 @@ impl Scene<'_> {
         }
         let rows = Rect {
             top: list.stretched_top(),
-            bottom: usize::MAX,
+            bottom: list.stretched_bottom(),
             ..panel
         };
         regions.push(("page", rows));
@@ -815,6 +819,7 @@ static NO_CHART: ride::WorkoutChart = ride::WorkoutChart::EMPTY;
 static NO_LINES: Lines = [const { Text::new() }; 9];
 static NO_READINESS: Readiness = Readiness::EMPTY;
 static NO_PICKER: super::workouts::Picker = super::workouts::Picker::EMPTY;
+static NO_RIDES: super::history::Rides = super::history::Rides::EMPTY;
 static NO_TITLE: Text<20> = Text::new();
 static NO_BESTS: Bests = Bests::EMPTY;
 static NO_AFTER: After = After::EMPTY;
@@ -978,14 +983,15 @@ impl<'a> View<'a> {
     /// Solve the built-ins for `slots` and what this view shows.
     #[cfg(test)]
     pub(crate) fn compose(&mut self, slots: ride::slots::Slots) {
-        let choices = crate::compose::builtin::Choices { main_slots: slots };
+        use crate::compose::builtin::{Choices, Laids};
+        let editing =
+            self.editing && self.sections.row(self.cursor).kind() == super::settings::Kind::Number;
+        let choices = Choices {
+            main_slots: slots,
+            editing,
+        };
         let built_in = crate::compose::Screens::EMPTY;
-        let mut laids = crate::compose::builtin::Laids::new(
-            self.layout,
-            choices,
-            ride::main_flags_of(self),
-            &built_in,
-        );
+        let mut laids = Laids::new(self.layout, choices, ride::main_flags_of(self), &built_in);
         laids.show(self.screen_id(), self.layout, &built_in);
         self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
     }
@@ -1067,7 +1073,11 @@ impl<'a> View<'a> {
         self.shown(self.extra.readiness(), "readiness", &NO_READINESS)
     }
 
-    pub(super) fn picker(&self) -> &super::workouts::Picker {
+    pub(crate) fn rides(&self) -> &super::history::Rides {
+        self.shown(self.extra.rides(), "rides", &NO_RIDES)
+    }
+
+    pub(crate) fn picker(&self) -> &super::workouts::Picker {
         self.shown(self.extra.picker(), "picker", &NO_PICKER)
     }
 
@@ -1190,6 +1200,11 @@ impl<'a> View<'a> {
     }
 
     #[inline(never)]
+    pub fn show_rides(&mut self, rides: super::history::Rides) {
+        self.extra = Extra::History(rides);
+    }
+
+    #[inline(never)]
     pub fn show_picker(&mut self, picker: super::workouts::Picker) {
         self.extra = Extra::Workouts(picker);
     }
@@ -1241,16 +1256,17 @@ impl<'a> View<'a> {
     }
 
     /// The scrolling list this page shows, if any.
-    pub fn layout(&self) -> Option<&'static super::scroll::Layout> {
+    pub fn layout(&self) -> Option<&'a super::scroll::Layout> {
         match self.page {
-            Page::History => Some(&self.layout.history.list),
-            Page::Workouts if self.ftp_offer.is_none() => Some(&self.layout.workouts.list),
-            Page::Settings
-                if !(self.editing
-                    && self.sections.row(self.cursor).kind() == super::settings::Kind::Number) =>
-            {
-                Some(&self.layout.settings.list)
-            }
+            Page::History => self
+                .composed()
+                .and_then(crate::compose::builtin::Laid::page),
+            Page::Workouts if self.ftp_offer.is_none() => self
+                .composed()
+                .and_then(crate::compose::builtin::Laid::page),
+            Page::Settings => self
+                .composed()
+                .and_then(crate::compose::builtin::Laid::page),
             _ => None,
         }
     }
@@ -1327,7 +1343,7 @@ impl<'a> View<'a> {
         canvas
     }
 
-    fn canvas_kind(&self) -> Kind {
+    fn canvas_kind(&self) -> Kind<'a> {
         if self.page == Page::Sensors && !self.full_screen() {
             Kind::Scrolled
         } else {
@@ -1359,7 +1375,7 @@ impl<'a> View<'a> {
 
     /// The built-in shown, once the composition lent its screens and the
     /// screen has a tree.
-    fn composed(&self) -> Option<&'a crate::compose::builtin::Laid> {
+    pub(crate) fn composed(&self) -> Option<&'a crate::compose::builtin::Laid> {
         self.laids?.get(self.screen_id())
     }
 
@@ -1404,6 +1420,10 @@ impl<'a> View<'a> {
             self.bar.set_pages(after.page, summary::total_pages(&after));
             self.marks = ride::marks(self);
         }
+        if self.page == Page::Settings {
+            let (section, _) = self.sections.section(self.cursor);
+            self.bar.set_pages(section, self.sections.count());
+        }
         fill(self, |view| {
             let mut canvas = Canvas::default();
             laid.prepare(view, &mut canvas);
@@ -1442,12 +1462,6 @@ impl<'a> View<'a> {
                 fill(self, |view| view.boot_canvas());
                 &[]
             }
-            Page::Settings => {
-                fill(self, super::settings::prepare);
-                let (section, _) = self.sections.section(self.cursor);
-                self.bar.set_pages(section, self.sections.count());
-                &[]
-            }
             Page::Ready => {
                 fill(self, |view| {
                     super::ready::prepare(view.layout, view.readiness())
@@ -1469,12 +1483,6 @@ impl<'a> View<'a> {
                 fill(self, super::phone::prepare);
                 &[]
             }
-            Page::Workouts => {
-                fill(self, super::workouts::prepare);
-                &[]
-            }
-            // The runtime prepares the list with `set_canvas`.
-            Page::History => &[],
             // Drawn from their trees.
             Page::Summary | Page::PastRide => &[],
             Page::Ride => {
@@ -1489,7 +1497,14 @@ impl<'a> View<'a> {
             // The menu's cues arrive with `show_sensors`.
             Page::Sensors => &[],
             // On the engine: `composed` drew them.
-            Page::Format | Page::LoseRides | Page::DiscardRide | Page::Bests | Page::Form => &[],
+            Page::Format
+            | Page::LoseRides
+            | Page::DiscardRide
+            | Page::Bests
+            | Page::Form
+            | Page::Settings
+            | Page::Workouts
+            | Page::History => &[],
             Page::Home => &[],
             Page::EndRide => &[],
         }
@@ -2185,6 +2200,11 @@ mod tests {
             let mut view = View::new(page, 1, None);
             view.editing = editing;
             view.light = light;
+            // Settings' rows are those its composed list shows; the other
+            // pages compose once they hold what they show.
+            if page == Page::Settings {
+                view.compose_main();
+            }
             let lines = match page {
                 Page::Settings => Some(view.show_settings().as_mut_slice()),
                 Page::Phone => Some(view.show_phone().1.as_mut_slice()),

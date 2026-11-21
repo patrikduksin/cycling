@@ -5,6 +5,7 @@ use super::ride_control::RideMessage;
 use super::view::{Presented, Shows};
 use crate::clock::Zone;
 use crate::compose::builtin::ScreenId;
+use crate::compose::input::{Action, ListAct};
 use crate::compose::registry::WORKOUT_CHART;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::current::Request;
@@ -323,7 +324,9 @@ impl Runtime {
         let picker_offset = self.list_offset(List::Workouts, now);
         let picker = (self.navigation.page() == Page::Workouts).then(|| {
             let pressed = match self.navigation.touches().pressed() {
-                Some(Control::Workout(index)) => Some(index),
+                Some(Control::Composed(Action::List(ListAct::Tap(index)), _)) => {
+                    Some(usize::from(index))
+                }
                 _ => None,
             };
             self.picker(self.list_offset(List::Workouts, now), pressed)
@@ -438,11 +441,13 @@ impl Runtime {
             Page::History => {
                 let offset = self.list_offset(List::Rides, now);
                 let pressed = match self.navigation.touches().pressed() {
-                    Some(Control::Ride(index)) => Some(index),
+                    Some(Control::Composed(Action::List(ListAct::Tap(index)), _)) => {
+                        Some(usize::from(index))
+                    }
                     _ => None,
                 };
                 view.scroll = offset;
-                view.set_canvas(self.history_canvas(offset, pressed));
+                view.show_rides(self.history_rides(offset, pressed));
             }
             Page::Format => view.format = self.format.shows(),
             Page::LoseRides => view.unsaved = self.sync.count() as u8,
@@ -465,9 +470,8 @@ impl Runtime {
             Page::Settings => {
                 view.scroll = self.list_offset(List::Settings, now);
                 self.settings_lines(&mut view);
-                let first = view.sections.rows(view.cursor).1;
                 view.press_setting(match self.navigation.touches().pressed() {
-                    Some(Control::Setting(field)) => Some((field - first) as u16),
+                    Some(Control::Composed(Action::List(ListAct::Tap(index)), _)) => Some(index),
                     _ => None,
                 });
             }

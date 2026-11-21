@@ -26,6 +26,22 @@ pub enum Action {
     /// Stop following the course.
     CourseOff,
     Page(OnPage),
+    /// What the buttons or a finger do to the list shown, which its owner
+    /// carries out on the item it keeps focused.
+    List(ListAct),
+}
+
+/// A press or a tap on a list's items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListAct {
+    /// MOVE: focus the next item, wrapping, and show it.
+    Step,
+    /// MOVE brought the ring to the list: focus its first item and show it.
+    Enter,
+    /// ACT: act on the focused item, once it shows whole.
+    Act,
+    /// A tap: focus this item and act on it.
+    Tap(u16),
 }
 
 /// Where navigation goes.
@@ -70,6 +86,7 @@ pub trait Owners {
     fn extend_step(&mut self);
     fn course_off(&mut self);
     fn page(&mut self, act: OnPage);
+    fn list(&mut self, act: ListAct);
 }
 
 /// Hand `action` to the owner that carries it out.
@@ -80,6 +97,7 @@ pub fn apply(action: Action, owners: &mut impl Owners) {
         Action::ExtendStep => owners.extend_step(),
         Action::CourseOff => owners.course_off(),
         Action::Page(act) => owners.page(act),
+        Action::List(act) => owners.list(act),
     }
 }
 
@@ -228,22 +246,59 @@ pub enum Focus {
 pub enum Stop<'s> {
     Screen(Button),
     Tile(&'s Placed),
+    /// A scroll's items, kept by the scroll's node: which item has the
+    /// focus is the list owner's, by the item's key.
+    List(u8),
 }
 
-/// The tiles focus visits, in preorder, leaving out a scroll's item
-/// template, whose tiles stand for every item rather than one.
-fn stops<'s>(solved: &'s Solved<'_>) -> impl Iterator<Item = &'s Placed> {
-    let template = solved.scroll().map_or(&[][..], |(_, tiles)| tiles);
-    solved
-        .focus_order()
-        .filter(move |placed| !template.iter().any(|tile| tile.node == placed.node))
+/// A stop of the ring after the screen's own: a tile or a list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spot<'s> {
+    Tile(&'s Placed),
+    List(u8),
 }
 
-/// The focused tile: the one `from` names or, once that tile is gone, the
-/// next after it, wrapping.
-fn tile_from<'s>(solved: &'s Solved<'_>, from: u8) -> Option<&'s Placed> {
+impl<'s> Spot<'s> {
+    const fn node(self) -> u8 {
+        match self {
+            Self::Tile(placed) => placed.node,
+            Self::List(node) => node,
+        }
+    }
+
+    const fn stop(self) -> Stop<'s> {
+        match self {
+            Self::Tile(placed) => Stop::Tile(placed),
+            Self::List(node) => Stop::List(node),
+        }
+    }
+}
+
+/// The stops focus visits after the screen's: the tiles that act, in
+/// preorder, with a scroll's items at the scroll's place. A template's tiles
+/// stand for every item rather than one, so none is a stop itself.
+fn stops<'s>(solved: &'s Solved<'_>) -> impl Iterator<Item = Spot<'s>> {
+    let (list, template) = solved.scroll().map_or((None, &[][..]), |(scroll, tiles)| {
+        (Some(scroll.node), tiles)
+    });
+    let tiles = move || {
+        solved
+            .focus_order()
+            .filter(move |placed| !template.iter().any(|tile| tile.node == placed.node))
+    };
+    let before = tiles().filter(move |placed| list.is_none_or(|list| placed.node < list));
+    let after = tiles().filter(move |placed| list.is_some_and(|list| placed.node > list));
+    before
+        .map(Spot::Tile)
+        .chain(list.map(Spot::List))
+        .chain(after.map(Spot::Tile))
+}
+
+/// The focused stop: the one `from` names or, once that is gone, the next
+/// after it, wrapping.
+fn tile_from<'s>(solved: &'s Solved<'_>, from: u8) -> Option<Spot<'s>> {
     stops(solved)
-        .find(|placed| placed.node >= from)
+        .find(|spot| spot.node() >= from)
         .or_else(|| stops(solved).next())
 }
 
@@ -255,8 +310,8 @@ pub fn focused<'s>(buttons: &Buttons, solved: &'s Solved<'_>, focus: Focus) -> O
     }
     match (focus, buttons.act) {
         (Focus::Screen, Some(act)) => Some(Stop::Screen(act)),
-        (Focus::Screen, None) => tile_from(solved, 0).map(Stop::Tile),
-        (Focus::Tile(node), _) => tile_from(solved, node).map(Stop::Tile),
+        (Focus::Screen, None) => tile_from(solved, 0).map(Spot::stop),
+        (Focus::Tile(node), _) => tile_from(solved, node).map(Spot::stop),
     }
 }
 
@@ -270,35 +325,67 @@ fn after_action(buttons: &Buttons, node: u8) -> Focus {
     }
 }
 
+/// Where the list shown keeps its own focus, which its owner knows: MOVE
+/// steps the items within it and leaves the list from its last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    Within,
+    Last,
+}
+
 /// What a press of `role` asks for. A MOVE the screen leaves free steps
-/// `focus`; ACT on a tile leaves it where it rests after an action.
+/// `focus`, through a list's items (`cursor` says where the list's focus
+/// rests) and on past its last; ACT on a tile leaves focus where it rests
+/// after an action.
 pub fn press(
     role: Role,
     buttons: &Buttons,
     solved: &Solved<'_>,
     focus: &mut Focus,
+    cursor: Cursor,
 ) -> Option<Action> {
     match role {
         Role::Back => buttons.back.map(|button| button.action),
         Role::Move if buttons.move_.is_some() => buttons.move_.map(|button| button.action),
         Role::Move => {
-            *focus = match focused(buttons, solved, *focus)? {
-                Stop::Screen(_) => Focus::Tile(stops(solved).next()?.node),
-                Stop::Tile(current) => {
-                    match stops(solved).find(|placed| placed.node > current.node) {
-                        Some(next) => Focus::Tile(next.node),
-                        None if buttons.act.is_some() => Focus::Screen,
-                        None => Focus::Tile(stops(solved).next()?.node),
-                    }
+            let current = match focused(buttons, solved, *focus)? {
+                Stop::Screen(_) => None,
+                Stop::List(node) if cursor == Cursor::Within => {
+                    *focus = Focus::Tile(node);
+                    return Some(Action::List(ListAct::Step));
                 }
+                Stop::List(node) => Some(node),
+                Stop::Tile(current) => Some(current.node),
             };
-            None
+            let next = match current {
+                None => stops(solved).next(),
+                Some(current) => stops(solved).find(|spot| spot.node() > current),
+            };
+            let next = match next {
+                Some(next) => next,
+                None if buttons.act.is_some() => {
+                    *focus = Focus::Screen;
+                    return None;
+                }
+                None => stops(solved).next()?,
+            };
+            *focus = Focus::Tile(next.node());
+            match next {
+                Spot::Tile(_) => None,
+                // The list alone in the ring wraps its own items.
+                Spot::List(node) if current == Some(node) => Some(Action::List(ListAct::Step)),
+                Spot::List(_) => Some(Action::List(ListAct::Enter)),
+            }
         }
         Role::Act => match focused(buttons, solved, *focus)? {
             Stop::Screen(act) => Some(act.action),
             Stop::Tile(placed) => {
                 *focus = after_action(buttons, placed.node);
                 solved.action(placed)
+            }
+            Stop::List(node) => {
+                *focus = after_action(buttons, node);
+                Some(Action::List(ListAct::Act))
             }
         },
     }
@@ -307,9 +394,13 @@ pub fn press(
 /// The stop under a finger at (`x`, `y`): what a tap on it asks for, and
 /// where focus rests after.
 pub fn hit(buttons: &Buttons, solved: &Solved<'_>, x: u16, y: u16) -> Option<(Focus, Action)> {
-    let placed = stops(solved).find(|placed| {
-        let rect = placed.rect;
-        (rect.left..rect.right).contains(&x) && (rect.top..rect.bottom).contains(&y)
+    let placed = stops(solved).find_map(|spot| match spot {
+        Spot::Tile(placed) => {
+            let rect = placed.rect;
+            ((rect.left..rect.right).contains(&x) && (rect.top..rect.bottom).contains(&y))
+                .then_some(placed)
+        }
+        Spot::List(_) => None,
     })?;
     Some((after_action(buttons, placed.node), solved.action(placed)?))
 }
@@ -403,8 +494,11 @@ pub(super) mod tests {
         (0..count)
             .map(|_| {
                 let mut probe = focus;
-                let acted = press(Role::Act, buttons, solved, &mut probe);
-                assert_eq!(press(Role::Move, buttons, solved, &mut focus), None);
+                let acted = press(Role::Act, buttons, solved, &mut probe, Cursor::Within);
+                assert_eq!(
+                    press(Role::Move, buttons, solved, &mut focus, Cursor::Within),
+                    None
+                );
                 acted
             })
             .collect()
@@ -478,14 +572,29 @@ pub(super) mod tests {
         let solved = solved(&screen);
         let mut focus = Focus::default();
         assert_eq!(focus, Focus::Screen, "a screen opens on its first stop");
-        press(Role::Move, &ACT, &solved, &mut focus);
-        press(Role::Move, &ACT, &solved, &mut focus);
-        assert_eq!(press(Role::Act, &ACT, &solved, &mut focus), item(2));
+        press(Role::Move, &ACT, &solved, &mut focus, Cursor::Within);
+        press(Role::Move, &ACT, &solved, &mut focus, Cursor::Within);
+        assert_eq!(
+            press(Role::Act, &ACT, &solved, &mut focus, Cursor::Within),
+            item(2)
+        );
         assert_eq!(focus, Focus::Screen);
         let mut free = Focus::default();
-        press(Role::Move, &Buttons::FREE, &solved, &mut free);
+        press(
+            Role::Move,
+            &Buttons::FREE,
+            &solved,
+            &mut free,
+            Cursor::Within,
+        );
         assert_eq!(
-            press(Role::Act, &Buttons::FREE, &solved, &mut free),
+            press(
+                Role::Act,
+                &Buttons::FREE,
+                &solved,
+                &mut free,
+                Cursor::Within
+            ),
             item(2)
         );
         assert_eq!(free, Focus::Tile(4), "without a screen stop focus stays");
@@ -498,11 +607,11 @@ pub(super) mod tests {
         let mut focus = Focus::default();
         for _ in 0..5 {
             assert_eq!(
-                press(Role::Move, &DECK, &solved, &mut focus),
+                press(Role::Move, &DECK, &solved, &mut focus, Cursor::Within),
                 Some(NEXT.action)
             );
             assert_eq!(
-                press(Role::Act, &DECK, &solved, &mut focus),
+                press(Role::Act, &DECK, &solved, &mut focus, Cursor::Within),
                 Some(START.action)
             );
         }
@@ -511,7 +620,10 @@ pub(super) mod tests {
             move_: Some(NEXT),
             ..Buttons::FREE
         };
-        assert_eq!(press(Role::Act, &paging, &solved, &mut focus), None);
+        assert_eq!(
+            press(Role::Act, &paging, &solved, &mut focus, Cursor::Within),
+            None
+        );
         assert_eq!(focused(&paging, &solved, focus), None);
     }
 
@@ -525,10 +637,19 @@ pub(super) mod tests {
         };
         let mut focus = Focus::Tile(4);
         assert_eq!(
-            press(Role::Back, &back, &solved, &mut focus),
+            press(Role::Back, &back, &solved, &mut focus, Cursor::Within),
             Some(HOME.action)
         );
-        assert_eq!(press(Role::Back, &Buttons::FREE, &solved, &mut focus), None);
+        assert_eq!(
+            press(
+                Role::Back,
+                &Buttons::FREE,
+                &solved,
+                &mut focus,
+                Cursor::Within
+            ),
+            None
+        );
         assert_eq!(focus, Focus::Tile(4));
     }
 
@@ -540,13 +661,19 @@ pub(super) mod tests {
         let solved = solved(&screen);
         let mut focus = Focus::default();
         for role in [Role::Act, Role::Back, Role::Move] {
-            assert_eq!(press(role, &Buttons::FREE, &solved, &mut focus), None);
+            assert_eq!(
+                press(role, &Buttons::FREE, &solved, &mut focus, Cursor::Within),
+                None
+            );
         }
         assert_eq!(
-            press(Role::Act, &ACT, &solved, &mut focus),
+            press(Role::Act, &ACT, &solved, &mut focus, Cursor::Within),
             Some(START.action)
         );
-        assert_eq!(press(Role::Move, &ACT, &solved, &mut focus), None);
+        assert_eq!(
+            press(Role::Move, &ACT, &solved, &mut focus, Cursor::Within),
+            None
+        );
         assert_eq!(focus, Focus::Screen, "the ring holds only the screen stop");
         assert_eq!(hit(&ACT, &solved, 10, 10), None);
     }
@@ -554,10 +681,11 @@ pub(super) mod tests {
     #[test]
     fn a_list_item_that_acts_is_refused_unless_a_button_does_what_it_does() {
         let nodes = [
-            Node::col(2, Size::grow(1)),
-            Node::scroll(crate::compose::data::ListKind::Rides, Size::grow(1)),
+            Node::col(3, Size::grow(1)),
             tap(1),
-            tap(2),
+            Node::scroll(crate::compose::data::ListKind::Rides, Size::grow(1)),
+            Node::leaf(TAP, 2, Size::units(60)),
+            tap(3),
         ];
         let bytes: Vec<u8> = nodes.iter().flat_map(|node| node.bytes()).collect();
         let accept = |buttons| {
@@ -567,12 +695,12 @@ pub(super) mod tests {
         for buttons in [Buttons::FREE, ACT] {
             assert_eq!(
                 accept(buttons).err().map(|reject| reject.to_string()),
-                Some("screen 0: node 2 is a list item that acts where no button reaches".into())
+                Some("screen 0: node 3 is a list item that acts where no button reaches".into())
             );
         }
         let opening = Buttons {
             act: Some(Button {
-                action: Action::Page(OnPage::Item(1)),
+                action: Action::Page(OnPage::Item(2)),
                 cue: None,
             }),
             ..Buttons::FREE
@@ -582,7 +710,27 @@ pub(super) mod tests {
         let (_, template) = solved.scroll().unwrap();
         let rect = template[0].rect;
         assert_eq!(hit(&opening, &solved, rect.left, rect.top), None);
-        assert_eq!(ring(&opening, &solved, 3), [item(1), item(2), item(1)]);
+        // The list is one stop at the scroll's place, whose owner steps and
+        // acts on its items.
+        let mut focus = Focus::default();
+        assert_eq!(
+            press(Role::Act, &opening, &solved, &mut focus, Cursor::Within),
+            item(2)
+        );
+        assert_eq!(
+            press(Role::Move, &opening, &solved, &mut focus, Cursor::Within),
+            None
+        );
+        assert_eq!(
+            press(Role::Move, &opening, &solved, &mut focus, Cursor::Within),
+            Some(Action::List(ListAct::Enter))
+        );
+        assert_eq!(focus, Focus::Tile(2));
+        let step = press(Role::Move, &opening, &solved, &mut focus, Cursor::Within);
+        assert_eq!(step, Some(Action::List(ListAct::Step)));
+        let act = press(Role::Act, &opening, &solved, &mut focus, Cursor::Within);
+        assert_eq!(act, Some(Action::List(ListAct::Act)));
+        assert_eq!(focus, Focus::Screen, "back on the screen stop after acting");
     }
 
     #[test]
@@ -606,7 +754,13 @@ pub(super) mod tests {
                 let found = hit(&Buttons::FREE, &solved, x, y);
                 assert_eq!(found.map(|(_, action)| action), under.and_then(|it| it.1));
                 if let Some((mut focus, action)) = found {
-                    let acted = press(Role::Act, &Buttons::FREE, &solved, &mut focus);
+                    let acted = press(
+                        Role::Act,
+                        &Buttons::FREE,
+                        &solved,
+                        &mut focus,
+                        Cursor::Within,
+                    );
                     assert_eq!(acted, Some(action), "a tap focuses its tile");
                     let (focus, _) = hit(&ACT, &solved, x, y).unwrap();
                     assert_eq!(focus, Focus::Screen, "then the screen stop");
@@ -739,6 +893,10 @@ pub(super) mod tests {
 
         fn page(&mut self, act: OnPage) {
             self.0.push(("page", Action::Page(act)));
+        }
+
+        fn list(&mut self, act: ListAct) {
+            self.0.push(("list", Action::List(act)));
         }
     }
 

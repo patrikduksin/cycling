@@ -30,7 +30,7 @@ use crate::screens::kinetic::Kinetic;
 use crate::screens::ride::{Deck, RidePage, Training as Shown, summary};
 use crate::screens::touch::List;
 use crate::screens::workout::{Page, Text};
-use crate::screens::workouts::{Choice, Picker, VISIBLE};
+use crate::screens::workouts::{Choice, Picker};
 use crate::workout::ftp::{Candidates, Question, Source};
 use crate::workout::history;
 use crate::workout::library::{Id, Library, LoadError, Outline};
@@ -38,7 +38,6 @@ use crate::workout::model::{Length, Name, Played};
 use crate::workout::player::{Event, Events, Player, Summary};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
-use device_api::input::Role;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beep {
@@ -252,7 +251,7 @@ impl Runtime {
             .and_then(|id| training.library.ids().position(|other| other == id))
             .map_or(0, |index| index + 1);
         let mut picker = Picker::new(
-            &self.layout.workouts.list,
+            &self.list_layout(List::Workouts),
             training.rows(),
             training.picker_cursor,
             chosen,
@@ -279,17 +278,6 @@ impl Runtime {
     /// MOVE focuses the next card (held, the next page of cards; past the
     /// last it wraps to the first), ACT chooses it for Ready, BACK goes Home.
     /// Either press first brings a focus that scrolled away back into view.
-    pub(super) fn workouts_input(&mut self, button: Role, now: u64, held: bool) {
-        match button {
-            Role::Move => self.list_move(List::Workouts, VISIBLE, held, now),
-            Role::Act if self.list_act(List::Workouts, now) => {
-                self.choose_workout(self.training.picker_cursor)
-            }
-            Role::Back => self.navigation.go(To::Page(Page::Home)),
-            _ => {}
-        }
-    }
-
     /// Choose picker row `row`: Ready names it, and the next ride plays it.
     pub(super) fn choose_workout(&mut self, row: usize) {
         let Some(id) = self.training.row(row) else {

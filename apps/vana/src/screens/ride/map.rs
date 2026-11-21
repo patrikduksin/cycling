@@ -644,7 +644,7 @@ fn draw_roads(frame: &mut Frame, at: &Projection, drawn: &Rect, centre: Point, l
         last_pose,
         ..
     } = frame;
-    layer.clear(drawn.top);
+    layer.clear(drawn.top..drawn.bottom);
     *pairs = raster::pairs(
         look.ink(GROUND_COLOR),
         look.ink(MINOR_ROAD),

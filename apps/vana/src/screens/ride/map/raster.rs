@@ -278,6 +278,8 @@ fn quarter_steps(share: f32) -> u8 {
 #[derive(Clone)]
 pub struct Layer<const ROWS: usize> {
     top: usize,
+    /// How many of `pairs` the ground covers, from `top`.
+    rows: usize,
     pairs: [[u8; WIDTH / 2]; ROWS],
 }
 
@@ -308,20 +310,27 @@ impl<const ROWS: usize> Layer<ROWS> {
     pub fn new(top: usize) -> Self {
         Self {
             top,
+            rows: ROWS,
             pairs: [[0; WIDTH / 2]; ROWS],
         }
     }
 
-    pub fn clear(&mut self, top: usize) {
-        self.top = top;
-        for pairs in &mut self.pairs {
+    /// Hold `rows` alone, cleared: the rest of the layer is never read.
+    pub fn clear(&mut self, rows: core::ops::Range<usize>) {
+        self.top = rows.start;
+        self.rows = rows.len();
+        for pairs in &mut self.pairs[..self.rows] {
             pairs.fill(0);
         }
     }
 
+    fn held(&self) -> &[[u8; WIDTH / 2]] {
+        &self.pairs[..self.rows]
+    }
+
     #[cfg(test)]
     pub fn nibble(&self, x: usize, y: usize) -> u8 {
-        let Some(pairs) = y.checked_sub(self.top).and_then(|r| self.pairs.get(r)) else {
+        let Some(pairs) = y.checked_sub(self.top).and_then(|r| self.held().get(r)) else {
             return 0;
         };
         pairs[x / 2] >> (4 * (x % 2)) & 0xf
@@ -329,7 +338,7 @@ impl<const ROWS: usize> Layer<ROWS> {
 
     pub fn add(&mut self, bar: &Bar, class: Class) {
         let first = (bar.top - 0.5).max(self.top as f32);
-        let last = (bar.bottom - 0.5).min((self.top + ROWS) as f32 - 1.0);
+        let last = (bar.bottom - 0.5).min((self.top + self.rows) as f32 - 1.0);
         if first > last {
             return;
         }
@@ -366,7 +375,7 @@ impl<const ROWS: usize> Layer<ROWS> {
         let Some(bytes) = row
             .y()
             .checked_sub(self.top)
-            .and_then(|r| self.pairs.get(r))
+            .and_then(|r| self.held().get(r))
         else {
             return;
         };
@@ -575,7 +584,7 @@ mod tests {
     #[test]
     fn a_layer_holds_each_class_s_largest_share_of_a_pixel_in_four_steps() {
         let mut random = SeededStrokes(11);
-        let mut layer = std::boxed::Box::new(Layer::<40>::new(5));
+        let mut layer = std::boxed::Box::new(Layer::<50>::new(5));
         for case in 0..300 {
             let half = [2.5, 4.5][case % 2];
             let class = [Class::Minor, Class::Major][case / 2 % 2];
@@ -599,7 +608,7 @@ mod tests {
                     Bar::new(a, b, half)
                 })
                 .collect();
-            layer.clear(5);
+            layer.clear(5..45);
             for bar in &bars {
                 layer.add(bar, class);
             }

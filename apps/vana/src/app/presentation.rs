@@ -318,7 +318,7 @@ impl Runtime {
             }
             Shows::Page { gps, radar_paired } => (gps, radar_paired),
         };
-        let (choice, course) = (self.page_choice_with_course_map(), self.course().is_some());
+        let (deck, course) = (self.deck_with_course_map(), self.course().is_some());
         let ftp_offer = self.ftp_sheet();
         let picker_offset = self.list_offset(List::Workouts, now);
         let picker = (self.navigation.page() == Page::Workouts).then(|| {
@@ -352,7 +352,7 @@ impl Runtime {
         view.radar_paired = radar_paired;
         view.auto_paused = self.ride.auto().paused();
         view.ride_page = navigation.ride_page();
-        view.ride_pages = choice;
+        view.deck = deck;
         view.nav = super::course::sign_of(&self.track, now);
         view.course = course;
         view.main_slots = self.preferences.options.main_slots;
@@ -1097,9 +1097,7 @@ impl Runtime {
             Row::MainLeft => write!(value, "{}", options.main_slots.left.name()),
             Row::MainRight => write!(value, "{}", options.main_slots.right.name()),
             Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap => {
-                let shown = row
-                    .ride_page()
-                    .is_none_or(|page| options.ride_pages.shows(page));
+                let shown = row.ride_page().is_none_or(|page| options.deck.shows(page));
                 if row == Row::PageClimb && !shown {
                     let _ = write!(note, "NO CLIMB POP-UP");
                 }

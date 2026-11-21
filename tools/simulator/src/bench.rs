@@ -426,7 +426,7 @@ pub(crate) mod scenes {
         sim
     }
 
-    fn lap_page() -> Sim {
+    pub(crate) fn lap_page() -> Sim {
         let mut sim = riding(60);
         sim.lap(1);
         sim.advance(seconds(30));

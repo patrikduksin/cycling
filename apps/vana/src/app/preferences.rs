@@ -7,15 +7,16 @@
 //!
 //! | Byte | Field |
 //! | --- | --- |
-//! | 0 | Record version, 11 |
+//! | 0 | Record version, 12 |
 //! | 1..3 | FTP in watts, little-endian |
 //! | 3..5 | LTHR in bpm, little-endian |
 //! | 5 | Saved ANT sensor count, at most 10 |
 //! | 6.. | Per sensor: device type, device number (little-endian), transmission type |
-//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF, bits 3, 4, 5 and 7 hide STATS, LAP, CLIMB and MAP (clear is shown); other bits zero |
+//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF; other bits zero |
 //! | then | Auto lap: 0 off, 1 to 100 km between laps, 255 at the start point |
 //! | then | Day and night: 0 automatic, 1 always day, 2 always night |
 //! | then | First-run setup step to resume, 0 when setup is done |
+//! | then | Ride pages, 4 bytes owned by `screens::ride::Deck`: the optional pages MOVE shows after the main page, in order, by `RidePage::index`, then 255s |
 //! | then | Ride alerts, 9 bytes owned by `ride::alerts` (see `ALERTS_DEFAULT`) |
 //! | then | Theme: 0 dark, 1 light, 2 automatic |
 //! | then | Time zone, 2 bytes owned by `clock::Zone`: 0 0 for Chile |
@@ -28,7 +29,7 @@
 //! | then | Display mode: the row of `mode::TABLE`, 0 normal and 1 saver |
 //! | then | Brightness: 1 follows the ambient light, 0 holds the shell's stored percent |
 //!
-//! A record is `32 + 4 * count` bytes, at most 72 of the shell's 96. Any
+//! A record is `36 + 4 * count` bytes, at most 76 of the shell's 96. Any
 //! change to the layout or to the values a field may hold, a new reading id
 //! or a removed page included, bumps the version. The wheel size is global,
 //! not per sensor: the saved ANT sensors are one per kind and VANA rides one
@@ -36,9 +37,11 @@
 //! ride.
 //!
 //! An empty area means nothing was saved yet: the defaults apply, first-run
-//! setup is due, and the first change writes a record. Any other record that
-//! is not exactly what this firmware would write is foreign: the defaults
-//! stay in force and the record stays stored untouched.
+//! setup is due, and the first change writes a record. A record of an older
+//! version is outdated: the defaults apply and replace it, and the shell's
+//! own settings around it stay. Any other record that is not exactly what
+//! this firmware would write is foreign: the defaults stay in force and the
+//! record stays stored untouched.
 use super::Runtime;
 use super::mode::DisplayMode;
 use crate::clock::Zone;
@@ -47,7 +50,7 @@ use crate::ride::laps::AutoLap;
 use crate::ride::rider::{self, Rider};
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
-use crate::screens::ride::PageChoice;
+use crate::screens::ride::Deck;
 use crate::screens::ride::slots::{self, Slots};
 use crate::sensors::saved::{FIELD_CAPACITY, Saved};
 use device_api::display::Display;
@@ -57,23 +60,28 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::{AppPreferences, Source};
 use firmware_shell::shell::{BrightnessChoice, Shell};
 
-const VERSION: u8 = 11;
+const VERSION: u8 = 12;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
 const WHEEL_LENGTH: usize = 3;
 const ZONE_LENGTH: usize = 2;
-const OPTIONS_LENGTH: usize =
-    4 + ALERTS_LENGTH + 1 + ZONE_LENGTH + WHEEL_LENGTH + rider::LENGTH + slots::LENGTH + 2;
+const OPTIONS_LENGTH: usize = 4
+    + Deck::LENGTH
+    + ALERTS_LENGTH
+    + 1
+    + ZONE_LENGTH
+    + WHEEL_LENGTH
+    + rider::LENGTH
+    + slots::LENGTH
+    + 2;
 const RECORD_CAPACITY: usize = PROFILE_LENGTH + FIELD_CAPACITY + OPTIONS_LENGTH;
 /// Edits settle this long before a flash write, so a run of presses saves once.
 const DEBOUNCE_MS: u64 = 2_000;
 const AUTO_PAUSE: u8 = 1 << 0;
 const SOUNDS: u8 = 1 << 1;
 const SUNSET: u8 = 1 << 2;
-/// Where the hidden-page bits start in the flags.
-const PAGES_SHIFT: u32 = 3;
 /// The longest automatic lap a record may hold.
 pub const AUTO_LAP_MAX_KM: u8 = 100;
 const AUTO_LAP_AT_START: u8 = 255;
@@ -233,8 +241,8 @@ pub struct Options {
     pub alerts: [u8; ALERTS_LENGTH],
     /// Warn before sunset and at it, while riding.
     pub sunset_alert: bool,
-    /// Which optional ride pages are on.
-    pub ride_pages: PageChoice,
+    /// The optional ride pages the rider left on, in their order.
+    pub deck: Deck,
     /// The readings on the main page's lower line.
     pub main_slots: Slots,
     pub mode: DisplayMode,
@@ -255,7 +263,7 @@ impl Default for Options {
             setup: 0,
             alerts: ALERTS_DEFAULT,
             sunset_alert: true,
-            ride_pages: PageChoice::default(),
+            deck: Deck::default(),
             main_slots: Slots::default(),
             mode: DisplayMode::default(),
             auto_brightness: true,
@@ -278,7 +286,6 @@ impl Options {
         if self.sunset_alert {
             flags |= SUNSET;
         }
-        flags |= self.ride_pages.bits() << PAGES_SHIFT;
         let mut bytes = [0; OPTIONS_LENGTH];
         let mut at = 0;
         for field in [
@@ -288,6 +295,7 @@ impl Options {
                 self.daylight.byte(),
                 self.setup,
             ][..],
+            &self.deck.encode(),
             &self.alerts,
             &[self.theme.byte()],
             &self.zone.encode(),
@@ -305,6 +313,10 @@ impl Options {
     fn decode(bytes: &[u8]) -> Option<Self> {
         let bytes: &[u8; OPTIONS_LENGTH] = bytes.try_into().ok()?;
         let (&[flags, auto_lap, daylight, setup], rest) = bytes.split_first_chunk()?;
+        if flags & !(AUTO_PAUSE | SOUNDS | SUNSET) != 0 {
+            return None;
+        }
+        let (&deck, rest) = rest.split_first_chunk()?;
         let (&alerts, rest) = rest.split_first_chunk::<ALERTS_LENGTH>()?;
         let (&theme, rest) = rest.split_first()?;
         let (&zone, rest) = rest.split_first_chunk()?;
@@ -326,7 +338,7 @@ impl Options {
             setup,
             alerts,
             sunset_alert: flags & SUNSET != 0,
-            ride_pages: PageChoice::from_bits(flags >> PAGES_SHIFT)?,
+            deck: Deck::decode(deck)?,
             main_slots: Slots::decode(main_slots)?,
             mode: DisplayMode::from_byte(mode)?,
             auto_brightness: flag_from_byte(auto_brightness)?,
@@ -348,7 +360,9 @@ pub enum Stored {
     Missing,
     /// Exactly what this firmware would write.
     Current,
-    /// Anything else: another version, or damaged. Kept, never overwritten
+    /// An older version, replaced by the defaults.
+    Outdated,
+    /// Anything else: a newer version, or damaged. Kept, never overwritten
     /// unasked.
     Foreign,
 }
@@ -358,6 +372,7 @@ impl Stored {
         match self {
             Self::Missing => "missing",
             Self::Current => "current",
+            Self::Outdated => "outdated",
             Self::Foreign => "foreign",
         }
     }
@@ -404,6 +419,7 @@ pub fn decode(bytes: &[u8]) -> (Record, Stored) {
     }
     match decode_current(bytes) {
         Some(record) if encode(&record)[..] == *bytes => (record, Stored::Current),
+        _ if bytes[0] < VERSION => (Record::default(), Stored::Outdated),
         _ => (Record::default(), Stored::Foreign),
     }
 }
@@ -512,6 +528,7 @@ impl Preferences {
             sensors: record.sensors,
             options: record.options,
             stored,
+            changed_at: (stored == Stored::Outdated).then_some(0),
             ..Self::default()
         }
     }
@@ -776,8 +793,8 @@ mod tests {
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                11, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 1, 0, 1
+                12, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -803,7 +820,7 @@ mod tests {
             setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
             sunset_alert: true,
-            ride_pages: PageChoice::default(),
+            deck: Deck::default().toggled(RidePage::Climb),
             main_slots: Slots {
                 left: Reading::Kcal,
                 right: Reading::NormalizedPower,
@@ -816,8 +833,9 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                11, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b110, 10, 2, 3, 50, 180,
-                100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6, 2, 1, 0
+                12, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b110, 10, 2, 3, 1, 2, 5,
+                0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6,
+                2, 1, 0
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -828,7 +846,7 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 72);
+        assert_eq!(bytes.len(), 76);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
     }
@@ -995,23 +1013,29 @@ mod tests {
         first_run.options.setup = Options::FIRST_RUN;
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
         let current = encode(&defaults);
-        for version in [0, 1, 10, 12, 0xff] {
+        for (version, stored) in [
+            (0, Stored::Outdated),
+            (VERSION - 1, Stored::Outdated),
+            (VERSION + 1, Stored::Foreign),
+            (0xff, Stored::Foreign),
+        ] {
             let mut other = current.to_vec();
             other[0] = version;
-            assert_eq!(decode(&other), (defaults, Stored::Foreign), "{version}");
+            assert_eq!(decode(&other), (defaults, stored), "{version}");
         }
         assert_eq!(decode(&[0xff]), (defaults, Stored::Foreign));
         for damaged in [
-            &[10][..],
-            &[10, 250, 0, 170],
-            &[10, 250, 0, 170, 0],
-            &[10, 250, 0, 170, 0, 0],
-            &[0, 250, 0, 170, 0],
-            &[9, 250, 0, 170, 0, 0],
+            &[VERSION][..],
+            &[VERSION, 250, 0, 170],
+            &[VERSION, 250, 0, 170, 0],
+            &[VERSION, 250, 0, 170, 0, 0],
             // A sensor count that runs past the record.
-            &[10, 250, 0, 170, 0, 2, 120, 1, 0, 1],
+            &[VERSION, 250, 0, 170, 0, 2, 120, 1, 0, 1],
         ] {
             assert_eq!(decode(damaged), (defaults, Stored::Foreign), "{damaged:?}");
+        }
+        for older in [&[0, 250, 0, 170, 0][..], &[VERSION - 1, 250, 0, 170, 0, 0]] {
+            assert_eq!(decode(older), (defaults, Stored::Outdated), "{older:?}");
         }
         let off = Options {
             sunset_alert: false,
@@ -1025,37 +1049,21 @@ mod tests {
                 .sunset_alert
         );
         assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        let stats_and_lap = PageChoice::default()
+        let stats_and_lap = Deck::default()
             .toggled(RidePage::Stats)
             .toggled(RidePage::Lap);
         let hidden = Options {
-            ride_pages: stats_and_lap,
+            deck: stats_and_lap,
             ..Options::default()
         };
-        assert_eq!(
-            hidden.encode()[0],
-            AUTO_PAUSE | SOUNDS | SUNSET | stats_and_lap.bits() << PAGES_SHIFT
-        );
+        assert_eq!(hidden.encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
+        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [3, 5, 0xff, 0xff]);
         assert_eq!(Options::decode(&hidden.encode()), Some(hidden));
-        // AT START (byte 1) and hidden pages (flags) share a record.
-        for ride_pages in [
-            hidden.ride_pages,
-            PageChoice::from_bits(PageChoice::BITS).unwrap(),
-        ] {
-            let both = Options {
-                auto_lap: AutoLap::AtStart,
-                ride_pages,
-                ..Options::default()
-            };
-            let bytes = both.encode();
-            assert_eq!(bytes[1], AUTO_LAP_AT_START);
-            assert_eq!(bytes[0] >> PAGES_SHIFT, ride_pages.bits());
-            assert_eq!(Options::decode(&bytes), Some(both));
-        }
         const FLAGS: usize = 0;
         const AUTO_LAP: usize = 1;
         const DAYLIGHT: usize = 2;
-        const THEME: usize = 4 + ALERTS_LENGTH;
+        const DECK: usize = 4;
+        const THEME: usize = DECK + Deck::LENGTH + ALERTS_LENGTH;
         const ZONE: usize = THEME + 1;
         const WHEEL: usize = ZONE + ZONE_LENGTH;
         const WHEEL_MANUAL: usize = WHEEL + 2;
@@ -1071,7 +1079,9 @@ mod tests {
         for (case, profile, options) in [
             ("one byte short", FTP, good[..OPTIONS_LENGTH - 1].to_vec()),
             ("one byte long", FTP, [&good[..], &[0]].concat()),
-            ("unknown flag", FTP, with(FLAGS, good[FLAGS] | 1 << 7)),
+            ("unknown flag", FTP, with(FLAGS, good[FLAGS] | 1 << 3)),
+            ("unknown ride page", FTP, with(DECK, 4)),
+            ("a ride page twice", FTP, with(DECK + 1, good[DECK])),
             ("lap too long", FTP, with(AUTO_LAP, AUTO_LAP_FIRST_UNUSED)),
             ("unknown day/night", FTP, with(DAYLIGHT, 3)),
             ("unknown theme", FTP, with(THEME, 3)),
@@ -1096,7 +1106,7 @@ mod tests {
         assert_eq!(preferences.stored, Stored::Current);
         preferences.set_sensors(sensors, 10_000);
         assert!(preferences.due(10_000));
-        let mut locked = Preferences::load(&[5, 9], Source::Current);
+        let mut locked = Preferences::load(&[VERSION + 1, 9], Source::Current);
         locked.set_sensors(sensors, 10_000);
         assert_eq!(locked.sensors, sensors);
         assert!(!locked.due(60_000));
@@ -1120,6 +1130,9 @@ mod tests {
         assert!(!locked.due(60_000), "unreadable data is never replaced");
         let mut shell = Preferences::load(&[], Source::Foreign);
         assert_eq!(shell.persistence(), Persistence::Locked);
+        let outdated = Preferences::load(&[VERSION - 1, 9], Source::Current);
+        assert_eq!(outdated.persistence(), Persistence::Pending);
+        assert!(outdated.due(DEBOUNCE_MS), "an older record is replaced");
         shell.set(stronger, 1_000);
         assert!(!shell.due(60_000), "nor are foreign settings around it");
     }
@@ -1172,8 +1185,10 @@ mod tests {
                 mm: rng.one_in(2).then(|| rng.range(1_500, 2_400) as u16),
                 manual: rng.one_in(2),
             },
-            ride_pages: PageChoice::from_bits(rng.range(0, u64::from(PageChoice::BITS)) as u8)
-                .unwrap_or_default(),
+            deck: Deck::OPTIONAL
+                .into_iter()
+                .filter(|_| rng.one_in(2))
+                .fold(Deck::default(), Deck::toggled),
             main_slots: Slots {
                 left: rng.pick(&Reading::LOWER),
                 right: rng.pick(&Reading::LOWER),
@@ -1208,7 +1223,7 @@ mod tests {
                 // Every byte of a current record is meaningful, so a damaged
                 // one reads only if it is exactly another valid record.
                 Stored::Current => assert_eq!(encode(&decoded)[..], payload[..], "seed {seed}"),
-                Stored::Foreign => {
+                Stored::Outdated | Stored::Foreign => {
                     assert_eq!(decoded, Record::default(), "seed {seed}")
                 }
                 Stored::Missing => assert!(payload.is_empty(), "seed {seed}"),

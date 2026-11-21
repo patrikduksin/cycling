@@ -352,7 +352,7 @@ fn ten_saved_sensors_are_served_in_turn_without_duplicate_requests() {
 fn unreadable_saved_record_is_kept_and_reported() {
     let mut runtime = booted(Profile::HeartRate);
     runtime.load_preferences(
-        &firmware_shell::preferences::AppPreferences::new(&[3, 1, 2]).unwrap(),
+        &firmware_shell::preferences::AppPreferences::new(&[0xff, 1, 2]).unwrap(),
         firmware_shell::preferences::Source::Current,
     );
     let mut radio = Radio::new();
@@ -406,7 +406,7 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
 fn save_problems_stay_visible_while_discovery_runs() {
     let mut runtime = booted(Profile::HeartRate);
     runtime.load_preferences(
-        &firmware_shell::preferences::AppPreferences::new(&[3, 1, 2]).unwrap(),
+        &firmware_shell::preferences::AppPreferences::new(&[0xff, 1, 2]).unwrap(),
         firmware_shell::preferences::Source::Current,
     );
     let mut radio = Radio::new();

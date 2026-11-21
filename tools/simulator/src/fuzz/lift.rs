@@ -311,8 +311,8 @@ impl Lift {
         let (record, stored) = vana::app::decode_preferences(settings.app.bytes());
         self.kept = match stored {
             vana::app::StoredPreferences::Missing => KeptAtBoot::NothingKept,
-            vana::app::StoredPreferences::Foreign => {
-                self.left("foreign preferences");
+            vana::app::StoredPreferences::Outdated | vana::app::StoredPreferences::Foreign => {
+                self.left("preferences of another version");
                 KeptAtBoot::NothingKept
             }
             vana::app::StoredPreferences::Current => {
@@ -346,7 +346,7 @@ impl Lift {
             ("rider", now.rider != then.rider),
             ("ride alerts", now.alerts != then.alerts),
             ("sunset alert", now.sunset_alert != then.sunset_alert),
-            ("ride pages", now.ride_pages != then.ride_pages),
+            ("ride pages", now.deck != then.deck),
             ("main page readings", now.main_slots != then.main_slots),
             ("display mode", now.mode != then.mode),
             (

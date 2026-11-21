@@ -562,7 +562,7 @@ impl Runtime {
             Row::WheelMode => options.wheel.manual = !options.wheel.manual,
             Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap => {
                 if let Some(page) = row.ride_page() {
-                    options.ride_pages = options.ride_pages.toggled(page);
+                    options.deck = options.deck.toggled(page);
                 }
             }
             Row::MainLeft => options.main_slots.left = options.main_slots.left.next(),

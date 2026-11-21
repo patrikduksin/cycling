@@ -1,8 +1,8 @@
 //! What tiles read: a frame's view, each number in its base unit, and the
 //! gliding graphics alone for asking where a glide lands.
-use super::ride::{ClimbRoad, GAUGE_WIDTH, Mark, Training, gauges};
+use super::ride::{ClimbRoad, GAUGE_WIDTH, LapBar, Mark, Training, gauges};
 use super::workout::{Graphics, View};
-use crate::compose::data::{Count, Data, Effort, ListKind, Metric, OnGauge};
+use crate::compose::data::{Count, Data, Effort, ListKind, Metric, OnGauge, Shares};
 use crate::ride::zones::TrainingProfile;
 
 impl Data for View<'_> {
@@ -27,6 +27,26 @@ impl Data for View<'_> {
             Metric::Heart => sample.heart_bpm.map(i32::from),
             Metric::Elapsed => Some(int(self.active_secs)),
             Metric::Grade => sample.gradient_tenths.map(i32::from),
+            Metric::Moving => Some(int(totals.moving_ms() / 1000)),
+            Metric::MaxSpeed => totals.max_speed_mm_s().map(|mm_s| int(u64::from(mm_s))),
+            Metric::Intensity => totals
+                .intensity_hundredths(self.profile.ftp_watts)
+                .map(i32::from),
+            Metric::Stress => totals
+                .stress_score(self.profile.ftp_watts)
+                .map(|score| int(u64::from(score))),
+            Metric::Paused => Some(int(u64::from(self.paused_secs))),
+            Metric::LapTime
+            | Metric::LapDistance
+            | Metric::LapPower
+            | Metric::LapSpeed
+            | Metric::LapHeart
+            | Metric::LapNumber
+            | Metric::PrevLapNumber
+            | Metric::PrevLapTime
+            | Metric::PrevLapPower
+            | Metric::SpeedDiff
+            | Metric::PowerDiff => self.lap_metric(metric),
         }
     }
 
@@ -105,6 +125,22 @@ impl Data for View<'_> {
             .then(|| super::ride::summary::facts(self))
     }
 
+    fn zone_time(&self, effort: Effort) -> Option<Shares> {
+        let time = &self.zone_time;
+        match effort {
+            Effort::Power => shares(&time.power_ms),
+            Effort::Heart => shares(&time.heart_ms),
+        }
+    }
+
+    fn laps(&self) -> Option<(&[LapBar], LapBar)> {
+        Some((self.extra.lap_bars()?.as_slice(), self.extra.lap()?.into()))
+    }
+
+    fn auto_paused(&self) -> bool {
+        self.auto_paused
+    }
+
     fn gauge(&self, effort: Effort) -> Option<OnGauge> {
         let [power, heart] = self.marks.gauges();
         on_gauge(match effort {
@@ -143,6 +179,49 @@ impl Data for View<'_> {
             })
         })
     }
+}
+
+impl View<'_> {
+    /// The open lap's readings and the last finished lap's, while the lap
+    /// page shows them.
+    fn lap_metric(&self, metric: Metric) -> Option<i32> {
+        let lap = self.extra.lap()?;
+        let previous = self.extra.previous_lap()?;
+        let int = |value: u64| i32::try_from(value).unwrap_or(i32::MAX);
+        let tenths = |mm_s: u32| i32::try_from(u64::from(mm_s) * 36 / 1000).unwrap_or(i32::MAX);
+        match metric {
+            Metric::LapTime => Some(int(lap.time_ms / 1000)),
+            Metric::LapDistance => Some(int(lap.distance_mm / 1000)),
+            Metric::LapPower => lap.avg_power().map(i32::from),
+            Metric::LapSpeed => lap.avg_speed_mm_s().map(|mm_s| int(u64::from(mm_s))),
+            Metric::LapHeart => lap.avg_heart_bpm().map(i32::from),
+            Metric::LapNumber => Some(i32::from(lap.number)),
+            Metric::PrevLapNumber => previous.map(|previous| i32::from(previous.number)),
+            Metric::PrevLapTime => previous.map(|previous| int(previous.time_ms / 1000)),
+            Metric::PrevLapPower => previous?.avg_power().map(i32::from),
+            Metric::SpeedDiff => {
+                Some(tenths(lap.avg_speed_mm_s()?) - tenths(previous?.avg_speed_mm_s()?))
+            }
+            Metric::PowerDiff => {
+                Some(i32::from(lap.avg_power()?) - i32::from(previous?.avg_power()?))
+            }
+            _ => None,
+        }
+    }
+}
+
+fn shares<const N: usize>(time: &[u64; N]) -> Option<Shares> {
+    let total: u64 = time.iter().sum();
+    if total == 0 {
+        return None;
+    }
+    let mut ends = [Shares::WHOLE; 7];
+    let mut so_far = 0;
+    for (end, ms) in ends.iter_mut().zip(time) {
+        so_far += ms;
+        *end = (so_far * u64::from(Shares::WHOLE) / total) as u16;
+    }
+    Some(Shares(ends))
 }
 
 fn on_gauge(mark: Option<Mark>) -> Option<OnGauge> {

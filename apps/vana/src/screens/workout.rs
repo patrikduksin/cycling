@@ -189,7 +189,7 @@ pub(super) type SettingsLines = [Text<38>; 1 + 2 * super::settings::SECTION_ROWS
 /// `$name` is the variant's field, or none when `$pat` is another variant.
 macro_rules! picks {
     ($($(#[$meta:meta])* $name:ident -> $ty:ty = $pat:pat => $found:expr;)*) => {
-        $($(#[$meta])* fn $name(&self) -> Option<$ty> {
+        $($(#[$meta])* pub(super) fn $name(&self) -> Option<$ty> {
             match self {
                 $pat => Some($found),
                 _ => None,
@@ -812,7 +812,6 @@ impl Scene<'_> {
 static NO_CANVAS: Canvas = Canvas::EMPTY;
 static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
 static NO_CHART: ride::WorkoutChart = ride::WorkoutChart::EMPTY;
-static NO_BARS: ride::LapBars = ride::LapBars::new();
 static NO_LINES: Lines = [const { Text::new() }; 9];
 static NO_READINESS: Readiness = Readiness::EMPTY;
 static NO_PICKER: super::workouts::Picker = super::workouts::Picker::EMPTY;
@@ -856,8 +855,9 @@ pub struct View<'a> {
     bar: StatusBar,
     pub totals: Totals,
     pub ride_page: RidePage,
-    /// The optional ride pages the rider left on, for the page dots.
-    pub ride_pages: ride::PageChoice,
+    /// The rider's ride pages, with the map while a course is loaded, for
+    /// the page dots.
+    pub deck: ride::Deck,
     /// The readings on the main page's lower line.
     pub main_slots: ride::slots::Slots,
     /// The main page's and the shown screen's tiles, as the runtime solved them.
@@ -940,7 +940,7 @@ impl<'a> View<'a> {
             bar: StatusBar::default(),
             totals: Totals::default(),
             ride_page: RidePage::Main,
-            ride_pages: ride::PageChoice::default(),
+            deck: ride::Deck::default(),
             main_slots: ride::slots::Slots::default(),
             laids: None,
             body: Body::Blank,
@@ -1037,18 +1037,6 @@ impl<'a> View<'a> {
     #[cfg(test)]
     pub(super) fn chart(&self) -> &ride::WorkoutChart {
         self.shown(self.extra.chart(), "workout chart", &NO_CHART)
-    }
-
-    pub(super) fn lap(&self) -> Lap {
-        self.shown(self.extra.lap(), "lap", Lap::default())
-    }
-
-    pub(super) fn previous_lap(&self) -> Option<Lap> {
-        self.shown(self.extra.previous_lap(), "previous lap", None)
-    }
-
-    pub(super) fn lap_bars(&self) -> &ride::LapBars {
-        self.shown(self.extra.lap_bars(), "lap bars", &NO_BARS)
     }
 
     pub(super) fn map(&self) -> Option<&'a ride::MapFrame> {
@@ -1405,7 +1393,7 @@ impl<'a> View<'a> {
     fn prepare_composed(&mut self, laid: &crate::compose::builtin::Laid) -> Cues {
         let riding = self.page == Page::Ride && !self.pause_screen;
         if riding {
-            let pages = ride::Pages::new(self.training.is_some(), self.ride_pages);
+            let pages = self.deck.shown(self.training.is_some());
             self.bar
                 .set_pages(pages.position(self.ride_page), pages.count());
             self.marks = ride::marks(self);
@@ -1422,7 +1410,7 @@ impl<'a> View<'a> {
             canvas
         });
         if riding {
-            ride::hide_banner(self);
+            ride::hide_banner(self, Some(laid));
         }
         let heading = laid.box_of(crate::compose::registry::WORDS);
         if let (Some(after), Some(heading)) = (after, heading)
@@ -1434,7 +1422,17 @@ impl<'a> View<'a> {
         laid.controls()
             .shown(laid.focus())
             .filter(|cue| !(send_hidden && cue.role == device_api::input::Role::Act))
+            .filter(|cue| self.offers(cue))
             .collect()
+    }
+
+    fn offers(&self, cue: &Cue) -> bool {
+        match self.page {
+            Page::EndRide => {
+                cue.role != device_api::input::Role::Move || self.discard == Discard::Offered
+            }
+            _ => true,
+        }
     }
 
     /// The screens not yet on the engine: each page's own drawing and cues.
@@ -1460,14 +1458,6 @@ impl<'a> View<'a> {
                     &[]
                 }
             }
-            Page::EndRide => {
-                fill(self, ride::end::prepare);
-                if self.discard == Discard::Offered {
-                    &ride::end::DISCARD_CUES
-                } else {
-                    &ride::end::CUES
-                }
-            }
             Page::Setup => {
                 fill(self, |view| super::setup::prepare(view, view.setup_step()));
                 let steps = super::setup::STEPS.len();
@@ -1487,13 +1477,9 @@ impl<'a> View<'a> {
             Page::History => &[],
             // Drawn from their trees.
             Page::Summary | Page::PastRide => &[],
-            Page::Ride if self.pause_screen => {
-                fill(self, ride::paused::prepare);
-                &ride::paused::CUES
-            }
             Page::Ride => {
                 let training = self.training.is_some();
-                let pages = ride::Pages::new(training, self.ride_pages);
+                let pages = self.deck.shown(training);
                 self.bar
                     .set_pages(pages.position(self.ride_page), pages.count());
                 self.marks = ride::marks(self);
@@ -1505,6 +1491,7 @@ impl<'a> View<'a> {
             // On the engine: `composed` drew them.
             Page::Format | Page::LoseRides | Page::DiscardRide | Page::Bests | Page::Form => &[],
             Page::Home => &[],
+            Page::EndRide => &[],
         }
     }
 }
@@ -1613,7 +1600,7 @@ mod tests {
         assert!(none.after().is_none() && none.past_title().is_none());
         assert!(none.elevation().is_none());
         assert!(NO_CANVAS.runs.is_empty() && NO_CANVAS.shapes.is_empty());
-        assert!(NO_BARS.is_empty() && ClimbLent::NONE.climbs.climbing().is_none());
+        assert!(ClimbLent::NONE.climbs.climbing().is_none());
         assert!(NO_LINES.iter().all(|line| line.as_bytes().is_empty()));
         assert!(NO_READINESS.riding.as_bytes().is_empty() && NO_TITLE.as_bytes().is_empty());
         assert!(NO_PICKER.cursor == 0 && NO_PICKER.chosen == 0);
@@ -1621,9 +1608,9 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "has no lap")]
+    #[should_panic(expected = "has no map")]
     fn a_page_asking_for_another_pages_extra_trips_the_assertion() {
-        let _ = View::new(Page::Ride, 0, None).lap();
+        let _ = View::new(Page::Ride, 0, None).map();
     }
 
     /// The colour of the prepared label that reads `text`.
@@ -1847,6 +1834,7 @@ mod tests {
             if page == RidePage::Climb {
                 view.show_climb(ClimbLent::NONE);
             }
+            view.compose_main();
             view.prepare();
             view
         };
@@ -1876,11 +1864,10 @@ mod tests {
                         "{what}: a reading straddles the banner's edge"
                     );
                 }
-                let shift = if radar_paired { 0 } else { ride::CENTRE_SHIFT };
                 let hidden = |x: usize, y| {
-                    straddling.iter().any(|r| {
-                        (r.left..r.right).contains(&(x + shift)) && (r.top..r.bottom).contains(&y)
-                    })
+                    straddling
+                        .iter()
+                        .any(|r| (r.left..r.right).contains(&x) && (r.top..r.bottom).contains(&y))
                 };
                 let sent = Parts::of(&bare.scene()).changed(&Parts::of(&under.scene()));
                 let (bare, under) = (rows(&bare), rows(&under));
@@ -1895,7 +1882,11 @@ mod tests {
                         if hidden(x, y) {
                             assert_eq!(pixel, BLACK, "{what}: a covered reading shows at {x},{y}");
                         } else {
-                            assert_eq!(pixel, bare[y][x], "{what}: {x},{y} changed");
+                            // A tile the banner touches goes whole.
+                            assert!(
+                                pixel == bare[y][x] || pixel == BLACK,
+                                "{what}: {x},{y} changed"
+                            );
                         }
                     }
                 }
@@ -1989,7 +1980,10 @@ mod tests {
             }),
             ("the workout target band", &band),
             ("button cues", &|view| {
-                view.cues = cue_set(&ride::paused::CUES)
+                view.cues = cue_set(&[
+                    Cue::new(device_api::input::Role::Back, super::super::cue::Icon::Stop),
+                    Cue::new(device_api::input::Role::Act, super::super::cue::Icon::Play),
+                ])
             }),
             ("a badge", &|view| {
                 view.badge = Some(Badge {
@@ -2278,12 +2272,14 @@ mod tests {
             paused.auto_paused = auto;
             paused.pause_screen = true;
             paused.toast = Some(Toast::new("WRITE FAILED", Tone::Alert));
+            paused.compose_main();
             paused.prepare();
             assert_eq!(paused.cues.len(), 2);
             assert_paints_reference(&paused, "paused");
         }
         let mut end = ride(Page::EndRide);
         end.state = Status::Paused;
+        end.compose_main();
         end.prepare();
         assert_paints_reference(&end, "end ride");
         let mut trace = crate::ride::elevation::Trace::default();

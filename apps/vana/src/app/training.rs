@@ -27,7 +27,7 @@ use super::navigation::To;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
 use crate::screens::kinetic::Kinetic;
-use crate::screens::ride::{PageChoice, Pages, RidePage, Training as Shown, summary};
+use crate::screens::ride::{Deck, RidePage, Training as Shown, summary};
 use crate::screens::touch::List;
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
@@ -415,16 +415,15 @@ impl Runtime {
         self.ride_pages().first()
     }
 
-    /// The pages MOVE steps through: the workout's, the rider's choice.
-    pub(super) fn ride_pages(&self) -> Pages {
-        Pages::new(self.workout_pages(), self.page_choice_with_course_map())
+    pub(super) fn ride_pages(&self) -> Deck {
+        self.deck_with_course_map().shown(self.workout_pages())
     }
 
-    pub(super) fn page_choice_with_course_map(&self) -> PageChoice {
-        let choice = self.preferences.options.ride_pages;
+    pub(super) fn deck_with_course_map(&self) -> Deck {
+        let deck = self.preferences.options.deck;
         match self.course() {
-            Some(_) => choice.showing(RidePage::Map),
-            None => choice,
+            Some(_) => deck.showing(RidePage::Map),
+            None => deck,
         }
     }
 

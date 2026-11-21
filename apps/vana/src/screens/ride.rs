@@ -17,10 +17,8 @@
 //! `app::climb_page`).
 use super::Layout;
 use super::canvas::Canvas;
-use super::chrome::{self, Align, Rect};
+use super::chrome::{self, Rect};
 use super::icons::SignForm;
-#[cfg(test)]
-use super::scaled::BASE;
 use super::scaled::{self, Scaled};
 use super::workout::{Body, Graphics, Scene, Text, View};
 use crate::compose::builtin::ScreenId;
@@ -32,12 +30,9 @@ use firmware_shell::shell::Parts;
 
 pub mod climb;
 pub mod elevation;
-pub(super) mod end;
 mod lap;
 mod main;
 pub mod map;
-pub(super) mod paused;
-pub use paused::READINGS as PAUSED_READINGS;
 pub mod slots;
 mod stats;
 pub mod summary;
@@ -122,9 +117,6 @@ pub const fn frame(at: &Scaled) -> Frame {
     }
 }
 
-/// What a page draws into on the 240 x 320 canvas, for tests.
-#[cfg(test)]
-pub(super) const BODY: Rect = frame(&BASE).body;
 /// The text's margins from the body's left and right edges.
 pub(crate) const TEXT_LEFT: u16 = 10;
 pub(crate) const TEXT_RIGHT: u16 = 8;
@@ -140,9 +132,6 @@ const _: () = assert!(
         > VALUE_BASELINE as usize + 6,
     "a caption needs 6 clear rows over the value above it"
 );
-/// Without a radar the body moves left by this much, to the centre.
-#[cfg(test)]
-pub(super) const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
 
 /// The regions a page drawn from a canvas lays out in, named, in its
 /// canvas's columns: the radar strip while a radar is paired, then the
@@ -162,7 +151,7 @@ pub(super) fn canvas_regions(
         ..at.screen()
     };
     let regions = match (page, &scene.radar) {
-        (page, None) if page.tiled() => heapless::Vec::from_slice(&[(
+        (_, None) => heapless::Vec::from_slice(&[(
             "page",
             Rect {
                 left: frame.radar.left,
@@ -186,7 +175,6 @@ pub(super) fn canvas_regions(
             ),
             ("foot", foot),
         ]),
-        (_, None) => heapless::Vec::from_slice(&[("page", frame.body)]),
         (_, Some(_)) => heapless::Vec::from_slice(&[("radar", frame.radar), ("page", frame.body)]),
     };
     regions.unwrap_or_default()
@@ -198,7 +186,8 @@ pub enum RidePage {
     /// Live speed, power, heart rate, cadence, distance, time and grade.
     #[default]
     Main,
-    /// Ride totals: distance, moving time, averages, maxima, NP, work, ascent.
+    /// Ride totals: distance, moving time, averages, maximum speed, NP, IF,
+    /// TSS, ascent, and the time in each zone.
     Stats,
     /// The open lap against the last finished one.
     Lap,
@@ -245,10 +234,15 @@ impl RidePage {
     /// live, the main page's lower line from `slots`; none for the workout
     /// page, which draws the step's target metric.
     pub fn readings(self, slots: slots::Slots) -> Option<heapless::Vec<&'static str, 7>> {
-        match self {
-            Self::Climb => return tree_readings(ScreenId::RideClimb),
-            Self::Workout => return tree_readings(ScreenId::RideWorkout),
-            _ => {}
+        let tree = match self {
+            Self::Stats => Some(ScreenId::RideStats),
+            Self::Lap => Some(ScreenId::RideLap),
+            Self::Climb => Some(ScreenId::RideClimb),
+            Self::Workout => Some(ScreenId::RideWorkout),
+            Self::Main | Self::Map => None,
+        };
+        if let Some(id) = tree {
+            return tree_readings(id);
         }
         let chosen = [slots.left, slots.right].map(crate::compose::data::Metric::shown);
         let drawn = |reading: &str| match self {
@@ -256,33 +250,32 @@ impl RidePage {
                 matches!(reading, "time" | "speed" | "power" | "hr" | "grade")
                     || chosen.contains(&Some(reading))
             }
-            Self::Stats | Self::Map => reading == "dist",
-            Self::Lap | Self::Climb | Self::Workout => false,
+            _ => reading == "dist",
         };
         Some(READINGS.into_iter().filter(|r| drawn(r)).collect())
-    }
-
-    /// Drawn from its tree, which tiles the panel itself: it is painted
-    /// unshifted, beside the radar strip's room in the tree.
-    pub(crate) const fn tiled(self) -> bool {
-        matches!(self, Self::Main | Self::Climb | Self::Workout | Self::Map)
     }
 
     /// A number unique to the page, for touch ownership.
     pub fn index(self) -> usize {
         self as usize
     }
+}
 
-    /// The bit that hides the page in a [`PageChoice`]; none for the pages
-    /// that are always on.
-    const fn hide_bit(self) -> Option<u8> {
-        match self {
-            Self::Main | Self::Workout => None,
-            Self::Stats => Some(1 << 0),
-            Self::Lap => Some(1 << 1),
-            Self::Climb => Some(1 << 2),
-            Self::Map => Some(1 << 3),
-        }
+/// The ride pages MOVE steps through, in order. The rider's deck holds the
+/// main page, first and always, then the optional pages left on in the
+/// rider's order; a record stores it without the workout bit (see
+/// `app::preferences`). The deck
+/// shown puts the workout page first while a workout is chosen. Two bytes,
+/// as `View` holds one every frame: three bits a slot, each an optional
+/// page's index or 0 for none, and the top bit for the workout page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deck(u16);
+
+impl Default for Deck {
+    fn default() -> Self {
+        Self::OPTIONAL
+            .into_iter()
+            .fold(Self::MAIN, |deck, page| deck.pushed(page))
     }
 }
 
@@ -311,139 +304,185 @@ fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
     Some(READINGS.into_iter().filter(|r| read.contains(r)).collect())
 }
 
-/// Which optional pages the rider turned off. Everything is on by default,
-/// and the bits are stored as they are (see `app::preferences`): the main
-/// page and the workout page have no bit and cannot be hidden.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PageChoice(u8);
-
-impl PageChoice {
-    /// The bits a record may carry.
-    pub const BITS: u8 = 0b1111;
-
-    /// The optional pages, in the order Settings lists them.
+impl Deck {
+    /// The optional pages in Settings' order; a page turned back on returns
+    /// to its place in it.
     pub const OPTIONAL: [RidePage; 4] = [
         RidePage::Stats,
         RidePage::Lap,
         RidePage::Climb,
         RidePage::Map,
     ];
+    /// Bytes a record stores: each optional page shown by its index, in
+    /// order, then [`Self::END`].
+    pub const LENGTH: usize = Self::OPTIONAL.len();
+    const END: u8 = 0xff;
+    const SLOT_BITS: u32 = 3;
+    const WORKOUT: u16 = 1 << 15;
+    const MAIN: Self = Self(0);
 
-    /// The choice a record's hidden bits stand for; none when it holds bits
-    /// that mean nothing.
-    pub const fn from_bits(bits: u8) -> Option<Self> {
-        if bits & !Self::BITS == 0 {
-            Some(Self(bits))
-        } else {
-            None
+    fn optional(self) -> impl Iterator<Item = RidePage> + Clone {
+        (0..Self::LENGTH as u32)
+            .map(move |slot| usize::from(self.0 >> (slot * Self::SLOT_BITS) & 0b111))
+            .take_while(|&index| index != 0)
+            .filter_map(|index| {
+                Self::OPTIONAL
+                    .into_iter()
+                    .find(|page| page.index() == index)
+            })
+    }
+
+    fn pushed(self, page: RidePage) -> Self {
+        let slot = self.optional().count() as u32;
+        Self(self.0 | (page.index() as u16) << (slot * Self::SLOT_BITS))
+    }
+
+    pub fn encode(self) -> [u8; Self::LENGTH] {
+        let mut bytes = [Self::END; Self::LENGTH];
+        for (byte, page) in bytes.iter_mut().zip(self.optional()) {
+            *byte = page.index() as u8;
         }
+        bytes
     }
 
-    pub const fn bits(self) -> u8 {
-        self.0
-    }
-
-    pub const fn shows(self, page: RidePage) -> bool {
-        match page.hide_bit() {
-            Some(bit) => self.0 & bit == 0,
-            None => true,
-        }
-    }
-
-    pub const fn showing(self, page: RidePage) -> Self {
-        match page.hide_bit() {
-            Some(bit) => Self(self.0 & !bit),
-            None => self,
-        }
-    }
-
-    /// Show or hide `page`; the always-on pages stay on.
-    pub fn toggled(self, page: RidePage) -> Self {
-        match page.hide_bit() {
-            Some(bit) => Self(self.0 ^ bit),
-            None => self,
-        }
-    }
-}
-
-/// The pages MOVE steps through, in order: the workout page first while a
-/// workout is chosen, then every page the rider left on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Pages {
-    list: [RidePage; RidePage::TRAINING.len()],
-    len: usize,
-}
-
-impl Pages {
-    pub fn new(workout: bool, choice: PageChoice) -> Self {
-        let mut list = [RidePage::Main; RidePage::TRAINING.len()];
-        let mut len = 0;
-        for page in RidePage::TRAINING {
-            if (workout || page != RidePage::Workout) && choice.shows(page) {
-                list[len] = page;
-                len += 1;
+    /// The deck a record's bytes stand for; none when a byte names no
+    /// optional page, names one twice, or follows the end.
+    pub fn decode(bytes: [u8; Self::LENGTH]) -> Option<Self> {
+        let mut deck = Self::MAIN;
+        let shown = bytes.iter().take_while(|&&byte| byte != Self::END);
+        for &byte in shown.clone() {
+            let page = *Self::OPTIONAL
+                .iter()
+                .find(|page| page.index() == usize::from(byte))?;
+            if deck.contains(page) {
+                return None;
             }
+            deck = deck.pushed(page);
         }
-        Self { list, len }
+        let rest = &bytes[shown.count()..];
+        rest.iter().all(|&byte| byte == Self::END).then_some(deck)
     }
 
-    pub fn as_slice(&self) -> &[RidePage] {
-        &self.list[..self.len]
+    /// The pages in MOVE order.
+    pub fn pages(self) -> heapless::Vec<RidePage, { RidePage::TRAINING.len() }> {
+        let workout = (self.0 & Self::WORKOUT != 0).then_some(RidePage::Workout);
+        workout
+            .into_iter()
+            .chain([RidePage::Main])
+            .chain(self.optional())
+            .collect()
     }
 
-    pub fn count(&self) -> usize {
-        self.len
+    pub fn shows(self, page: RidePage) -> bool {
+        page == RidePage::Workout || self.contains(page)
     }
 
-    pub fn first(&self) -> RidePage {
-        self.list[0]
+    /// `page` on, in its place among the optional pages if it was off:
+    /// after the last page shown that comes before it, else after main.
+    pub fn showing(self, page: RidePage) -> Self {
+        if self.contains(page) || !Self::OPTIONAL.contains(&page) {
+            return self;
+        }
+        let rank = |page: RidePage| Self::OPTIONAL.iter().position(|&optional| optional == page);
+        let before = self
+            .optional()
+            .filter(|&shown| rank(shown) < rank(page))
+            .last();
+        let after = before.map_or(0, |before| {
+            self.optional()
+                .position(|shown| shown == before)
+                .map_or(0, |at| at + 1)
+        });
+        let deck = self
+            .optional()
+            .take(after)
+            .fold(self.only_workout(), Self::pushed);
+        let deck = deck.pushed(page);
+        self.optional().skip(after).fold(deck, Self::pushed)
     }
 
-    pub fn last(&self) -> RidePage {
-        self.list[self.len - 1]
+    /// Show or hide `page`; the main page and the workout page stay on.
+    pub fn toggled(self, page: RidePage) -> Self {
+        if !self.contains(page) {
+            return self.showing(page);
+        }
+        self.optional()
+            .filter(|&shown| shown != page)
+            .fold(self.only_workout(), Self::pushed)
     }
 
-    pub fn contains(&self, page: RidePage) -> bool {
-        self.as_slice().contains(&page)
+    fn only_workout(self) -> Self {
+        Self(self.0 & Self::WORKOUT)
+    }
+
+    /// The deck MOVE steps through: the workout page first while a workout
+    /// is chosen, then this one.
+    pub fn shown(self, workout: bool) -> Self {
+        if workout {
+            Self(self.0 | Self::WORKOUT)
+        } else {
+            self
+        }
+    }
+
+    pub fn count(self) -> usize {
+        self.pages().len()
+    }
+
+    pub fn first(self) -> RidePage {
+        self.pages()[0]
+    }
+
+    pub fn last(self) -> RidePage {
+        self.pages()[self.count() - 1]
+    }
+
+    pub fn contains(self, page: RidePage) -> bool {
+        self.pages().contains(&page)
     }
 
     /// Where `page` sits, for the page dots; a page that is not there
     /// counts as the first.
-    pub fn position(&self, page: RidePage) -> usize {
-        self.as_slice()
+    pub fn position(self, page: RidePage) -> usize {
+        self.pages()
             .iter()
             .position(|shown| *shown == page)
             .unwrap_or(0)
     }
 
     /// The page after `page`, wrapping.
-    pub fn following(&self, page: RidePage) -> RidePage {
-        self.list[(self.position(page) + 1) % self.len]
+    pub fn following(self, page: RidePage) -> RidePage {
+        self.pages()[(self.position(page) + 1) % self.count()]
     }
 
     /// The page before `page`, wrapping.
-    pub fn preceding(&self, page: RidePage) -> RidePage {
-        self.list[(self.position(page) + self.len - 1) % self.len]
+    pub fn preceding(self, page: RidePage) -> RidePage {
+        self.pages()[(self.position(page) + self.count() - 1) % self.count()]
     }
 
     /// The page after `page`; none after the last.
-    pub fn next(&self, page: RidePage) -> Option<RidePage> {
-        self.as_slice().get(self.position(page) + 1).copied()
+    pub fn next(self, page: RidePage) -> Option<RidePage> {
+        self.pages().get(self.position(page) + 1).copied()
     }
 }
 
-/// Prepare the shown page once per frame: its canvas, and the climb page's
-/// chart.
-pub(super) fn prepare(view: &mut View) {
-    match view.ride_page {
-        RidePage::Stats => super::workout::fill(view, stats::prepare),
-        RidePage::Lap => super::workout::fill(view, lap::prepare),
-        // Drawn from their trees once the composition lends them.
-        RidePage::Main | RidePage::Climb | RidePage::Workout | RidePage::Map => {
-            super::workout::fill(view, |_| Canvas::default())
-        }
+/// Two bytes, three bits a slot, each slot an optional page's index.
+const _: () = {
+    assert!(core::mem::size_of::<Deck>() == 2);
+    assert!(Deck::LENGTH as u32 * Deck::SLOT_BITS < 15);
+    let mut at = 0;
+    while at < Deck::OPTIONAL.len() {
+        let index = Deck::OPTIONAL[at] as usize;
+        assert!(index > 0 && index < 1 << Deck::SLOT_BITS);
+        at += 1;
     }
-    hide_banner(view);
+};
+
+/// Prepare the shown page until the composition lends its tree: an empty
+/// canvas.
+pub(super) fn prepare(view: &mut View) {
+    super::workout::fill(view, |_| Canvas::default());
+    hide_banner(view, None);
 }
 
 /// What a ride page drawn from its tiles prepares before they draw: the
@@ -457,14 +496,36 @@ pub(super) fn prepare_tiles(view: &mut View, laid: &crate::compose::builtin::Lai
     }
 }
 
-/// Hide what the course banner partly covers on the ride page shown.
-pub(super) fn hide_banner(view: &mut View) {
+/// Hide what the course banner partly covers on the ride page shown; on a
+/// page drawn from its tree, every tile it touches, so no value shows
+/// without its caption.
+pub(super) fn hide_banner(view: &mut View, laid: Option<&crate::compose::builtin::Laid>) {
+    use crate::compose::node::What;
+    use crate::compose::registry::{SPACE, STATUS};
     let layout = view.layout;
     let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired, layout, None)
         .filter(|sign| sign.form() == SignForm::Banner);
-    if let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) {
-        canvas.hide(banner.rect().top..banner.rect().bottom);
+    let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) else {
+        return;
+    };
+    let covered = banner.rect();
+    let mut rows = covered.top..covered.bottom;
+    let nodes = laid.map_or(&[][..], |laid| laid.screen().tree().nodes());
+    let tiles = laid.map_or(&[][..], |laid| laid.leaves());
+    for placed in tiles {
+        let drawn = match nodes[usize::from(placed.node)].what() {
+            Some(What::Leaf { component, .. }) => component != SPACE && component != STATUS,
+            _ => false,
+        };
+        let (top, bottom) = (
+            usize::from(placed.rect.top),
+            usize::from(placed.rect.bottom),
+        );
+        if drawn && top < covered.bottom && covered.top < bottom {
+            rows = rows.start.min(top)..rows.end.max(bottom);
+        }
     }
+    canvas.hide(rows);
 }
 
 /// The climb chart, prepared in its own frame (#167).
@@ -474,41 +535,11 @@ fn climb_frame(view: &mut View, chart: Rect) {
     view.set_climb_frame(climb);
 }
 
-/// A caption over its value in `column` (0 or 1) of the band whose top is
-/// `top`. The value steps down to the body face before it would leave its
-/// column.
-pub(super) fn cell(
-    canvas: &mut Canvas,
-    layout: &Layout,
-    column: usize,
-    top: usize,
-    caption: &[u8],
-    value: &[u8],
-    color: u16,
-) {
-    let (at, cells) = (&layout.scaled, &layout.ride.cells);
-    let (left, right) = cells.columns[column];
-    let width = right - left;
-    canvas.caption(at, caption, width, left, top + cells.caption, Align::Left);
-    canvas.fit(
-        &[at.face(FaceRole::Value), at.face(FaceRole::Body)],
-        value,
-        width,
-        left,
-        top + cells.value,
-        Align::Left,
-        color,
-    );
-}
-
 /// Paint a content row over the black the scene laid: the radar strip
-/// while a radar is paired, and the page in the body, centred without a radar.
+/// while a radar is paired, then the page's tiles over its chart.
 pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
     let frame = scene.frame();
-    let (strip, body) = (
-        frame.radar.left..frame.radar.right - frame.strip.divider,
-        frame.body,
-    );
+    let strip = frame.radar.left..frame.radar.right - frame.strip.divider;
     if page == RidePage::Map {
         if let Some(radar) = &scene.radar {
             paint_radar(radar, &mut row.within(strip));
@@ -516,30 +547,15 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
         paint_map(scene, row);
         return;
     }
-    if page.tiled() {
-        if let Some(radar) = &scene.radar {
-            paint_radar(radar, &mut row.within(strip));
-        }
-        match page {
-            RidePage::Climb => climb::paint_chart(scene.climb(), row),
-            RidePage::Workout => workout::paint_chart(scene.chart(), row),
-            _ => {}
-        }
-        scene.canvas().paint(row);
-        return;
-    }
     if let Some(radar) = &scene.radar {
         paint_radar(radar, &mut row.within(strip));
-        paint_page(scene, page, &mut row.within(body.left..body.right));
-        return;
     }
-    paint_page(
-        scene,
-        page,
-        &mut row
-            .shifted(frame.centre_shift)
-            .within(body.left..body.right),
-    );
+    match page {
+        RidePage::Climb => climb::paint_chart(scene.climb(), row),
+        RidePage::Workout => workout::paint_chart(scene.chart(), row),
+        _ => {}
+    }
+    scene.canvas().paint(row);
 }
 
 pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
@@ -562,13 +578,6 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         }
     }
     scene.canvas().parts(parts);
-}
-
-fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
-    match page {
-        RidePage::Map => paint_map(scene, row),
-        _ => scene.canvas().paint(row),
-    }
 }
 
 fn paint_map(scene: &Scene, row: &mut Row) {
@@ -621,14 +630,10 @@ pub fn pixels(
     }
 }
 
-pub use end::{Regions as EndRegions, regions as end_regions};
-pub use lap::{Regions as LapRegions, regions as lap_regions};
 pub use main::{
     chip as main_chip, flags as main_flags, flags_of as main_flags_of, laid as main_laid,
     status_bar as main_status_bar,
 };
-pub use paused::{Regions as PausedRegions, regions as paused_regions};
-pub use stats::{Regions as StatsRegions, regions as stats_regions};
 
 #[derive(Clone, Copy, Debug, Hash)]
 pub struct Radar {
@@ -703,34 +708,17 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
             _ => reference_map_pixel(scene, x, y),
         };
     }
-    if page.tiled() {
-        if let Some(radar) = &scene.radar
-            && x < RADAR_WIDTH - 2
-        {
-            return look.ink(reference_radar_pixel(radar, x, y));
-        }
-        let under = match page {
-            RidePage::Climb => look.ink(climb::chart_pixel(scene.climb(), x, y)),
-            RidePage::Workout => look.ink(workout::chart_pixel(scene.chart(), x, y)),
-            _ => black,
-        };
-        return scene.canvas().pixel(look, x, y, under);
+    if let Some(radar) = &scene.radar
+        && x < RADAR_WIDTH - 2
+    {
+        return look.ink(reference_radar_pixel(radar, x, y));
     }
-    let x = if let Some(radar) = &scene.radar {
-        if x < RADAR_WIDTH - 2 {
-            return look.ink(reference_radar_pixel(radar, x, y));
-        }
-        x
-    } else {
-        x + CENTRE_SHIFT
+    let under = match page {
+        RidePage::Climb => look.ink(climb::chart_pixel(scene.climb(), x, y)),
+        RidePage::Workout => look.ink(workout::chart_pixel(scene.chart(), x, y)),
+        _ => black,
     };
-    if !(BODY.left..BODY.right).contains(&x) {
-        return black;
-    }
-    match page {
-        RidePage::Map => reference_map_pixel(scene, x, y),
-        _ => scene.canvas().pixel(look, x, y, black),
-    }
+    scene.canvas().pixel(look, x, y, under)
 }
 
 #[cfg(test)]
@@ -812,7 +800,7 @@ pub(crate) fn kilometres(value: &mut Text<12>, mm: u64) {
 }
 
 /// Lap time: MM:SS, or H:MM:SS from an hour.
-pub(super) fn lap_time(value: &mut Text<12>, seconds: u64) {
+pub(crate) fn lap_time(value: &mut Text<12>, seconds: u64) {
     let t = seconds;
     let _ = if t < 3600 {
         write!(value, "{:02}:{:02}", t / 60, t % 60)
@@ -837,6 +825,11 @@ pub(crate) fn grade(value: &mut Text<12>, tenths: Option<i32>) {
 
 /// The live readings a trace's shown line names, in its order.
 pub const READINGS: [&str; 7] = ["time", "speed", "power", "hr", "cad", "dist", "grade"];
+
+/// Which of the trace's shown readings the paused screen draws.
+pub fn paused_readings() -> heapless::Vec<&'static str, 7> {
+    tree_readings(ScreenId::RidePaused).unwrap_or_default()
+}
 
 pub(crate) fn shown(
     out: &mut impl Write,
@@ -890,6 +883,149 @@ pub(crate) fn largest_box(layout: &super::Layout, component: u8) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::builtin::{Choices, Laid, ScreenId};
+    use crate::compose::node::{Flags, What};
+    use crate::compose::registry::{self, SPACE, STATUS};
+    use crate::screens::workout::Page;
+
+    /// `view` solved and drawn, as the runtime shows its page.
+    pub(super) fn prepared(mut view: View<'static>) -> View<'static> {
+        view.compose_main();
+        view.prepare();
+        view
+    }
+
+    /// The balance rule on `id`: the room its tiles leave down its column
+    /// is even gaps, above the first row and below the last as well as
+    /// between them, on every panel, with and without a radar. A chart
+    /// ends the column above it.
+    pub(super) fn balanced(id: ScreenId) {
+        for layout in crate::screens::panels::ALL {
+            for flags in [Flags::NONE, Flags::RADAR] {
+                let laid = Laid::new(id, layout, Choices::default(), flags, None).unwrap();
+                let nodes = laid.screen().tree().nodes();
+                let (mut start, mut end) = (0, layout.scaled.panel.height as i32);
+                let mut rows: std::vec::Vec<(i32, i32)> = std::vec::Vec::new();
+                for placed in laid.leaves() {
+                    let Some(What::Leaf { component, .. }) = nodes[usize::from(placed.node)].what()
+                    else {
+                        continue;
+                    };
+                    let (top, bottom) = (i32::from(placed.rect.top), i32::from(placed.rect.bottom));
+                    match component {
+                        STATUS => start = bottom,
+                        SPACE => {}
+                        _ if registry::tile(component).heavy() => end = top,
+                        _ => match rows.iter_mut().find(|row| top < row.1 && row.0 < bottom) {
+                            Some(row) => *row = (row.0.min(top), row.1.max(bottom)),
+                            None => rows.push((top, bottom)),
+                        },
+                    }
+                }
+                rows.sort();
+                let mut edges = std::vec![start];
+                for (top, bottom) in &rows {
+                    edges.extend([*top, *bottom]);
+                }
+                edges.push(end);
+                let gaps: std::vec::Vec<i32> =
+                    edges.chunks(2).map(|pair| pair[1] - pair[0]).collect();
+                let (least, most) = (gaps.iter().min().unwrap(), gaps.iter().max().unwrap());
+                assert!(
+                    most - least <= 1 && *least > 0,
+                    "{id:?} {flags} on {:?}: gaps {gaps:?}",
+                    layout.scaled.panel
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_paused_screen_and_end_ride_are_centred() {
+        for id in [ScreenId::RidePaused, ScreenId::RideEnd] {
+            for layout in crate::screens::panels::ALL {
+                let laid = Laid::new(id, layout, Choices::default(), Flags::NONE, None).unwrap();
+                let leaves = laid.leaves();
+                let above = i32::from(leaves[0].rect.top);
+                let bottom = i32::from(leaves[leaves.len() - 1].rect.bottom);
+                let below = layout.scaled.panel.height as i32 - bottom;
+                assert!(
+                    (above - below).abs() <= 1,
+                    "{id:?}: {above} above, {below} below"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn longest_pause_lays_out_whole_between_the_cues() {
+        use crate::screens::cue;
+        for layout in crate::screens::panels::ALL {
+            for auto in [false, true] {
+                let mut view = View::new(Page::Ride, 0, None);
+                view.layout = layout;
+                view.pause_screen = true;
+                view.auto_paused = auto;
+                view.paused_secs = 359_999;
+                view.active_secs = 359_999;
+                let sample = crate::ride::log::Sample::default();
+                view.totals.add(1000, 999_999_999, &sample, None);
+                let mut view = prepared(view);
+                let scene = view.prepare();
+                scene.check_layout();
+                let cues = scene.cues().to_vec();
+                assert_eq!(cues.len(), 2, "resume and end");
+                let canvas = view.canvas();
+                let what = std::format!("paused on {:?}", layout.scaled.panel);
+                for shown in ["FOR 99:59:59", "99:59:59", "1000.0 KM", "RIDE TIME"] {
+                    assert!(canvas.shows(shown), "{what}: {shown}");
+                }
+                assert_eq!(canvas.shows("RIDE ON TO RESUME"), auto, "{what}");
+                assert_eq!(canvas.shows("AUTO PAUSED"), auto, "{what}");
+                let screen = layout.scaled.screen();
+                let (width, height) = (screen.right, screen.bottom);
+                let reach = layout.scaled.unit(cue::RADIUS + 2);
+                for run in &canvas.runs {
+                    let (left, right) = (run.columns().start, run.columns().end.min(width));
+                    let (top, bottom) = (run.top, run.bottom().min(height));
+                    let text = core::str::from_utf8(run.line.text());
+                    for cue in &cues {
+                        let corner = cue.corner(layout);
+                        let dx = if corner.left() { left } else { width - right };
+                        let dy = if corner.top() { top } else { height - bottom };
+                        assert!(dx * dx + dy * dy >= reach.pow(2), "{what}: {text:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn end_ride_offers_the_trash_only_where_a_ride_can_be_discarded() {
+        use crate::screens::cue::Icon;
+        use crate::screens::workout::Discard;
+        for (discard, icons) in [
+            (Discard::Unavailable, &[Icon::Check, Icon::Back][..]),
+            (
+                Discard::Offered,
+                &[Icon::Check, Icon::Back, Icon::Trash][..],
+            ),
+        ] {
+            let mut view = View::new(Page::EndRide, 0, None);
+            view.discard = discard;
+            let mut view = prepared(view);
+            let scene = view.prepare();
+            scene.check_layout();
+            let mut shown: std::vec::Vec<Icon> = scene.cues().iter().map(|cue| cue.icon).collect();
+            shown.sort_by_key(|icon| *icon as u8);
+            let mut icons = icons.to_vec();
+            icons.sort_by_key(|icon| *icon as u8);
+            assert_eq!(shown, icons, "{discard:?}");
+            for line in ["END RIDE?", "YOUR RIDE WILL BE SAVED", "0:00:00", "0.00 KM"] {
+                assert!(view.canvas().shows(line), "{line}");
+            }
+        }
+    }
 
     /// The readings `page` draws, found by drawing it with every reading
     /// at a value nothing else on the page takes.
@@ -946,22 +1082,15 @@ mod tests {
             Some(RidePage::Map) => view.show_map(map.filled()),
             _ => {}
         }
-        let texts: std::vec::Vec<std::string::String> = match page {
-            None => paused::prepare(&view)
-                .runs
-                .iter()
-                .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
-                .collect(),
-            Some(_) => {
-                view.compose(slots);
-                view.prepare();
-                view.canvas()
-                    .runs
-                    .iter()
-                    .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
-                    .collect()
-            }
-        };
+        view.pause_screen = page.is_none();
+        view.compose(slots);
+        view.prepare();
+        let texts: std::vec::Vec<std::string::String> = view
+            .canvas()
+            .runs
+            .iter()
+            .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
+            .collect();
         let mut line = std::string::String::new();
         shown(
             &mut line,
@@ -998,19 +1127,19 @@ mod tests {
                 );
             }
         }
-        assert_eq!(paused::READINGS.to_vec(), drawn(None, chosen), "paused");
+        assert_eq!(paused_readings().to_vec(), drawn(None, chosen), "paused");
     }
 
-    fn choice(hidden: &[RidePage]) -> PageChoice {
+    fn choice(hidden: &[RidePage]) -> Deck {
         hidden
             .iter()
-            .fold(PageChoice::default(), |choice, page| choice.toggled(*page))
+            .fold(Deck::default(), |choice, page| choice.toggled(*page))
     }
 
     #[test]
     fn pages_step_in_order_and_wrap_both_ways() {
-        let free = Pages::new(false, PageChoice::default());
-        assert_eq!(free.as_slice(), RidePage::ALL);
+        let free = Deck::default().shown(false);
+        assert_eq!(free.pages(), RidePage::ALL);
         assert_eq!(RidePage::default(), RidePage::Main);
         assert_eq!(free.next(RidePage::Main), Some(RidePage::Stats));
         assert_eq!(free.next(RidePage::Stats), Some(RidePage::Lap));
@@ -1020,8 +1149,8 @@ mod tests {
         assert_eq!(free.following(RidePage::Map), RidePage::Main);
         assert_eq!(free.preceding(RidePage::Main), RidePage::Map);
         assert_eq!(free.preceding(RidePage::Stats), RidePage::Main);
-        let training = Pages::new(true, PageChoice::default());
-        assert_eq!(training.as_slice(), RidePage::TRAINING);
+        let training = Deck::default().shown(true);
+        assert_eq!(training.pages(), RidePage::TRAINING);
         assert_eq!(training.following(RidePage::Workout), RidePage::Main);
         assert_eq!(training.following(RidePage::Climb), RidePage::Map);
         assert_eq!(training.following(RidePage::Map), RidePage::Workout);
@@ -1032,23 +1161,23 @@ mod tests {
 
     #[test]
     fn every_subset_of_optional_pages_makes_a_walkable_list() {
-        for bits in 0..1u8 << PageChoice::OPTIONAL.len() {
-            let hidden: std::vec::Vec<RidePage> = PageChoice::OPTIONAL
+        for bits in 0..1u8 << Deck::OPTIONAL.len() {
+            let hidden: std::vec::Vec<RidePage> = Deck::OPTIONAL
                 .into_iter()
                 .enumerate()
                 .filter(|(i, _)| bits >> i & 1 == 1)
                 .map(|(_, page)| page)
                 .collect();
             for workout in [false, true] {
-                let pages = Pages::new(workout, choice(&hidden));
-                let list = pages.as_slice();
+                let pages = choice(&hidden).shown(workout);
+                let list = pages.pages();
                 assert!(list.contains(&RidePage::Main), "{hidden:?}");
                 assert_eq!(list.contains(&RidePage::Workout), workout);
                 assert_eq!(list.len(), pages.count());
                 assert!(hidden.iter().all(|page| !pages.contains(*page)));
                 assert_eq!(
                     list.len(),
-                    1 + usize::from(workout) + PageChoice::OPTIONAL.len() - hidden.len()
+                    1 + usize::from(workout) + Deck::OPTIONAL.len() - hidden.len()
                 );
                 let mut page = pages.first();
                 for (i, shown) in list.iter().enumerate() {
@@ -1067,34 +1196,71 @@ mod tests {
 
     #[test]
     fn with_everything_hidden_only_main_remains() {
-        let all_off = choice(&PageChoice::OPTIONAL);
-        let pages = Pages::new(false, all_off);
-        assert_eq!(pages.as_slice(), [RidePage::Main]);
+        let all_off = choice(&Deck::OPTIONAL);
+        let pages = all_off.shown(false);
+        assert_eq!(pages.pages(), [RidePage::Main]);
         assert_eq!(pages.following(RidePage::Main), RidePage::Main);
         assert_eq!(pages.preceding(RidePage::Main), RidePage::Main);
         assert_eq!(pages.next(RidePage::Main), None);
         assert_eq!(
-            Pages::new(true, all_off).as_slice(),
+            all_off.shown(true).pages(),
             [RidePage::Workout, RidePage::Main]
         );
     }
 
     #[test]
     fn main_and_workout_cannot_be_hidden_and_toggling_twice_restores() {
-        let default = PageChoice::default();
-        assert_eq!(default.bits(), 0);
+        let default = Deck::default();
+        assert_eq!(default.pages(), RidePage::ALL);
         for page in [RidePage::Main, RidePage::Workout] {
             assert_eq!(default.toggled(page), default);
             assert!(default.shows(page));
         }
-        for page in PageChoice::OPTIONAL {
+        for page in Deck::OPTIONAL {
             let off = default.toggled(page);
             assert!(!off.shows(page));
-            assert_eq!(off.bits().count_ones(), 1);
-            assert_eq!(off.toggled(page), default);
+            assert_eq!(off.count(), default.count() - 1);
+            assert_eq!(off.toggled(page), default, "back in its place");
         }
-        assert_eq!(PageChoice::from_bits(0b1_1111), None);
-        assert_eq!(PageChoice::from_bits(0b10_0000), None);
+    }
+
+    #[test]
+    fn a_deck_round_trips_its_bytes_and_refuses_what_means_nothing() {
+        for bits in 0..1u8 << Deck::OPTIONAL.len() {
+            let hidden: std::vec::Vec<RidePage> = Deck::OPTIONAL
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| bits >> i & 1 == 1)
+                .map(|(_, page)| page)
+                .collect();
+            let deck = choice(&hidden);
+            assert_eq!(Deck::decode(deck.encode()), Some(deck), "{hidden:?}");
+        }
+        assert_eq!(Deck::default().encode(), [1, 2, 3, 5]);
+        assert_eq!(choice(&Deck::OPTIONAL).encode(), [0xff; 4]);
+        let reordered = Deck::decode([5, 1, 0xff, 0xff]).unwrap();
+        assert_eq!(
+            reordered.pages(),
+            [RidePage::Main, RidePage::Map, RidePage::Stats]
+        );
+        assert_eq!(
+            reordered.showing(RidePage::Lap).pages(),
+            [
+                RidePage::Main,
+                RidePage::Map,
+                RidePage::Stats,
+                RidePage::Lap
+            ]
+        );
+        for bytes in [
+            [0, 0xff, 0xff, 0xff],
+            [4, 0xff, 0xff, 0xff],
+            [1, 1, 0xff, 0xff],
+            [0xff, 1, 0xff, 0xff],
+            [6, 0xff, 0xff, 0xff],
+        ] {
+            assert_eq!(Deck::decode(bytes), None, "{bytes:?}");
+        }
     }
 
     /// Radar alerts are safety-critical: even the farthest target is drawn

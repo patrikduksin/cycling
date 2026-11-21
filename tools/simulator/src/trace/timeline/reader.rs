@@ -872,9 +872,9 @@ pub fn kind(world: &World<'_>) -> Option<Kind> {
 /// Which shown readings a ride page draws, from VANA's own pages; the main
 /// page's lower line as the rider left it by default.
 fn readings(page: &str) -> Option<String> {
-    use vana::screens::ride::{PAUSED_READINGS, RidePage, slots::Slots};
+    use vana::screens::ride::{RidePage, paused_readings, slots::Slots};
     let readings = match page {
-        "ride/paused" => PAUSED_READINGS.to_vec(),
+        "ride/paused" => paused_readings().to_vec(),
         name => match RidePage::named(name)?.readings(Slots::default()) {
             Some(readings) => readings.to_vec(),
             None => return Some("the workout step's target".into()),

@@ -226,7 +226,7 @@ impl Runtime {
         health.set(
             Store::Settings,
             match self.preferences.stored {
-                Stored::Missing => Health::Blank,
+                Stored::Missing | Stored::Outdated => Health::Blank,
                 Stored::Current => Health::Current,
                 Stored::Foreign => Health::Foreign,
             },

@@ -465,7 +465,7 @@ fn slack_becomes_even_gaps_outer_edges_included_measured_ink_to_ink() {
 #[test]
 fn the_hero_upgrades_before_the_others_and_the_others_in_order() {
     let mut contested = 0;
-    for seed in 0..1500 {
+    for seed in 0..2000 {
         let mut rng = Rng::new(seed);
         let metric = rng.pick(&Metric::ALL) as u8;
         let count = rng.range(2, 4) as usize;
@@ -1170,6 +1170,12 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
             "total",
             "effort",
             "chip",
+            "ride cell",
+            "zones",
+            "laps",
+            "lap head",
+            "pause",
+            "ride line",
             "road",
             "climb effort",
             "steepness",

@@ -806,3 +806,63 @@ fn a_clear_waits_for_a_ride_on_the_card_to_end() {
         "ACCEPTED"
     );
 }
+
+#[test]
+fn an_older_vana_record_resets_vana_alone_and_keeps_the_shell_settings() {
+    use device_api::ble_transport::Selection;
+    use device_api::connectivity::{Text, WifiConfig};
+    use firmware_services::storage::Journal;
+    use firmware_shell::preferences::{AppPreferences, Settings, Source};
+    use firmware_shell::storage::{Settings as _, Store as SettingsStore};
+
+    let mut sim = Sim::named("format-older-app-record");
+    sim.discard_recording();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_rides();
+    sim.format_files();
+    sim.format_store();
+    // A version 11 record with FTP 258 W and LTHR 170 bpm.
+    let older = [
+        11, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 1, 0, 1,
+    ];
+    let mut settings = Settings::with_values(79, 120, 21, -180).unwrap();
+    settings.wifi = Some(WifiConfig::new(b"Owned test", b"test-password", true).unwrap());
+    settings.ble = Some(Selection {
+        name: Text::new(b"Owned fixture").unwrap(),
+        address: Some([1, 2, 3, 4, 5, 6]),
+        service: 0x180d,
+        characteristic: 0x2a37,
+    });
+    settings.ble_profile = 1;
+    settings.app = AppPreferences::new(&older).unwrap();
+    Journal::new(sim.device.media.untapped(), Region::Configuration)
+        .save(&settings.encode())
+        .unwrap();
+    sim.cut_power();
+    sim.wait_usable();
+    sim.advance(seconds(5));
+
+    sim.expect_no_text("FORMAT STORAGE?");
+    assert_eq!(field(&health(&mut sim), "settings"), "current");
+    let (status, profile) = sim.command("PROFILE");
+    assert_eq!(status, "OK");
+    assert_eq!(
+        profile, "ftp=215 lthr=185 stored=current persistence=saved",
+        "VANA's own preferences are back to their defaults"
+    );
+    let after = SettingsStore::new(sim.device.media.untapped())
+        .load()
+        .unwrap();
+    assert_eq!(after.source, Source::Current);
+    assert_eq!(after.settings.brightness, 79);
+    assert_eq!(after.settings.dim_timeout_secs, 120);
+    assert_eq!(after.settings.wifi, settings.wifi);
+    assert_eq!(after.settings.ble, settings.ble);
+    assert_eq!(after.settings.ble_profile, 1);
+    assert_ne!(
+        after.settings.app.bytes(),
+        &older[..],
+        "VANA rewrote its own record"
+    );
+}

@@ -22,7 +22,7 @@ impl Runtime {
             None if self.ride.climbs().climbing().is_some() => Road::Climbing,
             None => Road::Clear,
         };
-        let page_on = self.page_choice_with_course_map().shows(RidePage::Climb);
+        let page_on = self.deck_with_course_map().shows(RidePage::Climb);
         self.navigation.go(To::Road { road, page_on });
     }
 }

@@ -4,13 +4,9 @@
 use crate::ride::zones::{HEART_ZONES, POWER_ZONES, TrainingProfile, ZoneTime};
 use crate::screens::workout::{Graphics, View};
 
-/// Z1 grey, Z2 blue, Z3 green, Z4 yellow, Z5 orange, Z6 red, Z7 purple. All
-/// are light enough for black text; the zone number is always drawn too.
-pub const COLOURS: [u16; POWER_ZONES] = crate::screens::chrome::ZONES;
-
 /// Pixels in a zone gauge.
 pub(in crate::screens) const GAUGE_WIDTH: usize = 56;
-/// Pixels in a time-in-zone bar, beside its caption on the stats page.
+/// Pixels in a time-in-zone bar, beside its caption on the summary.
 pub(super) const BAR_WIDTH: usize = 148;
 
 /// A gliding reading's position on its zone gauge.

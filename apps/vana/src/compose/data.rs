@@ -1,5 +1,5 @@
-use crate::screens::chrome::{CADENCE, GRADE, HEART, POWER, SPEED, WHITE};
-use crate::screens::ride::{self, ClimbRoad as Road, Training};
+use crate::screens::chrome::{ACCENT, CADENCE, GRADE, HEART, POWER, SECONDARY, SPEED, WHITE};
+use crate::screens::ride::{self, ClimbRoad as Road, LapBar, Training};
 use crate::screens::workout::Text;
 use core::fmt::Write;
 
@@ -13,6 +13,18 @@ pub trait Data {
     /// Where the effort's gliding reading sits on its zone gauge.
     fn gauge(&self, _: Effort) -> Option<OnGauge> {
         None
+    }
+    /// The ride's time in each of the effort's zones, none before any.
+    fn zone_time(&self, _: Effort) -> Option<Shares> {
+        None
+    }
+    /// The finished laps, oldest first, and the open lap.
+    fn laps(&self) -> Option<(&[LapBar], LapBar)> {
+        None
+    }
+    /// The ride paused itself and resumes when it moves.
+    fn auto_paused(&self) -> bool {
+        false
     }
     /// The range a workout step asks of the effort, on its gauge.
     fn target(&self, _: Effort) -> Option<[OnGauge; 2]> {
@@ -104,6 +116,15 @@ pub struct OnGauge {
     pub range: u32,
 }
 
+/// Where each zone's share of a whole ends, in [`Shares::WHOLE`] parts
+/// from its start: zone 1 first, the zones the effort lacks at the whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shares(pub [u16; 7]);
+
+impl Shares {
+    pub const WHOLE: u16 = 1000;
+}
+
 pub struct Nothing;
 
 impl Data for Nothing {
@@ -151,10 +172,43 @@ pub enum Metric {
     Elapsed,
     /// Tenths of a percent.
     Grade,
+    /// Seconds moving.
+    Moving,
+    /// Millimetres a second.
+    MaxSpeed,
+    /// Hundredths of the intensity factor.
+    Intensity,
+    /// The training stress score.
+    Stress,
+    /// Seconds of the open lap.
+    LapTime,
+    /// Millimetres.
+    LapDistance,
+    /// Watts.
+    LapPower,
+    /// Millimetres a second.
+    LapSpeed,
+    /// Beats a minute.
+    LapHeart,
+    /// The open lap's number, from 1.
+    LapNumber,
+    /// The last finished lap's number.
+    PrevLapNumber,
+    /// Seconds.
+    PrevLapTime,
+    /// Watts.
+    PrevLapPower,
+    /// The open lap's average speed less the last finished lap's, in tenths
+    /// of a km/h, each side truncated as a speed reads.
+    SpeedDiff,
+    /// The open lap's average power less the last finished lap's, in watts.
+    PowerDiff,
+    /// Seconds the ride has been paused.
+    Paused,
 }
 
 impl Metric {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 30] = [
         Self::Cadence,
         Self::Distance,
         Self::NormalizedPower,
@@ -169,6 +223,22 @@ impl Metric {
         Self::Heart,
         Self::Elapsed,
         Self::Grade,
+        Self::Moving,
+        Self::MaxSpeed,
+        Self::Intensity,
+        Self::Stress,
+        Self::LapTime,
+        Self::LapDistance,
+        Self::LapPower,
+        Self::LapSpeed,
+        Self::LapHeart,
+        Self::LapNumber,
+        Self::PrevLapNumber,
+        Self::PrevLapTime,
+        Self::PrevLapPower,
+        Self::SpeedDiff,
+        Self::PowerDiff,
+        Self::Paused,
     ];
 
     /// The readings the lower line offers, in the order Settings steps
@@ -220,6 +290,22 @@ impl Metric {
             Self::Heart => "HEART",
             Self::Elapsed => "TIME",
             Self::Grade => "GRADE",
+            Self::Moving => "MOVING",
+            Self::MaxSpeed => "MAX SPEED",
+            Self::Intensity => "IF",
+            Self::Stress => "TSS",
+            Self::LapTime => "LAP TIME",
+            Self::LapDistance => "LAP KM",
+            Self::LapPower => "LAP W",
+            Self::LapSpeed => "LAP KM/H",
+            Self::LapHeart => "LAP BPM",
+            Self::LapNumber => "LAP",
+            Self::PrevLapNumber => "PREV LAP",
+            Self::PrevLapTime => "PREV LAP",
+            Self::PrevLapPower => "PREV W",
+            Self::SpeedDiff => "KM/H DIFF",
+            Self::PowerDiff => "W DIFF",
+            Self::Paused => "PAUSED",
         }
     }
 
@@ -249,9 +335,20 @@ impl Metric {
             Self::Work => "KJ",
             Self::Ascent => "M",
             Self::Speed => "KM/H",
-            Self::Power => "W",
-            Self::Heart => "BPM",
-            Self::Elapsed | Self::Grade => "",
+            Self::Power | Self::LapPower | Self::PrevLapPower | Self::PowerDiff => "W",
+            Self::Heart | Self::LapHeart => "BPM",
+            Self::MaxSpeed | Self::LapSpeed | Self::SpeedDiff => "KM/H",
+            Self::LapDistance => "KM",
+            Self::Stress => "TSS",
+            Self::Elapsed
+            | Self::Grade
+            | Self::Moving
+            | Self::Intensity
+            | Self::LapTime
+            | Self::LapNumber
+            | Self::PrevLapNumber
+            | Self::PrevLapTime
+            | Self::Paused => "",
         }
     }
 
@@ -267,11 +364,26 @@ impl Metric {
     pub const fn color(self) -> u16 {
         match self {
             Self::Cadence => CADENCE,
-            Self::Distance | Self::Kcal | Self::Work | Self::Elapsed => WHITE,
-            Self::NormalizedPower | Self::AvgPower | Self::Power => POWER,
-            Self::AvgHeart | Self::Heart => HEART,
-            Self::AvgSpeed | Self::Speed => SPEED,
+            Self::Distance
+            | Self::Kcal
+            | Self::Work
+            | Self::Elapsed
+            | Self::Moving
+            | Self::LapTime
+            | Self::LapDistance
+            | Self::PrevLapTime => WHITE,
+            Self::NormalizedPower
+            | Self::AvgPower
+            | Self::Power
+            | Self::Intensity
+            | Self::Stress
+            | Self::LapPower
+            | Self::PrevLapPower => POWER,
+            Self::AvgHeart | Self::Heart | Self::LapHeart => HEART,
+            Self::AvgSpeed | Self::Speed | Self::MaxSpeed | Self::LapSpeed => SPEED,
             Self::Ascent | Self::Grade => GRADE,
+            Self::LapNumber | Self::PrevLapNumber => ACCENT,
+            Self::SpeedDiff | Self::PowerDiff | Self::Paused => SECONDARY,
         }
     }
 
@@ -295,12 +407,25 @@ impl Metric {
     /// to shed, as whole watts past 999, has its looks measured on its end.
     pub(crate) const fn ends(self) -> (i32, i32) {
         match self {
-            Self::Speed | Self::AvgSpeed => (0, crate::ride::gps_speed::MAX_SPEED_MM_S as i32),
-            Self::Power | Self::AvgPower | Self::NormalizedPower => (0, 9999),
-            Self::Heart | Self::AvgHeart | Self::Cadence => (0, 999),
-            Self::Distance => (0, 9_999_900),
-            Self::Elapsed => (0, 99 * 3600 + 59 * 60 + 59),
-            Self::Grade => (-999, 999),
+            Self::Speed | Self::AvgSpeed | Self::MaxSpeed | Self::LapSpeed => {
+                (0, crate::ride::gps_speed::MAX_SPEED_MM_S as i32)
+            }
+            Self::Power
+            | Self::AvgPower
+            | Self::NormalizedPower
+            | Self::LapPower
+            | Self::PrevLapPower
+            | Self::Stress
+            | Self::LapNumber
+            | Self::PrevLapNumber => (0, 9999),
+            Self::Heart | Self::AvgHeart | Self::Cadence | Self::LapHeart => (0, 999),
+            Self::Distance | Self::LapDistance => (0, 9_999_900),
+            Self::Elapsed | Self::Moving | Self::LapTime | Self::PrevLapTime | Self::Paused => {
+                (0, 99 * 3600 + 59 * 60 + 59)
+            }
+            Self::Grade | Self::SpeedDiff => (-999, 999),
+            Self::Intensity => (0, 999),
+            Self::PowerDiff => (-9999, 9999),
             Self::Kcal => (0, 999_499),
             Self::Work | Self::Ascent => (0, 99_999),
         }
@@ -312,8 +437,10 @@ impl Metric {
     /// count goes to thousands past 9999.
     pub(crate) const fn turn(self) -> Option<i32> {
         match self {
-            Self::Speed | Self::AvgSpeed => Some(SPEED_TENTHS_MOST),
-            Self::Distance => Some(99_994),
+            Self::Speed | Self::AvgSpeed | Self::MaxSpeed | Self::LapSpeed => {
+                Some(SPEED_TENTHS_MOST)
+            }
+            Self::Distance | Self::LapDistance => Some(99_994),
             Self::Kcal => Some(WHOLE),
             _ => None,
         }
@@ -339,15 +466,26 @@ impl Metric {
         let whole = |out: &mut Text<12>| ride::whole(out, value);
         let unsigned = value.map(|value| value.max(0) as u32);
         match self {
-            Self::Speed | Self::AvgSpeed => match unsigned {
+            Self::Speed | Self::AvgSpeed | Self::MaxSpeed | Self::LapSpeed => match unsigned {
                 Some(mm_s) if mm_s > SPEED_TENTHS_MOST as u32 => {
                     let _ = write!(out, "{}", u64::from(mm_s) * 36 / 10_000);
                 }
                 _ => ride::speed(out, unsigned),
             },
-            Self::Distance => ride::kilometres(out, u64::from(unsigned.unwrap_or(0)) * 1000),
+            Self::Distance | Self::LapDistance => {
+                ride::kilometres(out, u64::from(unsigned.unwrap_or(0)) * 1000)
+            }
             Self::Elapsed => ride::elapsed(out, u64::from(unsigned.unwrap_or(0))),
+            Self::Moving | Self::LapTime | Self::PrevLapTime | Self::Paused => match unsigned {
+                Some(seconds) => ride::lap_time(out, u64::from(seconds)),
+                None => whole(out),
+            },
             Self::Grade => ride::grade(out, value),
+            Self::Intensity => hundredths(out, unsigned),
+            Self::SpeedDiff => signed(out, value, |out, tenths| {
+                write!(out, "{}.{}", tenths / 10, tenths % 10)
+            }),
+            Self::PowerDiff => signed(out, value, |out, watts| write!(out, "{watts}")),
             Self::Kcal => thousands(out, unsigned),
             Self::Cadence
             | Self::NormalizedPower
@@ -356,7 +494,13 @@ impl Metric {
             | Self::Work
             | Self::Ascent
             | Self::Power
-            | Self::Heart => whole(out),
+            | Self::Heart
+            | Self::Stress
+            | Self::LapPower
+            | Self::LapHeart
+            | Self::LapNumber
+            | Self::PrevLapNumber
+            | Self::PrevLapPower => whole(out),
         }
     }
 }
@@ -366,6 +510,30 @@ const WHOLE: i32 = 9_999;
 /// The fastest speed, in mm/s, shown with its tenth: 99.9 km/h. From
 /// 100 km/h speed reads in whole km/h, so it never needs a wider look.
 const SPEED_TENTHS_MOST: i32 = (1_000_000 - 1) / 36;
+
+fn hundredths(out: &mut Text<12>, value: Option<u32>) {
+    let _ = match value {
+        Some(v) => write!(out, "{}.{:02}", v / 100, v % 100),
+        None => out.push_str("--"),
+    };
+}
+
+fn signed(
+    out: &mut Text<12>,
+    value: Option<i32>,
+    magnitude: impl FnOnce(&mut Text<12>, u32) -> core::fmt::Result,
+) {
+    let Some(delta) = value else {
+        let _ = out.push_str("--");
+        return;
+    };
+    let _ = out.push_str(match delta {
+        1.. => "+",
+        ..0 => "-",
+        0 => "",
+    });
+    let _ = magnitude(out, delta.unsigned_abs());
+}
 
 /// A count that must fit four digits: whole up to 9999, then to the nearest
 /// thousand ("10K") so a long ride never shows a cut-off number.

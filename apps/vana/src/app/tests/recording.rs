@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::navigation::To;
 use crate::ride::log::Status;
-use crate::screens::ride::{PageChoice, RidePage};
+use crate::screens::ride::{Deck, RidePage};
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, POWER, SPEED};
 use std::{format, string::String};
@@ -823,8 +823,8 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
 fn hide(runtime: &mut Runtime, pages: &[RidePage]) {
     let choice = pages
         .iter()
-        .fold(PageChoice::default(), |choice, page| choice.toggled(*page));
-    runtime.preferences.options.ride_pages = choice;
+        .fold(Deck::default(), |choice, page| choice.toggled(*page));
+    runtime.preferences.options.deck = choice;
 }
 
 #[test]

@@ -170,6 +170,8 @@ pub(super) enum Extra<'a> {
         past_title: Text<20>,
         elevation: Option<&'a ride::ElevationChart>,
     },
+    /// The sensor pages.
+    Sensors(&'a super::sensors::Menu),
 }
 
 /// Lines of text prepared for a page: Settings' values, notes and status,
@@ -216,6 +218,7 @@ impl<'a> Extra<'a> {
         after -> &After = Self::Summary { after, .. } => after;
         past_title -> &Text<20> = Self::Summary { past_title, .. } => past_title;
         elevation -> Option<&'a ride::ElevationChart> = Self::Summary { elevation, .. } => *elevation;
+        sensors -> &'a super::sensors::Menu = Self::Sensors(menu) => *menu;
     }
 }
 
@@ -239,7 +242,6 @@ pub struct Scene<'v> {
 #[derive(Clone, Copy, Debug, Hash)]
 enum Kind<'v> {
     PageUnderBar,
-    Scrolled,
     Ride(RidePage),
     Phone,
     Summary {
@@ -299,7 +301,7 @@ impl Extra<'_> {
             Self::Ready(_) => Painted::Ready,
             Self::Home(_) => Painted::None,
             Self::Workouts(_) => Painted::Workouts,
-            Self::History(_) => Painted::None,
+            Self::History(_) | Self::Sensors(_) => Painted::None,
             Self::Bests { bests: _, mode: _ } => Painted::Bests,
             Self::Form(_) => Painted::Form,
             Self::Summary {
@@ -373,7 +375,7 @@ impl<'v> Scene<'v> {
             return;
         }
         match self.kind {
-            Kind::PageUnderBar | Kind::Scrolled => self.canvas().paint(row),
+            Kind::PageUnderBar => self.canvas().paint(row),
             Kind::Ride(page) => ride::paint(self, page, row),
             Kind::Phone => {
                 self.canvas().paint(row);
@@ -409,9 +411,8 @@ impl<'v> Scene<'v> {
 
     fn bar_rows(&self) -> Range<usize> {
         match self.kind {
-            Kind::Ride(RidePage::Map) => 0..self.layout.chrome.status_bar.bottom,
             Kind::Ride(RidePage::Main) => self.main_bar.clone(),
-            _ => 0..self.layout.chrome.content.top,
+            _ => 0..crate::compose::tiles::status::rows(&self.layout.scaled),
         }
     }
 
@@ -475,7 +476,7 @@ impl<'v> Scene<'v> {
             return color;
         }
         let mut color = match self.kind {
-            Kind::PageUnderBar | Kind::Scrolled => self.canvas().pixel(look, x, y, black),
+            Kind::PageUnderBar => self.canvas().pixel(look, x, y, black),
             Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
             Kind::Phone => super::phone::pixel(self, x, y)
                 .unwrap_or_else(|| self.canvas().pixel(look, x, y, black)),
@@ -554,9 +555,8 @@ impl Scene<'_> {
             );
             return;
         }
-        if let Kind::PageUnderBar | Kind::Scrolled | Kind::Phone = self.kind {
+        if let Kind::PageUnderBar | Kind::Phone = self.kind {
             let regions = match self.bar {
-                Some(_) if matches!(self.kind, Kind::Scrolled) => std::vec![("list", panel)],
                 Some(_) => std::vec![
                     ("status bar", self.layout.chrome.status_bar),
                     ("page", self.layout.chrome.content),
@@ -971,10 +971,24 @@ impl<'a> View<'a> {
         self.body = Body::Canvas(canvas);
     }
 
-    /// Show the sensor page the menu drew, with its cues.
-    pub fn show_sensors(&mut self, canvas: Canvas, cues: &'static [Cue]) {
-        self.body = Body::Canvas(canvas);
-        self.cues = cue_set(cues);
+    /// Show the sensor page `menu` is on.
+    pub fn show_sensors(&mut self, menu: &'a super::sensors::Menu) {
+        self.extra = Extra::Sensors(menu);
+    }
+
+    /// The sensor pages, while one shows.
+    pub(super) fn sensor_pages(&self) -> Option<&'a super::sensors::Menu> {
+        self.extra.sensors()
+    }
+
+    /// Whether the tree shown keeps the status bar's band for the bar, so
+    /// the bar covers none of its tiles.
+    fn bar_has_room(&self) -> bool {
+        let bar = self.layout.chrome.status_bar;
+        let status = self
+            .composed()
+            .and_then(|laid| laid.box_of(crate::compose::registry::STATUS));
+        status.is_some_and(|room| room.top <= bar.top && room.bottom >= bar.bottom)
     }
 
     /// Show what Home's cards say.
@@ -1220,6 +1234,7 @@ impl<'a> View<'a> {
                     true
                 }
                 Page::Summary | Page::PastRide => summary::question_shown(self.after()),
+                Page::Sensors => !self.bar_has_room(),
                 _ => self.paused_screen_shown(),
             }
     }
@@ -1233,7 +1248,7 @@ impl<'a> View<'a> {
             Page::Workouts if self.ftp_offer.is_none() => self
                 .composed()
                 .and_then(crate::compose::builtin::Laid::page),
-            Page::Settings => self
+            Page::Settings | Page::Sensors => self
                 .composed()
                 .and_then(crate::compose::builtin::Laid::page),
             _ => None,
@@ -1252,7 +1267,7 @@ impl<'a> View<'a> {
     fn scene(&self) -> Scene<'_> {
         let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
         let kind = match self.page {
-            _ if sheet => self.canvas_kind(),
+            _ if sheet => Kind::PageUnderBar,
             Page::Ride if !self.pause_screen => Kind::Ride(self.ride_page),
             Page::Phone => Kind::Phone,
             Page::Summary | Page::PastRide => Kind::Summary {
@@ -1263,7 +1278,7 @@ impl<'a> View<'a> {
                     layout,
                     scroll: self.scroll,
                 },
-                None => self.canvas_kind(),
+                None => Kind::PageUnderBar,
             },
         };
         let layout = self.layout;
@@ -1302,14 +1317,6 @@ impl<'a> View<'a> {
         }
     }
 
-    fn canvas_kind(&self) -> Kind<'a> {
-        if self.page == Page::Sensors && !self.full_screen() {
-            Kind::Scrolled
-        } else {
-            Kind::PageUnderBar
-        }
-    }
-
     pub fn prepare(&mut self) -> Scene<'_> {
         let mark = match self.state {
             Status::Recording => Mark::Recording,
@@ -1322,11 +1329,9 @@ impl<'a> View<'a> {
         if layout.scaled != super::scaled::BASE {
             self.toast = self.toast.map(|toast| toast.on(layout));
         }
-        let shown = core::mem::take(&mut self.cues);
         self.badge = None;
         self.cues = match self.composed() {
             Some(laid) => self.prepare_composed(laid),
-            None if self.page == Page::Sensors => shown,
             None => cue_set(self.prepare_legacy()),
         };
         self.scene()
@@ -1339,7 +1344,7 @@ impl<'a> View<'a> {
     }
 
     fn screen_id(&self) -> crate::compose::builtin::ScreenId {
-        crate::compose::builtin::ScreenId::of(
+        let id = crate::compose::builtin::ScreenId::of(
             self.page,
             self.ride_page,
             self.pause_screen,
@@ -1349,7 +1354,11 @@ impl<'a> View<'a> {
                 Page::Summary | Page::PastRide => summary::Shown::of(self.after()),
                 _ => summary::Shown::Message,
             },
-        )
+        );
+        match self.sensor_pages() {
+            Some(menu) if id == crate::compose::builtin::ScreenId::Sensors => menu.screen(),
+            _ => id,
+        }
     }
 
     fn asks(&self) -> crate::compose::builtin::Asks {
@@ -1386,6 +1395,9 @@ impl<'a> View<'a> {
         if self.page == Page::Setup {
             let step = usize::from(self.setup_step().byte()) - 1;
             self.bar.set_pages(step, super::setup::STEPS.len());
+        }
+        if let Some(menu) = self.sensor_pages() {
+            self.scroll = menu.offset(laid);
         }
         fill(self, |view| {
             let mut canvas = Canvas::default();
@@ -1432,10 +1444,9 @@ impl<'a> View<'a> {
                 ride::prepare(self);
                 &[]
             }
-            // The menu's cues arrive with `show_sensors`.
-            Page::Sensors => &[],
             // On the engine: `composed` drew them.
-            Page::Format
+            Page::Sensors
+            | Page::Format
             | Page::LoseRides
             | Page::DiscardRide
             | Page::Bests
@@ -2167,9 +2178,10 @@ mod tests {
                     None
                 }
                 Page::Sensors => {
-                    let mut menu = crate::screens::sensors::Menu::new(&crate::screens::BASE);
-                    menu.open();
-                    view.show_sensors(menu.canvas(), menu.cues());
+                    let menu = std::boxed::Box::leak(std::boxed::Box::default());
+                    crate::screens::sensors::Menu::open(menu);
+                    view.show_sensors(menu);
+                    view.compose_main();
                     None
                 }
                 _ => None,

@@ -212,7 +212,7 @@ impl Runtime {
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
             startup: None,
-            menu: Menu::new(layout),
+            menu: Menu::new(),
             discovery: sensor_links::Discovery::default(),
             links: sensor_links::Links::default(),
             calibration: calibration::Phase::Idle,

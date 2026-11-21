@@ -1,9 +1,7 @@
 //! Sensor pages, their focus and physical-button navigation.
-use super::layout::{Layout, Target};
+use super::shown::Target;
 use super::slot::{LinkStatus, Selected};
 use super::{CalibrationNote, MenuMessage};
-use crate::screens::canvas::Canvas;
-use crate::screens::cue::Cue;
 use crate::sensors::ant::{BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::Role;
@@ -115,21 +113,24 @@ pub(super) enum View {
     Replace(Identity),
 }
 
-/// The sensor pages: what they show and focus, and where that places their
-/// rows and cues after every change.
+/// The sensor pages: what they show and focus. Their trees
+/// (`compose::builtin::sensors`) draw them.
 pub struct Menu {
     pub(super) state: State,
-    pub(super) layout: Layout,
 }
 
 state!(Menu { state });
 
+impl Default for Menu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Menu {
-    /// The sensor pages, placed on the panel `layout` lays out.
-    pub const fn new(layout: &'static crate::screens::Layout) -> Self {
+    pub const fn new() -> Self {
         Self {
             state: State::new(),
-            layout: Layout::new(layout),
         }
     }
 
@@ -143,28 +144,22 @@ impl Menu {
             return;
         }
         self.state.message = Some(message);
-        self.prepare_layout();
     }
 
-    /// Show or clear a lasting save problem; discovery messages never replace it.
+    /// Show or clear a lasting save problem, one of `MenuMessage::NOTICES`;
+    /// discovery messages never replace it.
     pub fn set_notice(&mut self, notice: Option<MenuMessage>) {
         self.state.notice = notice;
-        self.prepare_layout();
     }
 
     pub fn set_calibration(&mut self, calibration: Option<CalibrationNote>) {
-        if self.state.calibration != calibration {
-            self.state.calibration = calibration;
-            self.prepare_layout();
-        }
+        self.state.calibration = calibration;
     }
 
     /// Open the sensor pages: SENSORS on its first row, or straight to
     /// NEARBY, which searches, when nothing is saved yet.
     pub fn open(&mut self) -> Option<Action> {
-        let action = self.state.open();
-        self.prepare_layout();
-        action
+        self.state.open()
     }
 
     /// Begin a genuinely new bounded search: the nearby list starts empty.
@@ -173,7 +168,6 @@ impl Menu {
         state.discoveries = [None; DISCOVERY_CAPACITY];
         state.present = [false; DISCOVERY_CAPACITY];
         state.settle();
-        self.prepare_layout();
     }
 
     pub fn selected_identity(&self, kind: u8) -> Option<Identity> {
@@ -190,7 +184,6 @@ impl Menu {
         }
         state.added = Some(peer);
         state.message = Some(MenuMessage::Added(peer.device_type));
-        self.prepare_layout();
     }
 
     /// Show the saved sensors in their slots, and nearby discoveries.
@@ -201,7 +194,6 @@ impl Menu {
         scanning: bool,
     ) {
         self.state.refresh(discoveries, selected, scanning);
-        self.prepare_layout();
     }
 
     /// Selected sensors in slot order, for Home.
@@ -213,16 +205,6 @@ impl Menu {
                 Glance::of(s.identity.device_type, s.link_status(), battery)
             })
             .collect()
-    }
-
-    /// A tap focuses what is under the finger and activates it, as MOVE to it
-    /// then ACT would; a tap on a cue acts as its button. A tap names its
-    /// target, so it also confirms focus after lost input.
-    pub fn tap(&mut self, x: usize, y: usize, now: u64) -> Option<Action> {
-        let target = self.layout.target(x, y)?;
-        let action = self.state.tap(target, now);
-        self.prepare_layout();
-        action
     }
 
     /// Which page touch lands on. A contact that began on one never acts on
@@ -237,27 +219,8 @@ impl Menu {
         }
     }
 
-    /// Draw the shown page for a frame. Only the frame keeps the canvas: it
-    /// is too large to keep in the runtime, so each frame draws it afresh.
-    #[inline(never)]
-    pub fn canvas(&self) -> Canvas {
-        let mut canvas = Canvas::EMPTY;
-        self.layout.draw(&self.state, &mut canvas);
-        canvas
-    }
-
-    pub fn cues(&self) -> &'static [Cue] {
-        self.layout.cues
-    }
-
     pub fn input(&mut self, input: Input, now: u64) -> Option<Action> {
-        let action = self.state.input(input, now);
-        self.prepare_layout();
-        action
-    }
-
-    pub(super) fn prepare_layout(&mut self) {
-        self.layout.prepare(&self.state);
+        self.state.input(input, now)
     }
 
     /// NEARBY over the sensors already found, for runtime tests whose
@@ -266,7 +229,6 @@ impl Menu {
     pub(crate) fn show_found(&mut self) {
         self.state.view = View::Nearby(None);
         self.state.settle();
-        self.prepare_layout();
     }
 }
 
@@ -407,7 +369,10 @@ impl State {
             .unwrap_or(Mine::Add)
     }
 
-    fn tap(&mut self, target: Target, now: u64) -> Option<Action> {
+    /// A tap focuses what is under the finger and activates it, as MOVE to
+    /// it then ACT would; a tap on a cue acts as its button. A tap names its
+    /// target, so it also confirms focus after lost input.
+    pub(super) fn tap(&mut self, target: Target, now: u64) -> Option<Action> {
         self.confirm_focus();
         match target {
             Target::Mine(row) => self.view = View::Mine(row),

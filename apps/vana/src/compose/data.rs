@@ -42,6 +42,10 @@ pub trait Data {
     fn edited(&self) -> Option<Edited<'_>> {
         None
     }
+    /// The sensor pages, while one shows.
+    fn sensors(&self) -> Option<&crate::screens::sensors::Menu> {
+        None
+    }
     /// Where the effort's gliding reading sits on its zone gauge.
     fn gauge(&self, _: Effort) -> Option<OnGauge> {
         None
@@ -755,7 +759,10 @@ pub enum ListKind {
     Rides,
     Workouts,
     Settings,
+    /// The saved sensors, then ADD SENSOR.
     Sensors,
+    /// The sensors a search found that are not saved.
+    Nearby,
 }
 
 impl ListKind {
@@ -766,6 +773,7 @@ impl ListKind {
             Self::Workouts => "WORKOUTS",
             Self::Settings => "SETTINGS",
             Self::Sensors => "SENSORS",
+            Self::Nearby => "NEARBY",
         }
     }
 
@@ -776,6 +784,7 @@ impl ListKind {
             Self::Workouts => &["WORKOUTS"],
             Self::Settings => &SECTION_TITLES,
             Self::Sensors => &["SENSORS"],
+            Self::Nearby => &["NEARBY"],
         }
     }
 
@@ -789,7 +798,9 @@ impl ListKind {
     pub const fn most_in_view(self) -> usize {
         match self {
             Self::Rides => 6,
-            Self::Workouts | Self::Settings | Self::Sensors => super::list::MOST_IN_VIEW,
+            Self::Workouts | Self::Settings | Self::Sensors | Self::Nearby => {
+                super::list::MOST_IN_VIEW
+            }
         }
     }
 
@@ -798,7 +809,7 @@ impl ListKind {
     pub const fn empty(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Rides => Some(("NO RIDES YET", "SAVED RIDES SHOW HERE")),
-            Self::Workouts | Self::Settings | Self::Sensors => None,
+            Self::Workouts | Self::Settings | Self::Sensors | Self::Nearby => None,
         }
     }
 
@@ -808,6 +819,7 @@ impl ListKind {
             1 => Some(Self::Workouts),
             2 => Some(Self::Settings),
             3 => Some(Self::Sensors),
+            4 => Some(Self::Nearby),
             _ => None,
         }
     }

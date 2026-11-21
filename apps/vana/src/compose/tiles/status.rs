@@ -8,8 +8,11 @@ use crate::screens::scaled::Scaled;
 
 pub struct StatusBar;
 
-/// The bar's rows; the black under it belongs to the box the tree gives.
-pub const BAR_UNITS: usize = 22;
+/// The rows the bar paints, as chrome lays it out: the tile keeps exactly
+/// these, so a tile right under it loses none of its rows.
+pub const fn rows(at: &Scaled) -> usize {
+    crate::screens::chrome::regions(at).status_bar.bottom
+}
 
 impl Tile for StatusBar {
     type Arg = ();
@@ -18,7 +21,7 @@ impl Tile for StatusBar {
     fn forms((): (), at: &Scaled) -> Forms {
         forms(&[Form {
             width: at.panel.width as u16,
-            height: at.unit(BAR_UNITS) as u16,
+            height: rows(at) as u16,
             shapes: 0,
             runs: 0,
         }])

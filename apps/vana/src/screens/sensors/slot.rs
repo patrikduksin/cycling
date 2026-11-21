@@ -29,6 +29,18 @@ pub enum Connection {
 }
 
 impl Connection {
+    pub const ALL: [Self; 9] = [
+        Self::Live,
+        Self::WaitingForData,
+        Self::DataLost,
+        Self::Searching,
+        Self::NotFound,
+        Self::WaitingForRadio,
+        Self::Replacing,
+        Self::RadioUnavailable,
+        Self::Unsupported,
+    ];
+
     pub const fn text(self) -> &'static str {
         match self {
             Self::Live => "CONNECTED",
@@ -79,7 +91,7 @@ pub struct Selected {
 
 impl Selected {
     /// The battery's voltage to a tenth, such as "2.7", when it reported one.
-    pub(super) fn volts(self) -> Option<Text<8>> {
+    pub fn volts(self) -> Option<Text<8>> {
         let millivolts = self.battery?.millivolts?;
         let tenths = (millivolts + 50) / 100;
         let mut text = Text::new();

@@ -32,6 +32,35 @@ pub enum MenuMessage {
 }
 
 impl MenuMessage {
+    /// Every message, `Added` standing for each device type.
+    pub const ALL: [Self; 22] = [
+        Self::PickSensor,
+        Self::SearchPending,
+        Self::StartingScan,
+        Self::Scanning,
+        Self::StoppingScan,
+        Self::ScanCancelled,
+        Self::FinishingScan,
+        Self::ScanDone,
+        Self::ScanFailed,
+        Self::ScanUnavailable,
+        Self::RadioLost,
+        Self::RadioUnavailable,
+        Self::StartingSensors,
+        Self::WaitingForCompanion,
+        Self::StartupFailed,
+        Self::ScanThenPick,
+        Self::InputLost,
+        Self::NotSeen,
+        Self::SlotsFull,
+        Self::NotSaved,
+        Self::SavedUnreadable,
+        Self::Added(0),
+    ];
+
+    /// The lasting save problems `Menu::set_notice` shows.
+    pub const NOTICES: [Self; 2] = [Self::NotSaved, Self::SavedUnreadable];
+
     /// Full wording, used where the message has room of its own.
     pub const fn text(self) -> &'static str {
         match self {
@@ -69,6 +98,8 @@ impl MenuMessage {
             Self::ScanThenPick => "FIND NEARBY",
             Self::NotSaved => "NOT SAVED",
             Self::SavedUnreadable => "NOT SAVED",
+            // The card the rider picked already says NOT SEEN.
+            Self::NotSeen => "SEARCH AGAIN",
             message => message.text(),
         }
     }
@@ -120,6 +151,17 @@ pub enum CalibrationNote {
 }
 
 impl CalibrationNote {
+    /// Every note, `Done` standing for each offset.
+    pub const ALL: [Self; 7] = [
+        Self::Calibrating,
+        Self::WaitingForRadio,
+        Self::Done(0),
+        Self::Failed,
+        Self::NeedsRestart,
+        Self::NotConnected,
+        Self::WhileRiding,
+    ];
+
     pub fn text(self) -> heapless::String<28> {
         use core::fmt::Write;
         let mut text = heapless::String::new();

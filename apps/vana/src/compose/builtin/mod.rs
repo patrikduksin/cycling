@@ -106,6 +106,11 @@ pub enum ScreenId {
     AutoOff,
     TurningOff,
     Charging,
+    SensorsNearby,
+    SensorDetail,
+    PowerMeter,
+    ForgetSensor,
+    ReplaceSensor,
 }
 
 /// Which of its screens a page shows where it has more than one: its own,
@@ -121,7 +126,7 @@ pub enum Asks {
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 45;
+    pub const COUNT: usize = 50;
     pub const ALL: [Self; Self::COUNT] = [
         Self::RideMain,
         Self::RideStats,
@@ -168,6 +173,11 @@ impl ScreenId {
         Self::AutoOff,
         Self::TurningOff,
         Self::Charging,
+        Self::SensorsNearby,
+        Self::SensorDetail,
+        Self::PowerMeter,
+        Self::ForgetSensor,
+        Self::ReplaceSensor,
     ];
 
     pub const fn of(
@@ -367,6 +377,15 @@ impl ScreenId {
             Self::TurningOff => power::TURNING_OFF,
 
             Self::Charging => power::CHARGING,
+            Self::SensorsNearby => sensors::NEARBY,
+
+            Self::SensorDetail => sensors::DETAIL,
+
+            Self::PowerMeter => sensors::POWER_METER,
+
+            Self::ForgetSensor => sensors::FORGET,
+
+            Self::ReplaceSensor => sensors::REPLACE,
         }
     }
 }

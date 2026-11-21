@@ -467,7 +467,7 @@ impl Runtime {
                 view.set_home(self.home(gps_fix, now));
             }
             Page::Sensors => {
-                view.show_sensors(self.menu.canvas(), self.menu.cues());
+                view.show_sensors(&self.menu);
             }
             Page::Settings => {
                 view.scroll = self.list_offset(List::Settings, now);

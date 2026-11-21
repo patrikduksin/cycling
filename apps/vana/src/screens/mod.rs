@@ -49,7 +49,6 @@ pub struct Layout {
     pub chrome: chrome::Regions,
     pub sign: sign::Regions,
     pub ride: ride::Frame,
-    pub sensors: sensors::Regions,
 }
 
 impl Layout {
@@ -61,7 +60,6 @@ impl Layout {
             chrome: chrome::regions(&scaled),
             sign: sign::regions(&scaled),
             ride: ride::frame(&scaled),
-            sensors: sensors::regions(&scaled),
         }
     }
 }

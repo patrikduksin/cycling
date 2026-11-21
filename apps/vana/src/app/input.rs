@@ -259,8 +259,9 @@ impl Runtime {
         let navigation = &self.navigation;
         let paused_screen = self.paused_screen_shown();
         let composed = self.composed_hit(point);
-        let tree = self.composition.laids().get(self.screen_id()).is_some();
         let control = match navigation.page() {
+            // The sensor menu takes its taps itself, as it takes its presses.
+            Page::Sensors => Some(Control::Menu(point)),
             _ if composed.is_some() => composed,
             Page::Ride if paused_screen => None,
             // The course sign floats over every ride page, a region of the
@@ -273,8 +274,6 @@ impl Runtime {
             // A hold anywhere on the map stops following the course.
             Page::Ride if navigation.ride_page() == RidePage::Map => Some(Control::Map),
             // A screen with a tree acts only through its tiles.
-            _ if tree => None,
-            Page::Sensors => Some(Control::Menu(point)),
             _ => None,
         };
         let mut hit = Hit {
@@ -342,7 +341,12 @@ impl Runtime {
             Control::Menu(point) => {
                 self.refresh_sensor_menu(ant, now);
                 let (x, y) = (usize::from(point.x), usize::from(point.y));
-                let action = self.menu.tap(x, y, now);
+                self.compose_shown();
+                let laids = self.composition.laids();
+                let Some(laid) = laids.get(self.menu.screen()) else {
+                    return;
+                };
+                let action = self.menu.tap_at(laid, self.layout, x, y, now);
                 self.sensors_action(action, now, ant);
             }
             Control::Sign => self.navigation.go(To::RidePage(RidePage::Map)),

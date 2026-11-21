@@ -8,7 +8,6 @@ use crate::compose::node::{Node, Size};
 use crate::compose::registry::{BEST, SPACE, STATUS};
 use crate::compose::tiles::best::Place;
 use crate::compose::tiles::line::Say;
-use crate::compose::tiles::status::BAR_UNITS;
 use crate::screens::cue::Icon;
 
 /// ACT asks to clear the bests where there are bests to clear; BACK
@@ -54,7 +53,7 @@ pub const CLEAR: Option<&Builtin> = Some(&Builtin {
 pub const SIDE_UNITS: u8 = 16;
 
 pub const fn bar() -> Node {
-    Node::leaf(STATUS, 0, Size::units(BAR_UNITS as u8))
+    Node::leaf(STATUS, 0, Size::CONTENT)
 }
 
 pub const fn side() -> Node {

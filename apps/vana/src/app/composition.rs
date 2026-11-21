@@ -305,14 +305,17 @@ impl Runtime {
             return sheet.screen();
         }
         let navigation = &self.navigation;
-        ScreenId::of(
+        match ScreenId::of(
             navigation.page(),
             navigation.ride_page(),
             self.paused_screen_shown(),
             self.ftp_sheet().is_some(),
             self.asks(),
             self.summary_shown(),
-        )
+        ) {
+            ScreenId::Sensors => self.menu.screen(),
+            id => id,
+        }
     }
 
     fn asks(&self) -> Asks {

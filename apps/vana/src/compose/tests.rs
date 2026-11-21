@@ -735,8 +735,8 @@ fn a_record_names_what_it_refuses() {
         Why::Arg { node: 0, arg: 99 }
     );
     assert_eq!(
-        screen(&[tile(77, 0, Size::CONTENT)]),
-        Why::Kind { node: 0, kind: 81 }
+        screen(&[tile(120, 0, Size::CONTENT)]),
+        Why::Kind { node: 0, kind: 124 }
     );
     assert_eq!(
         screen(&[space.when(When::new(Flags::COURSE, Flags::NONE))]),

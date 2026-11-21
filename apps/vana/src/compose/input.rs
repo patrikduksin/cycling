@@ -79,6 +79,12 @@ pub enum OnPage {
     PhoneCode,
     /// Start a session again once one ended; nothing while one runs.
     PhoneRetry,
+    /// Zero the power meter shown.
+    Calibrate,
+    /// Ask to forget the sensor shown.
+    Forget,
+    /// Search for sensors again.
+    Search,
 }
 
 /// The owners an action reaches.
@@ -929,6 +935,9 @@ pub(super) mod tests {
             ("page", Action::Page(OnPage::Delete)),
             ("page", Action::Page(OnPage::PhoneCode)),
             ("page", Action::Page(OnPage::PhoneRetry)),
+            ("page", Action::Page(OnPage::Calibrate)),
+            ("page", Action::Page(OnPage::Forget)),
+            ("page", Action::Page(OnPage::Search)),
         ];
         let mut reached = Reached::default();
         for (_, action) in every {

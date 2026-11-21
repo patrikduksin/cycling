@@ -370,4 +370,8 @@ impl Data for Item<'_> {
     fn edited(&self) -> Option<Edited<'_>> {
         self.data.edited()
     }
+
+    fn sensors(&self) -> Option<&crate::screens::sensors::Menu> {
+        self.data.sensors()
+    }
 }

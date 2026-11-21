@@ -103,7 +103,7 @@ fn workout_scan_keeps_existing_channels_receiving() {
         24000,
     );
     radio.channels.tick(24900);
-    runtime.menu = crate::screens::sensors::Menu::new(runtime.layout);
+    runtime.menu = crate::screens::sensors::Menu::new();
     runtime.refresh_sensor_menu(&radio, 24_900);
     runtime.menu.show_found();
     runtime.input_received(
@@ -601,7 +601,6 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
         1400,
         &mut radio,
     );
-    runtime.focus_stop(1);
     radio.reject = None;
     runtime.input_received(
         Input::Press {

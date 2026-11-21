@@ -528,7 +528,7 @@ fn a_status_bar_under_a_reading_paints_only_its_own_rows() {
     use firmware_shell::shell::Picture;
     let layout = &crate::screens::BASE;
     let at = &layout.scaled;
-    let (above, bar) = (48, at.unit(crate::compose::tiles::status::BAR_UNITS));
+    let (above, bar) = (48, crate::compose::tiles::status::rows(at));
     let speed = Inline(Shown::left(Metric::Speed, 1)).byte();
     let frame = |view: &mut View| -> Vec<Vec<u16>> {
         let scene = view.prepare();

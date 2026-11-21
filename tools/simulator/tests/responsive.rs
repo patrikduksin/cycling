@@ -505,9 +505,8 @@ fn the_sensor_pages_draw_on_both_test_panels() {
 
         twin.sim.press(Role::Back);
         twin.sim.expect_text("ADD SENSOR");
-        let rows = model.layout.sensors.mine.rows;
-        let y = rows.first.top + rows.pitch + rows.first.height() / 2;
-        twin.sim.tap(model.width as u16 / 2, y as u16);
+        let list = composed_list(model, ScreenId::Sensors);
+        twin.sim.tap(model.width as u16 / 2, card_middle(&list, 1));
         twin.sim.advance(seconds(1));
         shows(&twin.sim, &["POWER METER", "BATTERY", "1234"]);
     }

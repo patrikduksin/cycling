@@ -70,7 +70,9 @@ impl Data for View<'_> {
             ListKind::Workouts => self.picker().count() as u16,
             ListKind::Rides => self.rides().count as u16,
             ListKind::Settings => self.sections.rows(self.cursor).0.len() as u16,
-            ListKind::Sensors => 0,
+            ListKind::Sensors | ListKind::Nearby => {
+                self.sensor_pages().map_or(0, |menu| menu.count(list))
+            }
         }
     }
 
@@ -101,7 +103,11 @@ impl Data for View<'_> {
                     pressed: self.pressed_setting(),
                 }
             }
-            ListKind::Sensors => Listed::REST,
+            ListKind::Sensors | ListKind::Nearby => Listed {
+                offset: self.scroll,
+                focus: self.sensor_pages().and_then(|menu| menu.focus(list)),
+                pressed: None,
+            },
         }
     }
 
@@ -111,7 +117,9 @@ impl Data for View<'_> {
                 let sections = self.sections;
                 sections.title(sections.section(self.cursor).0)
             }
-            ListKind::Rides | ListKind::Workouts | ListKind::Sensors => list.name(),
+            ListKind::Rides | ListKind::Workouts | ListKind::Sensors | ListKind::Nearby => {
+                list.name()
+            }
         }
     }
 
@@ -132,6 +140,10 @@ impl Data for View<'_> {
             note: lines[NOTES].as_str(),
             step: row.step(),
         })
+    }
+
+    fn sensors(&self) -> Option<&crate::screens::sensors::Menu> {
+        self.sensor_pages()
     }
 
     fn glance(&self) -> Glance {
@@ -155,7 +167,7 @@ impl Data for View<'_> {
                     chosen: false,
                 })
             }
-            ListKind::Sensors => None,
+            ListKind::Sensors | ListKind::Nearby => None,
         }
     }
 

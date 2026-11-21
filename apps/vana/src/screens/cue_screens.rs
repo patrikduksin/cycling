@@ -198,10 +198,12 @@ fn every_cue_screen_lays_out_clear_of_its_cues_for_every_button_arrangement() {
             let what = std::format!("{what} on {panel:?}, {:?}", layout.corners);
             checked(&mut broken, what, || view.prepare().check_layout());
         }
-        for (what, menu) in super::sensors::tests::crowded(layout) {
-            if !menu.cues().is_empty() {
+        for (what, menu) in super::sensors::tests::crowded() {
+            if !menu.frame(layout).prepare().cues().is_empty() {
                 let what = std::format!("sensors {what} on {panel:?}, {:?}", layout.corners);
-                checked(&mut broken, what, || menu.frame().prepare().check_layout());
+                checked(&mut broken, what, || {
+                    menu.frame(layout).prepare().check_layout()
+                });
             }
         }
     }

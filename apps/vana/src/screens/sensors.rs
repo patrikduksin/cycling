@@ -1,25 +1,40 @@
 //! Sensor selection and physical-button navigation, independent of radio scheduling.
 //!
-//! `menu` owns the pages, their focus and input, `layout` places the shown
-//! page after each change and draws it onto the frame's canvas, and
-//! `render` holds its colours.
-mod layout;
+//! `menu` owns the pages, their focus and input, `shown` is what their
+//! trees (`compose::builtin::sensors`) read and where a tap lands, and
+//! `render` holds their colours.
 mod menu;
 mod message;
 mod render;
+mod shown;
 mod slot;
 #[cfg(test)]
 pub(super) mod tests;
 
-pub use layout::{Detail, Forget, Mines, Nearby, Regions, Replace, Rows, regions};
 pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu, Page, SETTLE_MS};
 pub use message::{CalibrationNote, MenuMessage};
 
+pub use shown::{Item, widest};
 pub use slot::{Connection, Selected};
 
 use crate::sensors::ant::device_type;
 
-fn kind(kind: u8) -> &'static [u8] {
+/// Every name `kind` gives.
+pub const NAMES: [&[u8]; 10] = [
+    b"RADAR",
+    b"POWER METER",
+    b"HEART RATE",
+    b"SPEED/CAD",
+    b"CADENCE",
+    b"SPEED",
+    b"SHIFTING",
+    b"TRAINER",
+    b"BIKE LIGHTS",
+    b"ANT SENSOR",
+];
+
+/// What a sensor of this ANT device type is called.
+pub fn kind(kind: u8) -> &'static [u8] {
     match kind {
         device_type::RADAR => b"RADAR",
         device_type::POWER => b"POWER METER",

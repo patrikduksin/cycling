@@ -947,7 +947,8 @@ mod tests {
     fn laid(layout: &'static crate::screens::Layout, radar: bool) -> crate::compose::builtin::Laid {
         let flags = crate::screens::ride::main_flags(false, radar, false, false);
         let choices = crate::compose::builtin::Choices::default();
-        crate::compose::builtin::Laid::new(ScreenId::RideClimb, layout, choices, flags).unwrap()
+        crate::compose::builtin::Laid::new(ScreenId::RideClimb, layout, choices, flags, None)
+            .unwrap()
     }
 
     /// The balance rule: between the status bar and the profile, the rows

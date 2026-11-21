@@ -987,6 +987,7 @@ mod tests {
             Region::Data => 1,
             Region::Crash => 2,
             Region::Intent => 3,
+            Region::Screens => 4,
         };
         for (position, region) in Region::ALL.into_iter().enumerate() {
             assert_eq!(index(region), position, "{region:?}");

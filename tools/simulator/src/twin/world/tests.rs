@@ -207,6 +207,31 @@ fn a_replay_ends_where_the_recording_lost_world_records() {
 }
 
 #[test]
+fn a_flash_region_the_trace_sampled_no_geometry_of_replays_as_unreserved() {
+    use device_api::storage::{Geometry, OwnedFlash, Region};
+    let mut body = [0u8; 64];
+    let mut w = Writer::new(&mut body, 1_010);
+    Region::Data.put(&mut w);
+    Geometry {
+        capacity: 0x100000,
+        program_size: 4,
+        erase_size: 4096,
+        durable: true,
+    }
+    .put(&mut w);
+    let len = w.written().unwrap();
+    let data = Event::Call(trace::Call {
+        method: script::named("OwnedFlash", "geometry").unwrap(),
+        now_ms: 1_010,
+        body: &body[..len],
+    });
+    let world = std::rc::Rc::new(RefCell::new(replaying(recorded(&[], &[data]), None)));
+    let flash = crate::twin::flash::ScriptedFlash::new(world.clone());
+    assert_eq!(flash.geometry(Region::Screens).capacity, 0);
+    assert_eq!(world.borrow().parted(), None);
+}
+
+#[test]
 fn a_flash_geometry_the_trace_never_observed_leaves_the_recorded_world() {
     use device_api::storage::{OwnedFlash, Region};
     let world = std::rc::Rc::new(RefCell::new(replaying(recorded(&[], &[]), None)));

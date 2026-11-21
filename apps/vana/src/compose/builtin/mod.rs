@@ -5,12 +5,13 @@
 use super::data::Data;
 use super::input::{Buttons, Controls, Focus};
 use super::node::{Flags, MAX_NODES, Node, What};
-use super::parse::Screen;
+use super::parse::{Screen, Screens};
 use super::registry;
 use super::solve::{MAX_LEAVES, Placed, Rect16, Solved};
 use crate::screens::Layout;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
+use crate::screens::cue::Corners;
 use crate::screens::ride::RidePage;
 use crate::screens::ride::slots::Slots;
 use crate::screens::ride::summary::Shown;
@@ -236,6 +237,20 @@ impl ScreenId {
         self as u8
     }
 
+    /// The screen a config names by `key`.
+    pub fn of_key(key: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(key)).copied()
+    }
+
+    /// The buttons a changed screen `key` keeps, its built-in's, and the
+    /// cues they show in `corners`; none for a screen with no tree.
+    pub fn controls(key: u8, corners: Corners) -> Controls {
+        match Self::of_key(key).and_then(Self::builtin) {
+            Some(builtin) => Controls::new(builtin.buttons, corners),
+            None => Controls::FREE,
+        }
+    }
+
     /// The pages whose built-in must set MOVE to `Go::Next`.
     pub const fn deck(self) -> bool {
         matches!(
@@ -373,13 +388,16 @@ pub struct Builtin {
     pub buttons: Buttons,
 }
 
-/// One built-in solved on one device for the rider's choices and what the
-/// ride shows: where each tile goes. A frame draws from it; input solves
-/// it again.
+/// One screen solved on one device for the rider's choices and what the
+/// ride shows: where each tile goes. Its tree is the rider's when they
+/// changed the screen, else the built-in's. A frame draws from it; input
+/// solves it again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Laid {
     id: ScreenId,
     screen: Screen,
+    /// `screen` is the rider's, not the built-in's for `choices`.
+    changed: bool,
     choices: Choices,
     flags: Flags,
     leaves: heapless::Vec<Placed, MAX_LEAVES>,
@@ -387,14 +405,28 @@ pub struct Laid {
 }
 
 impl Laid {
-    /// `id` on `layout`'s device, if it has a tree.
+    /// `id` on `layout`'s device, if it has a built-in, showing `changed`
+    /// when the rider changed it.
     #[inline(never)]
-    pub fn new(id: ScreenId, layout: &Layout, choices: Choices, flags: Flags) -> Option<Self> {
+    pub fn new(
+        id: ScreenId,
+        layout: &Layout,
+        choices: Choices,
+        flags: Flags,
+        changed: Option<&Screen>,
+    ) -> Option<Self> {
         let builtin = id.builtin()?;
-        let controls = Controls::new(builtin.buttons, layout.corners);
+        let screen = match changed {
+            Some(screen) => screen.clone(),
+            None => {
+                let controls = Controls::new(builtin.buttons, layout.corners);
+                Screen::builtin(id.key(), &(builtin.tree)(&choices), layout.scaled, controls)
+            }
+        };
         let mut laid = Self {
             id,
-            screen: Screen::builtin(id.key(), &(builtin.tree)(&choices), layout.scaled, controls),
+            screen,
+            changed: changed.is_some(),
             choices,
             flags,
             leaves: heapless::Vec::new(),
@@ -404,19 +436,32 @@ impl Laid {
         Some(laid)
     }
 
-    /// Solve again for `choices` and `flags`; false when they are what it
-    /// was solved for.
-    pub fn update(&mut self, choices: Choices, flags: Flags) -> bool {
-        if (choices, flags) == (self.choices, self.flags) {
+    /// Solve again for `choices`, `flags` and the rider's `changed` tree;
+    /// false when they are what it was solved for.
+    #[inline(never)]
+    pub fn update(&mut self, choices: Choices, flags: Flags, changed: Option<&Screen>) -> bool {
+        let stale = self.changed != changed.is_some()
+            || match changed {
+                Some(screen) => self.screen != *screen,
+                None => choices != self.choices,
+            };
+        if !stale && (choices, flags) == (self.choices, self.flags) {
             return false;
         }
-        if choices != self.choices {
-            let builtin = self.id.builtin().expect("a laid screen has a tree");
-            let controls = self.screen.controls().clone();
-            let at = *self.screen.tree().at();
-            self.screen = Screen::builtin(self.id.key(), &(builtin.tree)(&choices), at, controls);
-            self.choices = choices;
+        if stale {
+            self.screen = match changed {
+                Some(screen) => screen.clone(),
+                None => {
+                    let builtin = self.id.builtin().expect("a laid screen has a built-in");
+                    let controls = self.screen.controls().clone();
+                    let at = *self.screen.tree().at();
+                    Screen::builtin(self.id.key(), &(builtin.tree)(&choices), at, controls)
+                }
+            };
+            self.changed = changed.is_some();
+            self.focus = Focus::default();
         }
+        self.choices = choices;
         self.flags = flags;
         self.solve();
         true
@@ -522,9 +567,10 @@ pub struct Laids {
 
 impl Laids {
     #[inline(never)]
-    pub fn new(layout: &Layout, choices: Choices, flags: Flags) -> Self {
+    pub fn new(layout: &Layout, choices: Choices, flags: Flags, changed: &Screens) -> Self {
+        let main = ScreenId::RideMain;
         Self {
-            main: Laid::new(ScreenId::RideMain, layout, choices, flags)
+            main: Laid::new(main, layout, choices, flags, changed.screen(main.key()))
                 .expect("the main page has a tree"),
             shown: None,
             open: None,
@@ -538,6 +584,7 @@ impl Laids {
         let mut main = Laid {
             id: ScreenId::RideMain,
             screen,
+            changed: true,
             choices: Choices::default(),
             flags,
             leaves: heapless::Vec::new(),
@@ -569,21 +616,22 @@ impl Laids {
         &self.main
     }
 
-    /// Solve the main page and the screen shown again if the choices or
-    /// flags changed; true when either did.
-    pub fn update(&mut self, choices: Choices, flags: Flags) -> bool {
-        let main = self.main.update(choices, flags);
+    /// Solve the main page and the screen shown again if the choices, the
+    /// flags or the screens the rider `changed` did; true when any did.
+    pub fn update(&mut self, choices: Choices, flags: Flags, changed: &Screens) -> bool {
+        let tree = |id: ScreenId| changed.screen(id.key());
+        let main = self.main.update(choices, flags, tree(ScreenId::RideMain));
         let shown = self
             .shown
             .as_mut()
-            .is_some_and(|laid| laid.update(choices, flags));
+            .is_some_and(|laid| laid.update(choices, flags, tree(laid.id)));
         main || shown
     }
 
     /// Show `id`: a screen opened afresh is solved, if it has a tree, and
     /// starts on its first stop.
     #[inline(never)]
-    pub fn show(&mut self, id: ScreenId, layout: &Layout) {
+    pub fn show(&mut self, id: ScreenId, layout: &Layout, changed: &Screens) {
         if self.open == Some(id) {
             return;
         }
@@ -591,7 +639,10 @@ impl Laids {
         self.main.focus = Focus::default();
         self.shown = match id {
             ScreenId::RideMain => None,
-            _ => Laid::new(id, layout, self.main.choices, self.main.flags),
+            _ => {
+                let screen = changed.screen(id.key());
+                Laid::new(id, layout, self.main.choices, self.main.flags, screen)
+            }
         };
     }
 }

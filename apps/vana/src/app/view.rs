@@ -123,7 +123,11 @@ impl Runtime {
                 self.refresh_map(radar_paired, now);
                 self.refresh_chart();
             }
-            Shows::Sheet(sheet) => self.composition.show(sheet.screen(), self.layout),
+            Shows::Sheet(sheet) => self.composition.show(
+                sheet.screen(),
+                self.layout,
+                super::overrides::shown(&self.overrides),
+            ),
         }
         let presented = self.present(system, due.shows, now);
         self.after_view(presented, frame, due.moving, now);

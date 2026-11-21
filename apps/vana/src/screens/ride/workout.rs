@@ -389,7 +389,14 @@ mod tests {
     /// The page's tiles on `layout`.
     fn laid(layout: &'static Layout, radar: bool) -> Laid {
         let flags = crate::screens::ride::main_flags(false, radar, true, false);
-        Laid::new(ScreenId::RideWorkout, layout, Choices::default(), flags).unwrap()
+        Laid::new(
+            ScreenId::RideWorkout,
+            layout,
+            Choices::default(),
+            flags,
+            None,
+        )
+        .unwrap()
     }
 
     /// The chart tile's box on the C606 without a radar.

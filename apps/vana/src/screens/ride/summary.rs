@@ -768,6 +768,7 @@ pub fn chart_on(layout: &crate::screens::Layout) -> Rect {
         layout,
         Choices::default(),
         Flags::NONE,
+        None,
     );
     let profile = laid.and_then(|laid| laid.box_of(crate::compose::registry::PROFILE));
     chart_rect(profile.expect("the elevation page has a profile"))

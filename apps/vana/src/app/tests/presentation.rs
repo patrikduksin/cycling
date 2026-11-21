@@ -62,6 +62,7 @@ impl Panel {
             layout,
             Default::default(),
             Default::default(),
+            None,
         )
         .expect("every sheet has a tree");
         let (canvas, cues) = (

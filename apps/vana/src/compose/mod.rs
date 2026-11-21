@@ -14,6 +14,6 @@ pub mod tile;
 pub mod tiles;
 
 pub use node::{Flags, Node, Size, When};
-pub use parse::{Layer, Screen, Screens, parse};
+pub use parse::{Edit, Layer, Screen, Screens, parse};
 pub use reject::Reject;
 pub use solve::{Placed, Rect16, Solved};

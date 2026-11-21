@@ -521,7 +521,11 @@ impl Runtime {
             },
             known: percent.is_some(),
         };
-        self.composition.show(sheet.screen(), self.layout);
+        self.composition.show(
+            sheet.screen(),
+            self.layout,
+            super::overrides::shown(&self.overrides),
+        );
         let Some(laid) = self.composition.laids().get(sheet.screen()) else {
             unreachable!("the sheet's screen was just shown");
         };

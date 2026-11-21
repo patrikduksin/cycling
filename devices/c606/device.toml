@@ -25,6 +25,7 @@ rows = [
 ]
 
 [owned]
+screens = { offset = 0xD96000, size = 0x2000, within = "ota_1" }
 data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }
 configuration = { offset = 0xE98000, size = 0x2000, within = "ota_1" }
 crash = { offset = 0x1E000, size = 0x2000, within = "coredump" }

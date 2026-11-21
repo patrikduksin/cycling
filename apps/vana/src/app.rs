@@ -35,6 +35,8 @@ mod mode;
 mod motion;
 mod navigation;
 mod night;
+mod overrides;
+pub use overrides::Overrides;
 mod pace;
 mod pass;
 pub use lookahead::{TERRAIN_ARENA_BYTES, Terrain};
@@ -132,6 +134,9 @@ pub struct Runtime {
     chart: view::Chart,
     alerts: crate::ride::alerts::Alerts,
     track: Option<&'static mut course::RideTrack>,
+    /// The screens the rider changed. Until the device attaches their memory
+    /// there are none, and every screen shows its built-in.
+    overrides: Option<&'static mut overrides::Overrides>,
     reported: seen::Reported,
     /// This pass's `tick` or `look_ahead` read or wrote storage.
     storage_worked: bool,
@@ -237,6 +242,7 @@ impl Runtime {
             chart: view::Chart::default(),
             alerts: crate::ride::alerts::Alerts::default(),
             track: None,
+            overrides: None,
             reported: seen::Reported::default(),
             storage_worked: false,
             micros_clock: None,

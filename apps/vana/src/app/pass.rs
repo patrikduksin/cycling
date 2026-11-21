@@ -111,6 +111,7 @@ pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
         &mut bulk,
         now,
     );
+    app.serve_screens(shell.data_storage().screens());
     at(Point::Phone, shell);
     app.frame(shell, now, &ant, position);
     at(Point::VanaPresent, shell);

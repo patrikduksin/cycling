@@ -674,7 +674,7 @@ fn any_bytes_are_refused_or_encode_back_to_themselves() {
             _ => any_record(&mut rng),
         };
         let at = rng.pick(&panels());
-        match parse::parse(&input, &at, no_cues, &mut screens) {
+        match parse::parse(&input, &at, &no_cues, &mut screens) {
             Ok(()) => {
                 let length = screens.encode(&mut out).unwrap();
                 assert_eq!(&out[..length], &input[..], "seed {seed}");
@@ -702,7 +702,7 @@ fn a_record_names_what_it_refuses() {
     let at = BASE;
     let refuse = |record: &[u8]| {
         let mut screens = Box::new(Screens::EMPTY);
-        parse::parse(record, &at, no_cues, &mut screens)
+        parse::parse(record, &at, &no_cues, &mut screens)
             .unwrap_err()
             .why
     };
@@ -956,7 +956,7 @@ fn a_push_layer_takes_a_band_and_the_screen_retiles_under_it() {
     ]
     .concat();
     let mut screens = Box::new(Screens::EMPTY);
-    parse::parse(&record, &at, no_cues, &mut screens).unwrap();
+    parse::parse(&record, &at, &no_cues, &mut screens).unwrap();
     let layer: &Layer = &screens.layers()[0];
     assert_eq!(
         (layer.anchor(), layer.hold()),
@@ -989,7 +989,7 @@ fn a_push_layer_takes_a_band_and_the_screen_retiles_under_it() {
     assert!(!screens.solve(4, Flags::NONE, None, &mut solved));
     let centred = [&[VERSION, 0, 1, 2 << 4 | 1, 0, 0, 1][..], &bytes(&popover)].concat();
     assert_eq!(
-        parse::parse(&centred, &at, no_cues, &mut screens)
+        parse::parse(&centred, &at, &no_cues, &mut screens)
             .unwrap_err()
             .why,
         Why::Push
@@ -1143,10 +1143,10 @@ fn a_tile_too_wide_beside_a_cue_is_refused_by_the_screen_that_shows_it() {
         }
     };
     assert_eq!(
-        parse::parse(&record, &at, only_seven, &mut screens),
+        parse::parse(&record, &at, &only_seven, &mut screens),
         Err(reject)
     );
-    assert!(parse::parse(&record, &at, no_cues, &mut screens).is_ok());
+    assert!(parse::parse(&record, &at, &no_cues, &mut screens).is_ok());
 }
 
 #[test]
@@ -1427,7 +1427,7 @@ fn a_text_tile_in_a_top_layer_draws_inside_its_band() {
                 let popover = [tile(component, arg, Size::CONTENT)];
                 let record = [&[VERSION, 0, 1, 0, 0, 5, 1][..], &bytes(&popover)].concat();
                 let mut screens = Box::new(Screens::EMPTY);
-                parse::parse(&record, &at, no_cues, &mut screens).unwrap();
+                parse::parse(&record, &at, &no_cues, &mut screens).unwrap();
                 let mut solved = Solved::EMPTY;
                 screens.layers()[0].solve(Flags::NONE, &mut solved);
                 let band = solved.leaves()[0].rect;
@@ -1513,7 +1513,7 @@ fn a_screen_and_a_layer_over_it_are_refused_when_together_they_overflow_the_canv
         .concat()
     };
     let mut screens = Box::new(Screens::EMPTY);
-    assert!(parse::parse(&record(14, 14), &at, no_cues, &mut screens).is_ok());
+    assert!(parse::parse(&record(14, 14), &at, &no_cues, &mut screens).is_ok());
     let mut page = Solved::EMPTY;
     assert!(screens.solve(7, Flags::NONE, None, &mut page));
     let mut layer = Solved::EMPTY;
@@ -1522,7 +1522,7 @@ fn a_screen_and_a_layer_over_it_are_refused_when_together_they_overflow_the_canv
     page.prepare(&Nothing, &mut canvas);
     layer.prepare(&Nothing, &mut canvas);
     canvas.assert_kept("14 captions under 14");
-    let reject = parse::parse(&record(16, 16), &at, no_cues, &mut screens).unwrap_err();
+    let reject = parse::parse(&record(16, 16), &at, &no_cues, &mut screens).unwrap_err();
     assert_eq!(
         reject,
         Reject {

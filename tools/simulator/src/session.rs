@@ -1560,6 +1560,7 @@ impl Session {
         if memory.phone {
             sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
         }
+        sdk.attach_screens(Box::leak(Box::new(vana::app::Overrides::new())));
         if memory.track {
             let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::TRACK_CRUMBS]);
             let map = Box::leak(Box::new(vana::app::MapFrame::default()));

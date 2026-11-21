@@ -165,6 +165,10 @@ fn journal_owns_commit_layout_and_preserves_operation_order() {
     assert_eq!(
         journal.flash.calls[2..],
         [
+            ("read", region, 0, 4096),
+            ("program", region, 20, 4),
+            ("read", region, 0, 4096),
+            ("read", region, 4096, 4096),
             ("erase", region, 4096, 4096),
             ("program", region, 4096, 4096),
             ("program", region, 4116, 4),
@@ -495,6 +499,71 @@ fn a_recommitted_marginal_word_reads_committed_on_every_read() {
                 matches!(read(&mut flash), Ok(Held::Committed(_))),
                 "seed {seed}"
             );
+        }
+    }
+}
+
+/// A load that recovers a marginal commit word read committed, then torn,
+/// as the screens' owner does.
+fn load_recommitting<F: OwnedFlash>(
+    journal: &mut Journal<F>,
+    output: &mut [u8],
+) -> Result<Option<Record>, Error<F::Error>> {
+    match journal.load(output) {
+        Err(Error::ReadbackFailed) => {
+            for sector in 0..SECTOR_COUNT {
+                let _ = journal.recommit(sector);
+            }
+            journal.load(output)
+        }
+        loaded => loaded,
+    }
+}
+
+/// A save over a commit word a cut left marginal, cut again at any
+/// operation: every later read finds one of the saves, never none.
+#[test]
+fn a_second_cut_over_a_marginal_commit_word_keeps_a_record() {
+    use crate::testing::Rng;
+    let saves: [&[u8]; 3] = [b"older", b"torn", b"third"];
+    for seed in 0..64 {
+        for second in 0..12 {
+            let case = std::format!("seed {seed}, second cut at {second}");
+            let mut rng = Rng::new(seed);
+            let mut journal = Journal::new(Memory::default(), Region::Configuration);
+            journal.save(saves[0]).unwrap();
+            journal.save(saves[1]).unwrap();
+            // Its commit word cut after two of its bytes.
+            journal.flash.bytes[1][COMMIT_OFFSET + 2..HEADER_SIZE].fill(0xff);
+            let mut flash = Marginal {
+                memory: reboot(&journal).flash,
+                bytes: std::vec![
+                    (SECTOR_SIZE + COMMIT_OFFSET + 2, COMMITTED.to_le_bytes()[2]),
+                    (SECTOR_SIZE + COMMIT_OFFSET + 3, COMMITTED.to_le_bytes()[3]),
+                ],
+                reads: Rng::new(rng.next()),
+            };
+            let mut output = [0; 8];
+            let mut journal = Journal::new(&mut flash, Region::Configuration);
+            assert!(
+                load_recommitting(&mut journal, &mut output).is_ok(),
+                "{case}"
+            );
+            journal.flash.memory.fail_after = Some(journal.flash.memory.operations + second);
+            journal.flash.memory.tear_bytes = rng.below(SECTOR_SIZE as u64 + 1) as usize;
+            let saved = journal.save(saves[2]);
+            journal.flash.memory.fail_after = None;
+            for _ in 0..16 {
+                let mut journal = Journal::new(&mut flash, Region::Configuration);
+                let record = load_recommitting(&mut journal, &mut output)
+                    .expect(&case)
+                    .expect(&case);
+                let loaded = &output[..record.length];
+                match saved {
+                    Ok(_) => assert_eq!(loaded, saves[2], "{case}"),
+                    Err(_) => assert!(saves.contains(&loaded), "{case}: {loaded:?}"),
+                }
+            }
         }
     }
 }

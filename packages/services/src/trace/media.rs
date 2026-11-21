@@ -139,7 +139,9 @@ impl Place {
 
     pub fn flash(region: Region, offset: usize, bytes: usize) -> Self {
         let (start, class) = match (u32::try_from(offset), region) {
-            (Ok(start), Region::Data | Region::Crash | Region::Intent) => (start, Class::Inline),
+            (Ok(start), Region::Data | Region::Crash | Region::Intent | Region::Screens) => {
+                (start, Class::Inline)
+            }
             (Ok(start), Region::Configuration) => (start, Class::Outside),
             (Err(_), _) => (u32::MAX, Class::Outside),
         };

@@ -114,7 +114,7 @@ codes! {
         DisconnectTimeout = 9, ConfigurationFailed = 10, LinkLost = 11, RunnerStopped = 12,
     }
     power::Support { Unsupported = 0, Unknown = 1, Supported = 2 }
-    storage::Region { Configuration = 0, Data = 1, Crash = 2, Intent = 4 }
+    storage::Region { Configuration = 0, Data = 1, Crash = 2, Intent = 4, Screens = 5 }
 }
 
 record! {

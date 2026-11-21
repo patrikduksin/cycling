@@ -15,12 +15,12 @@ const ROOM: usize = 4096;
 #[derive(Default)]
 pub(super) struct Transport {
     listening: bool,
-    request: Option<Request>,
+    pub(super) request: Option<Request>,
     /// The body still to be read, and the most each `read` hands over.
     body: Vec<u8>,
     piece: usize,
     pub(super) pending: Vec<u8>,
-    finished: bool,
+    pub(super) finished: bool,
     next_id: u32,
 }
 
@@ -38,7 +38,14 @@ impl Transport {
         self.finished = false;
     }
 
-    fn upload(&mut self, method: Method, path: &str, session: &str, body: &[u8], piece: usize) {
+    pub(super) fn upload(
+        &mut self,
+        method: Method,
+        path: &str,
+        session: &str,
+        body: &[u8],
+        piece: usize,
+    ) {
         self.ask(method, path, "", session);
         if let Some(request) = self.request.as_mut() {
             request.body = body.len() as u32;

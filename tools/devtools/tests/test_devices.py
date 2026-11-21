@@ -60,8 +60,8 @@ def test_partitions_equal_the_table_and_layout_firmware_py_held(c606):
         'ota_1,app,ota_1,0x760000,0x73a000,',
     ]
     assert c606.flash_size == 0x1000000
-    assert c606.image_cap == 0x73A000 - 0x2000 - 0x100000
-    assert c606.owned_tail == (0xD98000, 0x102000)
+    assert c606.image_cap == 0x73A000 - 0x2000 - 0x100000 - 0x2000
+    assert c606.owned_tail == (0xD96000, 0x104000)
 
 
 B0 = '{ id = 0, role = "back", edge = "left", at = 250 }'
@@ -92,6 +92,7 @@ def test_fitted_rs_holds_the_driver_literals_it_replaced(c606):
         'Data': (0x00D9_8000, 0x10_0000),
         'Crash': (0x0001_E000, 2 * 4096),
         'Intent': (0x0001_C000, 2 * 4096),
+        'Screens': (0x00D9_6000, 2 * 4096),
     }
 
 
@@ -133,15 +134,24 @@ def test_every_c606_range_is_flash_and_durable(c606):
     )
 
 
+SCREENS = 'screens = { offset = 0xD96000, size = 0x2000, within = "ota_1" }'
+# With the data in PSRAM, the screens move up against the configuration range,
+# so the owned ranges still close the slot.
+SCREENS_ON_TOP = 'screens = { offset = 0xE96000, size = 0x2000, within = "ota_1" }'
+
+
 def test_a_memory_backed_range_skips_partition_containment_and_the_image_cap(tmp_path):
     memory = 'data = { memory = "psram", size = 0x40000 }'
     device = devices.parse(
         manifest_with(
-            tmp_path, lambda t: t.replace('data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }', memory)
+            tmp_path,
+            lambda t: t.replace('data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }', memory).replace(
+                SCREENS, SCREENS_ON_TOP
+            ),
         )
     )
     assert device.model.memory == (devices.Memory('data', 'psram', 0x40000),)
-    assert device.image_cap == 0x73A000 - 0x2000
+    assert device.image_cap == 0x73A000 - 0x2000 - 0x2000
     with pytest.raises(devices.ManifestError, match='no driver that backs it yet'):
         devices.fitted_rs(device)
 
@@ -310,6 +320,7 @@ def manifest_with(tmp_path, change):
             lambda t: (
                 t.replace('within = "ota_1"', 'within = "coredump"')
                 .replace('0xD98000', '0x10000')
+                .replace('0xD96000', '0x18000')
                 .replace('0xE98000', '0x1A000')
                 .replace('size = 0x100000', 'size = 0x8000')
             ),
@@ -317,10 +328,14 @@ def manifest_with(tmp_path, change):
         ),
         (lambda t: t.replace('size = "16MB"', 'size = "16384KB"'), 'whole number of MB'),
         (
-            lambda t: t.replace(
-                'data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }',
-                'data = { memory = "psram", size = 0x40000 }',
-            ).replace('wifi = true', 'wifi = false'),
+            lambda t: (
+                t.replace(
+                    'data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }',
+                    'data = { memory = "psram", size = 0x40000 }',
+                )
+                .replace(SCREENS, SCREENS_ON_TOP)
+                .replace('wifi = true', 'wifi = false')
+            ),
             'needs Wi-Fi',
         ),
         (

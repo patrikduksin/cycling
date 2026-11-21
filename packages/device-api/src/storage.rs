@@ -45,10 +45,19 @@ pub enum Region {
     /// Where the application records a wipe of its stores before the first
     /// write, outside every store, so a wipe cut by power is finished at boot.
     Intent,
+    /// The rider's screen layouts, apart from every other store, so a bad
+    /// record resets only the screens.
+    Screens,
 }
 
 impl Region {
-    pub const ALL: [Region; 4] = [Self::Configuration, Self::Data, Self::Crash, Self::Intent];
+    pub const ALL: [Region; 5] = [
+        Self::Configuration,
+        Self::Data,
+        Self::Crash,
+        Self::Intent,
+        Self::Screens,
+    ];
 }
 
 /// Sole physical owner of independently bounded reservations. Every operation

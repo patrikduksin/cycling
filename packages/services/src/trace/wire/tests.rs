@@ -352,6 +352,7 @@ fn flash_regions_round_trip_and_bulk_is_no_region() {
         storage::Region::Data,
         storage::Region::Crash,
         storage::Region::Intent,
+        storage::Region::Screens,
     ] {
         same(region);
     }

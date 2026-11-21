@@ -61,11 +61,26 @@ pub enum Held {
     Other,
 }
 
-/// Where the next save goes: after the newest committed record, or into a
-/// free sector with no committed record to follow.
+/// Where the journal stands, as one scan found it: the next save follows
+/// the newest committed record, or goes into a free sector. A commit word a
+/// cut left marginal reads committed on one scan and torn on the next, so a
+/// caller that read the journal saves after what it read, not a fresh scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Tip(Scan);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Scan {
     Newest(usize, Record),
     Free { sector: usize, sequence: u32 },
+}
+
+impl Tip {
+    pub fn newest(self) -> Option<Record> {
+        match self.0 {
+            Scan::Newest(_, record) => Some(record),
+            Scan::Free { .. } => None,
+        }
+    }
 }
 
 pub struct Journal<F> {
@@ -89,7 +104,18 @@ impl<F: OwnedFlash> Journal<F> {
     }
 
     pub fn load(&mut self, output: &mut [u8]) -> Result<Option<Record>, Error<F::Error>> {
-        let Scan::Newest(sector, record) = self.scan()? else {
+        let tip = self.tip()?;
+        self.read(tip, output)
+    }
+
+    /// Scan both sectors, writing nothing.
+    pub fn tip(&mut self) -> Result<Tip, Error<F::Error>> {
+        self.scan().map(Tip)
+    }
+
+    /// The payload of the record `tip` names, read again and verified.
+    pub fn read(&mut self, tip: Tip, output: &mut [u8]) -> Result<Option<Record>, Error<F::Error>> {
+        let Scan::Newest(sector, record) = tip.0 else {
             return Ok(None);
         };
         if output.len() < record.length {
@@ -108,11 +134,34 @@ impl<F: OwnedFlash> Journal<F> {
     }
 
     pub fn save(&mut self, payload: &[u8]) -> Result<Record, Error<F::Error>> {
+        let mut tip = self.tip()?;
+        self.save_after(&mut tip, payload)
+    }
+
+    /// Save after the record `tip` names, and move `tip` to the new one.
+    /// The newest record's commit word is programmed again first, so a cut
+    /// that left it marginal cannot leave it torn once the other sector is
+    /// erased. The sequence follows any whole record the target holds, as a
+    /// torn save there may have read committed on another boot.
+    pub fn save_after(&mut self, tip: &mut Tip, payload: &[u8]) -> Result<Record, Error<F::Error>> {
         if payload.len() > CAPACITY {
             return Err(Error::PayloadTooLarge);
         }
-        let (target, sequence) = match self.scan()? {
-            Scan::Newest(sector, record) => (1 - sector, record.sequence.wrapping_add(1)),
+        let (target, sequence) = match tip.0 {
+            Scan::Newest(sector, record) => {
+                if self.recommit(sector)? != record {
+                    return Err(Error::ReadbackFailed);
+                }
+                let target = 1 - sector;
+                self.flash
+                    .read(self.region, target * SECTOR_SIZE, &mut self.scratch.0)
+                    .map_err(Error::Flash)?;
+                let after = match whole(&self.scratch.0) {
+                    Some(torn) if newer(torn.sequence, record.sequence) => torn.sequence,
+                    _ => record.sequence,
+                };
+                (target, after.wrapping_add(1))
+            }
             Scan::Free { sector, sequence } => (sector, sequence),
         };
 
@@ -147,6 +196,7 @@ impl<F: OwnedFlash> Journal<F> {
         {
             return Err(Error::ReadbackFailed);
         }
+        *tip = Tip(Scan::Newest(target, record));
         Ok(record)
     }
 
@@ -409,8 +459,9 @@ impl<B: OwnedFlash> OwnedFlash for RegionAccess<'_, B> {
     }
 }
 
-/// The application's reservations under one borrow: its ride journal and,
-/// outside it, the intent that records a wipe of its stores in progress.
+/// The application's reservations under one borrow: its ride journal,
+/// outside it the intent that records a wipe of its stores in progress, and
+/// the rider's screens.
 pub struct AppStorage<'a, B> {
     backend: &'a mut B,
 }
@@ -423,6 +474,9 @@ impl<'a, B: OwnedFlash> AppStorage<'a, B> {
     }
     pub fn intent(&mut self) -> RegionAccess<'_, B> {
         RegionAccess::new(self.backend, Region::Intent)
+    }
+    pub fn screens(&mut self) -> RegionAccess<'_, B> {
+        RegionAccess::new(self.backend, Region::Screens)
     }
 }
 

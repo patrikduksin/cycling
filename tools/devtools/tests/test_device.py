@@ -235,9 +235,9 @@ class Formats(unittest.TestCase):
             device.validate_cycling(stock_image(), C606)
 
     def test_application_cap_reserves_ride_region_and_settings_tail_in_both_slots(self):
-        self.assertEqual(C606.app_size, 0x638000)
-        self.assertEqual(C606.slots[1] + C606.app_size, 0xD98000)
-        self.assertEqual(C606.owned, (0xD98000, 0x102000))
+        self.assertEqual(C606.app_size, 0x636000)
+        self.assertEqual(C606.slots[1] + C606.app_size, 0xD96000)
+        self.assertEqual(C606.owned, (0xD96000, 0x104000))
         self.assertEqual(C606.slots[1] + C606.slot_size, 0xE9A000)
         self.assertLessEqual(C606.slots[0] + C606.app_size, C606.slots[1])
         with patch.object(device, 'image_length', return_value=C606.app_size), patch.object(device, 'is_cycling'):

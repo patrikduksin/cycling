@@ -261,6 +261,11 @@ TASKS = [
     ),
     task('wifi-setup', 'Save current NetworkManager Wi-Fi credentials privately', f'{DEV}connectivity.wifi setup'),
     task(
+        'screens-wifi',
+        'Change the main ride page over Wi-Fi as a phone would, restart, read it back and restore it',
+        f'{DEV}connectivity.screens',
+    ),
+    task(
         'ride-export',
         'Export the complete read-only ride prefix as private raw, JSON and GPX files',
         f'{DEV}rides.export',

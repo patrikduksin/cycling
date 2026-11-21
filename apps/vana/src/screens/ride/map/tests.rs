@@ -43,7 +43,8 @@ fn laid(layout: &'static crate::screens::Layout) -> Laid {
     use crate::compose::Flags;
     use crate::compose::builtin::{Choices, Laid as Solved, ScreenId};
     use crate::compose::registry::{MAP, SCALE};
-    let solved = |flags| Solved::new(ScreenId::RideMap, layout, Choices::default(), flags).unwrap();
+    let solved =
+        |flags| Solved::new(ScreenId::RideMap, layout, Choices::default(), flags, None).unwrap();
     let at = &layout.scaled;
     let (free, beside_radar) = (solved(Flags::NONE), solved(Flags::RADAR));
     let rect = free.box_of(SCALE).unwrap();

@@ -146,9 +146,9 @@ fn found(read: Option<Scan>) -> Found {
 mod tests {
     use super::*;
     use crate::app::Store;
-    use crate::testing::{Cut, IntentFlash, Rng};
+    use crate::testing::{Cut, JournalFlash, Rng};
 
-    fn read(flash: &mut IntentFlash) -> Found {
+    fn read(flash: &mut JournalFlash) -> Found {
         found(scan(&mut Journal::new(flash, Region::Intent)))
     }
 
@@ -157,7 +157,7 @@ mod tests {
         Scope::of(stores).unwrap_or(Scope::one(Store::Internal))
     }
 
-    fn cut_soon(flash: &mut IntentFlash, rng: &mut Rng) {
+    fn cut_soon(flash: &mut JournalFlash, rng: &mut Rng) {
         flash.cut = Some(Cut {
             at: flash.mutations + rng.below(8),
             seed: rng.next(),
@@ -170,7 +170,7 @@ mod tests {
     /// the record since a settle last started.
     #[derive(Default)]
     struct Device {
-        flash: IntentFlash,
+        flash: JournalFlash,
         begun: u8,
         ran: u8,
     }
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn a_cut_at_any_write_of_a_begin_or_settle_runs_a_wipe_only_once_begun() {
-        let mut flash = IntentFlash::default();
+        let mut flash = JournalFlash::default();
         let rides = Scope::of([Store::Rides]).unwrap();
         assert_eq!(begin(&mut flash, rides), Some(rides));
         assert!(settle(&mut flash));
@@ -348,7 +348,7 @@ mod tests {
         for seed in 0..256 {
             for settle_cut in 0..3 {
                 let mut rng = Rng::new(seed);
-                let mut flash = IntentFlash::default();
+                let mut flash = JournalFlash::default();
                 flash.cut = Some(Cut {
                     at: 2,
                     seed: rng.next(),
@@ -375,7 +375,7 @@ mod tests {
         let mut resumed = 0;
         for seed in 0..256 {
             let mut rng = Rng::new(seed);
-            let mut flash = IntentFlash::default();
+            let mut flash = JournalFlash::default();
             flash.cut = Some(Cut {
                 at: 2,
                 seed: rng.next(),
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn a_begin_beside_a_pending_wipe_records_nothing_and_runs_it_only_if_it_covers() {
-        let mut flash = IntentFlash::default();
+        let mut flash = JournalFlash::default();
         let rides = Scope::one(Store::Rides);
         let settings = Scope::one(Store::Settings);
         let both = Scope::of([Store::Rides, Store::Settings]).unwrap();
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn a_read_the_flash_refuses_is_no_answer_and_drops_no_wipe() {
-        let mut flash = IntentFlash::default();
+        let mut flash = JournalFlash::default();
         let internal = Scope::one(Store::Internal);
         assert_eq!(begin(&mut flash, internal), Some(internal));
         flash.off = true;
@@ -425,7 +425,7 @@ mod tests {
     fn bytes_this_version_cannot_read_are_no_wipe_and_settle() {
         let other_payloads: [&[u8]; 4] = [&[2, 0x20], &[VERSION, 0x80], &[VERSION, 0x20, 0], &[]];
         for (case, payload) in other_payloads.iter().enumerate() {
-            let mut flash = IntentFlash::default();
+            let mut flash = JournalFlash::default();
             Journal::new(&mut flash, Region::Intent)
                 .save(payload)
                 .unwrap();
@@ -435,7 +435,7 @@ mod tests {
         }
         for seed in 0..64 {
             let mut rng = Rng::new(seed);
-            let mut flash = IntentFlash::default();
+            let mut flash = JournalFlash::default();
             let garbage = rng.pick(&[4096, 8192]);
             for byte in &mut flash.bytes[..garbage] {
                 *byte = rng.byte();
@@ -444,12 +444,12 @@ mod tests {
             assert_eq!(at_boot(&mut flash), Found::Idle, "seed {seed}");
             assert_eq!(read(&mut flash), Found::Idle, "seed {seed}");
         }
-        assert_eq!(read(&mut IntentFlash::default()), Found::Idle);
+        assert_eq!(read(&mut JournalFlash::default()), Found::Idle);
     }
 
     #[test]
     fn a_settled_journal_is_read_without_a_write() {
-        let mut flash = IntentFlash::default();
+        let mut flash = JournalFlash::default();
         assert_eq!(at_boot(&mut flash), Found::Idle);
         assert!(settle(&mut flash));
         assert_eq!(flash.mutations, 0);

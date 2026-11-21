@@ -38,7 +38,7 @@ fn record(trees: &[&[Node]]) -> Vec<u8> {
 
 fn accept_all(trees: &[&[Node]]) -> Result<Box<Screens>, Reject> {
     let mut screens = Box::new(Screens::EMPTY);
-    parse::parse(&record(trees), &BASE, no_cues, &mut screens)?;
+    parse::parse(&record(trees), &BASE, &no_cues, &mut screens)?;
     Ok(screens)
 }
 

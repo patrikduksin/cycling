@@ -39,6 +39,15 @@ impl ScriptedFlash {
 }
 
 const UNRECORDED_AVAILABILITY: Availability = Availability::Ready;
+/// A region the trace's build did not reserve, such as one added since: its
+/// device sampled every region's geometry each epoch, so one the trace holds
+/// none of, beside others it holds, was not there.
+const UNRESERVED: Geometry = Geometry {
+    capacity: 0,
+    program_size: 0,
+    erase_size: 0,
+    durable: false,
+};
 
 impl OwnedFlash for ScriptedFlash {
     type Error = Error;
@@ -51,6 +60,11 @@ impl OwnedFlash for ScriptedFlash {
     fn geometry(&self, region: Region) -> Geometry {
         let mut world = self.world.borrow_mut();
         let script = &mut *world;
+        let mut key = [0u8; 1];
+        region.put(&mut Writer::new(&mut key, 0));
+        if script.ever_observed(self.geometry, &[]) && !script.ever_observed(self.geometry, &key) {
+            return UNRESERVED;
+        }
         script.begin(self.geometry);
         Put::put(script, &region);
         let at = script.observed();

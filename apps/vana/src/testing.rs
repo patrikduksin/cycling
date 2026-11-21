@@ -153,13 +153,15 @@ pub(crate) struct Cut {
     pub(crate) seed: u64,
 }
 
-/// The two NOR sectors of `Region::Intent`, with power cut at any mutation.
+/// The two NOR sectors of a journal's region, `Region::Intent` unless
+/// [`JournalFlash::of`] names another, with power cut at any mutation.
 /// It models an interrupted NOR erase and program conservatively: a cut
 /// erase leaves bits across the sector partly erased, a cut program leaves
 /// its bytes partly programmed, and a cut commit word is marginal, so each
 /// later read returns it whole or as it was left until a program completes
 /// over it or the sector is erased.
-pub(crate) struct IntentFlash {
+pub(crate) struct JournalFlash {
+    region: device_api::storage::Region,
     pub(crate) bytes: std::vec::Vec<u8>,
     pub(crate) mutations: u64,
     pub(crate) cut: Option<Cut>,
@@ -168,9 +170,10 @@ pub(crate) struct IntentFlash {
     reads: Rng,
 }
 
-impl Default for IntentFlash {
+impl Default for JournalFlash {
     fn default() -> Self {
         Self {
+            region: device_api::storage::Region::Intent,
             bytes: std::vec![0xff; 2 * 4096],
             mutations: 0,
             cut: None,
@@ -181,7 +184,14 @@ impl Default for IntentFlash {
     }
 }
 
-impl IntentFlash {
+impl JournalFlash {
+    pub(crate) fn of(region: device_api::storage::Region) -> Self {
+        Self {
+            region,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn power_on(&mut self, read_seed: u64) {
         self.off = false;
         self.cut = None;
@@ -204,7 +214,7 @@ impl IntentFlash {
     }
 }
 
-impl device_api::storage::OwnedFlash for IntentFlash {
+impl device_api::storage::OwnedFlash for JournalFlash {
     type Error = ();
     fn availability(
         &self,
@@ -214,7 +224,7 @@ impl device_api::storage::OwnedFlash for IntentFlash {
     }
     fn geometry(&self, region: device_api::storage::Region) -> device_api::storage::Geometry {
         device_api::storage::Geometry {
-            capacity: if region == device_api::storage::Region::Intent {
+            capacity: if region == self.region {
                 self.bytes.len()
             } else {
                 0
@@ -442,6 +452,24 @@ fn fingerprint(state: &impl core::hash::Hash) -> u128 {
     let mut twin = Twin(std::hash::DefaultHasher::new(), salted);
     state.hash(&mut twin);
     u128::from(twin.0.finish()) << 64 | u128::from(twin.1.finish())
+}
+
+/// The built-in main page's stored nodes with `metric` in place of the
+/// lower line's cadence.
+pub(crate) fn main_with(metric: crate::compose::data::Metric) -> std::vec::Vec<u8> {
+    use crate::compose::bench::{MAIN, MAIN_BYTES};
+    use crate::compose::node::What;
+    let cadence = What::Leaf {
+        component: crate::compose::registry::VALUE,
+        arg: crate::compose::data::Metric::Cadence as u8,
+    };
+    let at = MAIN
+        .iter()
+        .position(|node| node.what() == Some(cadence))
+        .expect("the built-in shows cadence");
+    let mut nodes = MAIN_BYTES.to_vec();
+    nodes[at * 4 + 1] = metric as u8;
+    nodes
 }
 
 #[cfg(test)]

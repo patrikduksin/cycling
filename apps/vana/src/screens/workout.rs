@@ -979,9 +979,14 @@ impl<'a> View<'a> {
     #[cfg(test)]
     pub(crate) fn compose(&mut self, slots: ride::slots::Slots) {
         let choices = crate::compose::builtin::Choices { main_slots: slots };
-        let mut laids =
-            crate::compose::builtin::Laids::new(self.layout, choices, ride::main_flags_of(self));
-        laids.show(self.screen_id(), self.layout);
+        let built_in = crate::compose::Screens::EMPTY;
+        let mut laids = crate::compose::builtin::Laids::new(
+            self.layout,
+            choices,
+            ride::main_flags_of(self),
+            &built_in,
+        );
+        laids.show(self.screen_id(), self.layout, &built_in);
         self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
     }
 

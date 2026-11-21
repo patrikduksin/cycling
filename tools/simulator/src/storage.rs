@@ -114,7 +114,8 @@ pub struct FlashImage {
     pub configuration: Vec<u8>,
     pub data: Vec<u8>,
     pub intent: Vec<u8>,
-    /// Bytes of the intent's and the ride journal's word programs cut short,
+    pub screens: Vec<u8>,
+    /// Bytes of the intent's, the screens' and the ride journal's word programs cut short,
     /// with the value a whole program leaves. A boot reads each such word
     /// whole or as the cut left it, until a program completes over it or an
     /// erase clears it. The configuration region keeps a cut word as it was
@@ -128,6 +129,7 @@ impl FlashImage {
             configuration: vec![0xff; JOURNAL_BYTES],
             data: vec![0xff; DATA_BYTES],
             intent: vec![0xff; JOURNAL_BYTES],
+            screens: vec![0xff; JOURNAL_BYTES],
             marginal: Vec::new(),
         }
     }
@@ -137,6 +139,7 @@ impl FlashImage {
             Region::Configuration => &self.configuration,
             Region::Data => &self.data,
             Region::Intent => &self.intent,
+            Region::Screens => &self.screens,
             Region::Crash => &[],
         }
     }
@@ -146,6 +149,7 @@ impl FlashImage {
             Region::Configuration => &mut self.configuration,
             Region::Data => &mut self.data,
             Region::Intent => &mut self.intent,
+            Region::Screens => &mut self.screens,
             Region::Crash => &mut [],
         }
     }
@@ -238,7 +242,12 @@ impl FileFlash {
             .open(root.join("session.lock"))?;
         lock.try_lock()
             .map_err(|e| io::Error::other(std::format!("virtual media already owned: {e}")))?;
-        for r in [Region::Configuration, Region::Data, Region::Intent] {
+        for r in [
+            Region::Configuration,
+            Region::Data,
+            Region::Intent,
+            Region::Screens,
+        ] {
             let size = Self::capacity(r);
             let path = Self::path(root, r);
             match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -297,12 +306,13 @@ impl FileFlash {
         root.join(match r {
             Region::Configuration => "configuration.bin",
             Region::Intent => "intent.bin",
+            Region::Screens => "screens.bin",
             Region::Data | Region::Crash => "data.bin",
         })
     }
     fn capacity(r: Region) -> usize {
         match r {
-            Region::Configuration | Region::Intent => JOURNAL_BYTES,
+            Region::Configuration | Region::Intent | Region::Screens => JOURNAL_BYTES,
             Region::Data => DATA_BYTES,
             Region::Crash => 0,
         }
@@ -364,7 +374,7 @@ impl FileFlash {
                     if index < touched {
                         *dst = landed(*dst, bytes[index], offset + index);
                     }
-                    if matches!(r, Region::Intent | Region::Data)
+                    if matches!(r, Region::Intent | Region::Screens | Region::Data)
                         && !erase
                         && bytes.len() == 4
                         && *dst != whole

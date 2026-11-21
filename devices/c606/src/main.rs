@@ -449,6 +449,13 @@ async fn console(
     let sdk = external(|| vana::app::Runtime::new(profile, PRODUCT, &LAYOUT));
     device::capabilities::ant::wake_on(vana::app::WAKING_ANT_TYPE);
     working.attach(sdk);
+    // The rider's screens are optional, so they take PSRAM only after the
+    // runtime above has its own.
+    const SCREENS: vana::app::Overrides = vana::app::Overrides::new();
+    match device::drivers::psram::place(SCREENS) {
+        Some(screens) => sdk.attach_screens(screens),
+        None => log::warn!("screens: no PSRAM, every screen shows its built-in"),
+    }
     sdk.load_preferences(&system.settings.app, system.settings_source);
     sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
     sdk.set_micros_clock(|| embassy_time::Instant::now().as_micros());

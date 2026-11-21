@@ -54,6 +54,8 @@ use firmware_services::fit::{Counter, Sink};
 use firmware_services::http::{Head, query_value};
 use firmware_services::why;
 
+mod screens;
+
 /// A session without requests ends after this long.
 pub const IDLE_MS: u64 = 10 * 60 * 1000;
 /// Slots read per service step while indexing or sizing a file.
@@ -214,6 +216,25 @@ enum Job {
     Workout {
         id: u32,
         received: u32,
+    },
+    /// A screen's nodes gathering in `Work::text`: `received` of the
+    /// request's body bytes.
+    ScreenBody {
+        id: u32,
+        received: u32,
+        asked: screens::Asked,
+    },
+    /// A change to the rider's screens, waiting for their journal.
+    ScreenSave {
+        id: u32,
+    },
+    /// A JSON document sent from what `text` holds, then item by item from
+    /// `next`; `first` until an item is sent.
+    Listing {
+        id: u32,
+        doc: screens::Doc,
+        next: u16,
+        first: bool,
     },
 }
 
@@ -615,7 +636,10 @@ impl Runtime {
             | Job::Activities { id, .. }
             | Job::Fit { id, .. }
             | Job::Course { id, .. }
-            | Job::Workout { id, .. } => Some(*id),
+            | Job::Workout { id, .. }
+            | Job::ScreenBody { id, .. }
+            | Job::ScreenSave { id }
+            | Job::Listing { id, .. } => Some(*id),
         };
         if let Some(id) = job_id
             && current.as_ref().is_none_or(|r| r.id != id)
@@ -719,6 +743,9 @@ impl Runtime {
             (Method::Put | Method::Post, "/api/workouts") => self.start_workout(request),
             (Method::Delete, "/api/workouts") => self.delete_workout(request, bulk),
             (Method::Post, "/api/synced") => self.synced(request),
+            _ if path == "/api/screens" || path.starts_with("/api/screens/") => {
+                self.route_screens(request);
+            }
             (Method::Post, "/api/close") => {
                 self.reply(id, 204, None);
                 self.phone.wanted = Some(None);
@@ -879,18 +906,39 @@ impl Runtime {
     }
 
     fn activities_head(&mut self, _id: u32) {
-        self.phone.w().text.clear();
+        let mut open = heapless::String::<64>::new();
+        let _ = write!(open, r#"{{"indexing":{},"activities":["#, self.indexing());
+        self.open_json(&open);
+    }
+
+    /// Put in `text` the head of a JSON response sent in pieces, and `open`,
+    /// the start of its body.
+    fn open_json(&mut self, open: &str) {
+        let text = &mut self.phone.w().text;
+        text.clear();
         // Length unknown: the body ends when the connection closes.
         if let Some(head) = Head::new(200)
             .header("Content-Type", "application/json")
             .header("Cache-Control", "no-store")
             .finish()
         {
-            let _ = self.phone.w().text.extend_from_slice(head.bytes());
+            let _ = text.extend_from_slice(head.bytes());
         }
-        let mut open = heapless::String::<64>::new();
-        let _ = write!(open, r#"{{"indexing":{},"activities":["#, self.indexing());
-        let _ = self.phone.w().text.extend_from_slice(open.as_bytes());
+        let _ = text.extend_from_slice(open.as_bytes());
+    }
+
+    /// Send what `text` holds as far as the transport has room, keeping the
+    /// rest; whether it is all sent.
+    fn send_text(&mut self, server: &mut impl Server, id: u32) -> bool {
+        let text = &mut self.phone.w().text;
+        if text.is_empty() {
+            return true;
+        }
+        let n = server.write(id, text);
+        let rest = text.len() - n;
+        text.copy_within(n.., 0);
+        text.truncate(rest);
+        rest == 0
     }
 
     /// One ride of the list; `unsaved` while the phone has not confirmed it.
@@ -1013,6 +1061,9 @@ impl Runtime {
             Job::Fit { .. } => self.progress_fit(server, store, bulk),
             Job::Course { .. } => self.progress_course(server, bulk, now),
             Job::Workout { .. } => self.progress_workout(server, bulk, now),
+            Job::ScreenBody { .. } => self.progress_screen_body(server, now),
+            Job::ScreenSave { .. } => self.progress_screen_save(),
+            Job::Listing { .. } => self.progress_listing(server),
         }
     }
 
@@ -1271,35 +1322,16 @@ impl Runtime {
     }
 
     fn progress_workout(&mut self, server: &mut impl Server, bulk: &mut impl ReadWrite, now: u64) {
-        let Job::Workout { id, mut received } =
-            core::mem::replace(&mut self.phone.w().job, Job::Idle)
+        let Job::Workout { id, received } = core::mem::replace(&mut self.phone.w().job, Job::Idle)
         else {
             return;
         };
         let Some(body) = server.request().filter(|r| r.id == id).map(|r| r.body) else {
             return;
         };
-        let before = received;
         // A refused file is still read to its end, so the phone gets the
         // answer rather than a connection cut while it sends.
-        {
-            let mut piece = [0u8; UPLOAD_PIECE];
-            for _ in 0..UPLOAD_READS {
-                let wanted = (body - received).min(UPLOAD_PIECE as u32) as usize;
-                let n = server.read(id, &mut piece[..wanted]);
-                if n == 0 {
-                    break;
-                }
-                received += n as u32;
-                // Past the largest workout only the count matters.
-                let _ = self.phone.w().text.extend_from_slice(&piece[..n]);
-            }
-        }
-        if received > before
-            && let Some(session) = self.phone.session.as_mut()
-        {
-            session.last_request_ms = now;
-        }
+        let received = self.take_body(server, id, received, body, now);
         if received < body {
             self.phone.w().job = Job::Workout { id, received };
             return;
@@ -1350,6 +1382,36 @@ impl Runtime {
         }
     }
 
+    /// Read up to `UPLOAD_READS` pieces of request `id`'s body into
+    /// `text`, which keeps the bytes while they fit; the body bytes received
+    /// so far.
+    fn take_body(
+        &mut self,
+        server: &mut impl Server,
+        id: u32,
+        mut received: u32,
+        body: u32,
+        now: u64,
+    ) -> u32 {
+        let before = received;
+        let mut piece = [0u8; UPLOAD_PIECE];
+        for _ in 0..UPLOAD_READS {
+            let wanted = (body - received).min(UPLOAD_PIECE as u32) as usize;
+            let n = server.read(id, &mut piece[..wanted]);
+            if n == 0 {
+                break;
+            }
+            received += n as u32;
+            let _ = self.phone.w().text.extend_from_slice(&piece[..n]);
+        }
+        if received > before
+            && let Some(session) = self.phone.session.as_mut()
+        {
+            session.last_request_ms = now;
+        }
+        received
+    }
+
     fn delete_workout(&mut self, request: &Request, bulk: &mut impl ReadWrite) {
         let id = request.id;
         if self.recorder_busy() {
@@ -1394,14 +1456,8 @@ impl Runtime {
         else {
             return;
         };
-        if !self.phone.w().text.is_empty() {
-            let n = server.write(id, &self.phone.w().text);
-            let rest = self.phone.w().text.len() - n;
-            self.phone.w().text.copy_within(n.., 0);
-            self.phone.w().text.truncate(rest);
-            if rest > 0 {
-                return;
-            }
+        if !self.send_text(server, id) {
+            return;
         }
         // Merge both journals newest first: each journal's rides are in
         // recording order, and the later start goes first. Undated rides

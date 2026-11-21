@@ -165,6 +165,7 @@ pub enum Medium {
     Crash,
     Bulk,
     Intent,
+    Screens,
 }
 
 impl Medium {
@@ -203,6 +204,7 @@ impl From<device_api::storage::Region> for Medium {
             device_api::storage::Region::Data => Self::Data,
             device_api::storage::Region::Crash => Self::Crash,
             device_api::storage::Region::Intent => Self::Intent,
+            device_api::storage::Region::Screens => Self::Screens,
         }
     }
 }
@@ -413,7 +415,7 @@ pub enum Gnss {
 
 wire::codes! {
     crate::network_time::Status { Unavailable = 0, Syncing = 1, Fresh = 2, Offline = 3, Stale = 4 }
-    Medium { Configuration = 0, Data = 1, Crash = 2, Bulk = 3, Intent = 4 }
+    Medium { Configuration = 0, Data = 1, Crash = 2, Bulk = 3, Intent = 4, Screens = 5 }
     StorageOp { Read = 0, Write = 1, Erase = 2, Info = 3 }
     StorageError { Unsupported = 0, Unavailable = 1, Failed = 2, Invalid = 3, Range = 4 }
     Level { Error = 0, Warn = 1 }

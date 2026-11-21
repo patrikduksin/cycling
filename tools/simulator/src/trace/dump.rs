@@ -28,12 +28,13 @@ use std::fmt;
 /// This dump's own format.
 pub const DUMP: u64 = 1;
 
-const MEDIA: [Medium; 5] = [
+const MEDIA: [Medium; 6] = [
     Medium::Configuration,
     Medium::Data,
     Medium::Crash,
     Medium::Bulk,
     Medium::Intent,
+    Medium::Screens,
 ];
 const ERRORS: [StorageError; 5] = [
     StorageError::Unsupported,

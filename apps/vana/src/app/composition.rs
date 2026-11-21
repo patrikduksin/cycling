@@ -3,9 +3,9 @@
 //! radar, a workout, the arrival). It lives in the runtime, which the
 //! device keeps in PSRAM, so a frame only reads where the tiles go.
 use super::Runtime;
-use crate::compose::Flags;
 use crate::compose::builtin::{Asks, Choices, Laid, Laids, ScreenId};
 use crate::compose::input::{self, Action, Focus, Go, OnPage, Owners};
+use crate::compose::{Flags, Screens};
 use crate::ride::course::nav::Sign;
 use crate::screens::ride::main_flags;
 use crate::screens::ride::summary::{self, After};
@@ -21,7 +21,7 @@ pub(super) struct Composition {
 impl Composition {
     pub(super) fn new(layout: &crate::screens::Layout) -> Self {
         Self {
-            laids: Laids::new(layout, Choices::default(), Flags::NONE),
+            laids: Laids::new(layout, Choices::default(), Flags::NONE, &Screens::EMPTY),
         }
     }
 
@@ -33,8 +33,13 @@ impl Composition {
         self.laids.main()
     }
 
-    pub(super) fn show(&mut self, id: ScreenId, layout: &crate::screens::Layout) {
-        self.laids.show(id, layout);
+    pub(super) fn show(
+        &mut self,
+        id: ScreenId,
+        layout: &crate::screens::Layout,
+        changed: &Screens,
+    ) {
+        self.laids.show(id, layout, changed);
     }
 }
 
@@ -47,8 +52,9 @@ impl firmware_services::why::State for Composition {
 }
 
 impl Runtime {
-    /// Solve the built-ins again when what they show changed, ahead of the
-    /// frame that draws one, and note the screen shown.
+    /// Solve the main page and the screen shown again when what they show
+    /// changed, the rider's screens among it, ahead of the frame that draws
+    /// one, and note the screen shown.
     #[inline(never)]
     pub(super) fn compose(&mut self, radar: bool, now: u64) {
         let course = self.course().is_some();
@@ -62,19 +68,22 @@ impl Runtime {
         let choices = Choices {
             main_slots: self.preferences.options.main_slots,
         };
-        if self.composition.laids.update(choices, flags) {
+        let shown = self.screen_id();
+        let changed = super::overrides::shown(&self.overrides);
+        let laids = &mut self.composition.laids;
+        if laids.update(choices, flags, changed) {
             let slots = choices.main_slots;
             why!("compose.solve", slots, flags);
         }
-        let shown = self.screen_id();
-        self.composition.laids.show(shown, self.layout);
+        laids.show(shown, self.layout, changed);
     }
 
     /// A press of `role` on the built-in shown, if one is.
     pub(super) fn composed_press(&mut self, role: Role) -> Option<Pressed> {
         let id = self.screen_id();
         // A press may come before the frame that shows a screen just opened.
-        self.composition.laids.show(id, self.layout);
+        let changed = super::overrides::shown(&self.overrides);
+        self.composition.laids.show(id, self.layout, changed);
         let laid = self.composition.laids.get_mut(id)?;
         let mut focus = laid.focus();
         let asked = input::press(role, laid.buttons(), &laid.solved(), &mut focus);
@@ -97,7 +106,8 @@ impl Runtime {
     pub(super) fn composed_hold(&mut self) -> Option<Action> {
         let id = self.screen_id();
         // A hold may come before the frame that shows a screen just opened.
-        self.composition.laids.show(id, self.layout);
+        let changed = super::overrides::shown(&self.overrides);
+        self.composition.laids.show(id, self.layout, changed);
         let laid = self.composition.laids.get(id)?;
         let action = laid.buttons().held?;
         let takes = match action {

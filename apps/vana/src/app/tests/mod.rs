@@ -21,6 +21,7 @@ mod power;
 mod presentation;
 mod recording;
 mod saved_sensors;
+mod screens;
 mod sensor_links;
 mod state;
 mod sync;

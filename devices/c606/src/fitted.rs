@@ -45,6 +45,7 @@ pub const REGIONS: &[(&str, Region)] = &[
     ("data", Region::Data),
     ("crash", Region::Crash),
     ("intent", Region::Intent),
+    ("screens", Region::Screens),
 ];
 
 pub const fn owned(region: Region) -> (u32, usize) {
@@ -53,6 +54,7 @@ pub const fn owned(region: Region) -> (u32, usize) {
         Region::Data => (0xd98000, 0x100000),
         Region::Crash => (0x1e000, 0x2000),
         Region::Intent => (0x1c000, 0x2000),
+        Region::Screens => (0xd96000, 0x2000),
     }
 }
 
@@ -62,5 +64,6 @@ pub const fn durable(region: Region) -> bool {
         Region::Data => true,
         Region::Crash => true,
         Region::Intent => true,
+        Region::Screens => true,
     }
 }

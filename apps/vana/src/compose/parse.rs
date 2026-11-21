@@ -18,7 +18,7 @@ use crate::screens::scaled::Scaled;
 use core::num::NonZeroU8;
 use core::ops::Range;
 
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const RECORD: usize = firmware_services::storage::CAPACITY;
 pub const MAX_SCREENS: usize = 32;
 pub const MAX_LAYERS: usize = 8;
@@ -88,6 +88,23 @@ pub struct Layer {
     event: Event,
     hold: Hold,
     tree: Tree,
+}
+
+/// One screen of a record changed: to an accepted tree, or back to its
+/// built-in.
+#[derive(Clone, Copy, Debug)]
+pub enum Edit<'a> {
+    Set(&'a Screen),
+    Reset(u8),
+}
+
+impl Edit<'_> {
+    const fn key(self) -> u8 {
+        match self {
+            Self::Set(screen) => screen.key,
+            Self::Reset(key) => key,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -317,14 +334,36 @@ impl Screens {
     }
 
     /// Write the record back: the bytes it was parsed from.
-    pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
+    pub fn encode(&self, out: &mut [u8]) -> Result<usize, Reject> {
+        self.write(None, out)
+    }
+
+    /// Write the record with one screen changed. The result is a record to
+    /// accept, not an accepted one: the screens it holds may now be too many,
+    /// or too long for `out`.
+    pub fn edited(&self, edit: Edit<'_>, out: &mut [u8]) -> Result<usize, Reject> {
+        self.write(Some(edit), out)
+    }
+
+    fn write(&self, edit: Option<Edit<'_>>, out: &mut [u8]) -> Result<usize, Reject> {
         let mut writer = Writer { out, at: 0 };
-        writer.put(&[VERSION, self.screens.len() as u8])?;
-        for screen in &self.screens {
-            writer.put(&[screen.key, screen.tree.nodes.len() as u8])?;
-            writer.nodes(&screen.tree.nodes)?;
+        let changed = edit.map(Edit::key);
+        let kept = || {
+            self.screens
+                .iter()
+                .filter(|screen| Some(screen.key) != changed)
+        };
+        let set = match edit {
+            Some(Edit::Set(screen)) => Some(screen),
+            Some(Edit::Reset(_)) | None => None,
+        };
+        let count = kept().count() + usize::from(set.is_some());
+        writer.put(&[VERSION, count as u8]);
+        for screen in kept().chain(set) {
+            writer.put(&[screen.key, screen.tree.nodes.len() as u8]);
+            writer.nodes(&screen.tree.nodes);
         }
-        writer.put(&[self.layers.len() as u8])?;
+        writer.put(&[self.layers.len() as u8]);
         for layer in &self.layers {
             let head = (layer.anchor as u8) << 4 | layer.mode as u8;
             writer.put(&[
@@ -332,10 +371,16 @@ impl Screens {
                 layer.event as u8,
                 layer.hold.byte(),
                 layer.tree.nodes.len() as u8,
-            ])?;
-            writer.nodes(&layer.tree.nodes)?;
+            ]);
+            writer.nodes(&layer.tree.nodes);
         }
-        Some(writer.at)
+        match writer.at <= writer.out.len() {
+            true => Ok(writer.at),
+            false => Err(Reject {
+                place: Place::Record,
+                why: Why::Long(writer.at),
+            }),
+        }
     }
 }
 
@@ -345,7 +390,7 @@ impl Screens {
 pub fn parse(
     bytes: &[u8],
     at: &Scaled,
-    controls_of: fn(u8) -> Controls,
+    controls_of: &dyn Fn(u8) -> Controls,
     out: &mut Screens,
 ) -> Result<(), Reject> {
     *out = Screens::EMPTY;
@@ -360,7 +405,7 @@ pub fn parse(
 fn parse_into(
     bytes: &[u8],
     at: &Scaled,
-    controls_of: fn(u8) -> Controls,
+    controls_of: &dyn Fn(u8) -> Controls,
     out: &mut Screens,
 ) -> Result<(), Reject> {
     let record = |why| Reject {
@@ -620,25 +665,24 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Counts every byte put, and writes those that fit.
 struct Writer<'a> {
     out: &'a mut [u8],
     at: usize,
 }
 
 impl Writer<'_> {
-    fn put(&mut self, bytes: &[u8]) -> Option<()> {
-        self.out
-            .get_mut(self.at..self.at + bytes.len())?
-            .copy_from_slice(bytes);
+    fn put(&mut self, bytes: &[u8]) {
+        if let Some(out) = self.out.get_mut(self.at..self.at + bytes.len()) {
+            out.copy_from_slice(bytes);
+        }
         self.at += bytes.len();
-        Some(())
     }
 
-    fn nodes(&mut self, nodes: &[Node]) -> Option<()> {
+    fn nodes(&mut self, nodes: &[Node]) {
         for node in nodes {
-            self.put(&node.bytes())?;
+            self.put(&node.bytes());
         }
-        Some(())
     }
 }
 

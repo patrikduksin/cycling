@@ -505,6 +505,12 @@ impl Recorded {
         self.media.contents(medium, out);
     }
 
+    /// Whether the trace holds an observation of `method` under `key`, at
+    /// any time.
+    pub fn ever_observed(&mut self, method: MethodId, key: &[u8]) -> bool {
+        self.nearest(method, key).is_some()
+    }
+
     /// The latest observation of `method`, when the trace holds one: for a
     /// device that keeps its own value otherwise.
     pub fn observation<T: Replayed + Aging>(&mut self, method: MethodId, key: &[u8]) -> Option<T> {

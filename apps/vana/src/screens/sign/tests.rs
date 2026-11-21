@@ -2,7 +2,7 @@ use super::*;
 use crate::screens::chrome::{BLACK, Shown};
 use crate::screens::panels::ALL;
 use crate::screens::workout::{Page, View};
-use crate::screens::{BASE, ride::ClimbLent};
+use crate::screens::{BASE, Layout, ride::ClimbLent};
 use std::vec::Vec;
 
 fn turn(glyph: Glyph, metres: u32) -> Sign {
@@ -42,8 +42,22 @@ fn signs() -> [Sign; 10] {
 
 const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
 
+/// The chip's box on the main page of `layout`, on a course.
+fn main_chip(radar: bool, layout: &Layout) -> Rect {
+    let flags = crate::screens::ride::main_flags(true, radar, false, false);
+    let main = crate::screens::ride::main_laid(layout, Default::default(), flags);
+    crate::screens::ride::main_chip(&main).unwrap()
+}
+
+fn placed(sign: Sign, form: SignForm, radar: bool, layout: &Layout) -> Option<Placed> {
+    match form {
+        SignForm::Chip => place_chip(sign, main_chip(radar, layout), layout),
+        _ => place(sign, form, radar, layout),
+    }
+}
+
 fn on_c606(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
-    place(sign, form, radar, &BASE)
+    placed(sign, form, radar, &BASE)
 }
 
 fn width(sign: Sign, form: SignForm) -> usize {
@@ -75,7 +89,11 @@ fn each_form_sits_where_its_mockup_draws_it() {
     let badge = rect(turn(Glyph::Right, 250), SignForm::Badge, false);
     assert_eq!((badge.left, badge.top, badge.bottom), (8, 30, 90));
     let chip = rect(chip(Glyph::Right, 6_400), SignForm::Chip, false);
-    assert_eq!((chip.left, chip.top, chip.bottom), (24, 72, 100));
+    assert_eq!(
+        (chip.left, chip.top, chip.bottom),
+        (10, 71, 99),
+        "where the tree puts it"
+    );
 }
 
 #[test]
@@ -126,7 +144,7 @@ fn every_sign_s_ink_stays_inside_it_on_every_panel() {
         for radar in [false, true] {
             for form in FORMS {
                 for sign in signs() {
-                    let Some(placed) = place(sign, form, radar, layout) else {
+                    let Some(placed) = placed(sign, form, radar, layout) else {
                         continue;
                     };
                     let what =
@@ -206,7 +224,7 @@ fn painted_signs_match_the_per_pixel_reference() {
         for sign in signs() {
             for form in FORMS {
                 for radar in [false, true] {
-                    let Some(placed) = place(sign, form, radar, layout) else {
+                    let Some(placed) = placed(sign, form, radar, layout) else {
                         continue;
                     };
                     for y in 0..panel.height {

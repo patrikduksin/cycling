@@ -462,7 +462,7 @@ looks. Its digits jump to each new distance: 10 m steps under 1 km, then
 | Form | Where | Box | Content |
 | --- | --- | --- | --- |
 | Banner | Main, stats and climb | Rows 22 to 104, full width, square corners | The glyph, then the distance in `SIGN_50` with its unit in `SIGN_20`; off course a second line TURN BACK in `SIGN_18`; arrived ARRIVED in `SIGN_27`; turn around the U-turn glyph and TURN over AROUND in `SIGN_27` on baselines 58 and 86 (`SIGN_20` on 56 and 78 in the badge) |
-| Chip | Main, at rest | `RAISED` at (24, 72), 28 tall, radius 8, as wide as its text; the glyph on a 28 × 28 turn-fill square | The distance in `SIGN_20`, its unit in `SIGN_13` `MUTED` |
+| Chip | Main, at rest | `RAISED` where the main page's tree places it, under the time; 28 tall, radius 8, as wide as its text; the glyph on a 28 × 28 turn-fill square | The distance in `SIGN_20`, its unit in `SIGN_13` `MUTED` |
 | Badge | The map | At (8, 30), 60 tall, radius 12, as wide as its text | The banner at 60/82 of its size |
 
 Fills are `#0a6fe0` for a turn, `#d67400` off course and turn around, and
@@ -470,16 +470,22 @@ Fills are `#0a6fe0` for a turn, `#d67400` off course and turn around, and
 unit sits 4 px after its digits' ink, and a fitted chip or badge ends 8.25 px
 past its furthest ink, both in the mockups' fractional pixels; tests lock the
 widths the mockups draw. With a radar paired the banner starts at x 28 and its
-contents, like the chip, move 14 px right, as the page body does.
+contents move 14 px right, as a data page's body does.
 
-While a course is loaded the main page takes the course layout the mockups
-draw: elapsed time and grade on baseline 58, the chip, speed in `LARGE` on
-149, power on 199 with its gauge at 208, heart rate on 255 with its gauge at
-266, and the lower line on 303, under the toast band. Units sit 6 px after the
-digits' ink there, as the mockups set them. Without a course the page keeps the
-`HERO` speed. When main shows the ride's totals after arriving, it sets the
-captions in `TOTAL_11`, distance in `TOTAL_60`, ride time in `VALUE` and the
-three averages in `TOTAL_30` at left, centre and right.
+The main page is a tree of tiles (`screens/ride/main.rs`, #496): the status
+bar, elapsed time in `VALUE` with grade in `CAPTION`, the chip on a course,
+speed, power and heart rate in `LARGE` with their gauges, and the lower line
+in `VALUE`. Its middle column grows no tile, so the room left over becomes
+even gaps above, between and below the rows. Speed takes `HERO` where it fits
+and no course is loaded, `LARGE` on a course. Without a radar the tree spans
+the whole panel; beside one it re-tiles right of the strip. A reading's look
+is measured on the widest text it can show, so a number never changes size
+mid-ride; a lower-line reading that does not fit `VALUE` takes `BODY`. On a
+course the time and the chip sit above the banner's bottom edge, which a test
+holds on every panel. When main shows the ride's totals after arriving, the
+banner's room replaces the time; the captions are `TOTAL_11`, distance
+`TOTAL_60`, ride time `VALUE` and the three averages `TOTAL_30` at left,
+centre and right. A toast may cover the lower line for a moment.
 
 ## Charts
 

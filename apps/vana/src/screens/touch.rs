@@ -88,6 +88,9 @@ pub enum Control {
     Sign,
     /// The sensor menu, which finds its own target where the finger landed.
     Menu(Point),
+    /// A tile of a built-in screen: what it asks for, and where focus rests
+    /// after.
+    Composed(crate::compose::input::Action, crate::compose::input::Focus),
 }
 
 impl Control {

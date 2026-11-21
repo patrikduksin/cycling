@@ -8,7 +8,7 @@ use super::cue::{Badge, Cue};
 use super::home::Home;
 use super::ready::Readiness;
 use super::ride::summary::{self, After};
-use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage, Smooth};
+use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage};
 use super::sign;
 use crate::clock::Local;
 use crate::kept::bests::Bests;
@@ -20,6 +20,7 @@ use crate::ride::totals::Totals;
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::sensors::radar;
 use core::fmt::Write;
+use core::ops::Range;
 
 /// Below this much recording time left, the ride page warns the rider.
 pub const LOW_STORAGE_S: u32 = 60 * 60;
@@ -99,21 +100,12 @@ pub(super) enum Body {
     /// Every page that prepares a Canvas, and the sheet over any page.
     Canvas(Canvas),
     Home(Home),
-    /// The ride's main page.
-    Main(Smooth),
 }
 
 impl Body {
     fn canvas(&self) -> Option<&Canvas> {
         match self {
             Self::Canvas(canvas) => Some(canvas),
-            _ => None,
-        }
-    }
-
-    fn smooth(&self) -> Option<&Smooth> {
-        match self {
-            Self::Main(smooth) => Some(smooth),
             _ => None,
         }
     }
@@ -238,11 +230,12 @@ pub struct Scene<'v> {
     kind: Kind,
     look: Look,
     pub(super) bar: Option<&'v StatusBar>,
+    /// The rows the main page's tree gives its status bar.
+    main_bar: Range<usize>,
     body: &'v Body,
     painted: Painted<'v>,
-    pub(super) gauges: [Option<ride::Mark>; 2],
     pub(super) radar: Option<ride::Radar>,
-    cues: &'static [Cue],
+    cues: &'v [Cue],
     badge: Option<&'v Badge>,
     toast: Option<&'v Toast>,
     sign: Option<sign::Placed>,
@@ -327,7 +320,7 @@ struct WholePage<'v> {
     kind: Kind,
     look: Look,
     radar: bool,
-    cues: &'static [Cue],
+    cues: &'v [Cue],
     badge: Option<&'v Badge>,
 }
 
@@ -358,7 +351,7 @@ impl firmware_shell::shell::Picture for Scene<'_> {
             },
         );
         let chrome = &self.layout.chrome;
-        parts.add(0..chrome.content.top, &self.bar);
+        parts.add(self.bar_rows(), &self.bar);
         parts.add(chrome.toast.top..chrome.toast.bottom, &self.toast);
         if let Some(sign) = &self.sign {
             let rect = sign.rect();
@@ -370,16 +363,17 @@ impl firmware_shell::shell::Picture for Scene<'_> {
 
 impl<'v> Scene<'v> {
     #[cfg(test)]
-    pub(crate) fn cues(&self) -> &'static [Cue] {
+    pub(crate) fn cues(&self) -> &'v [Cue] {
         self.cues
     }
 
     fn paint_content(&self, row: &mut Row) {
         let y = row.y();
+        let bar_rows = self.bar_rows();
         if let Some(bar) = self.bar
-            && y < self.bar_rows()
+            && bar_rows.contains(&y)
         {
-            bar.paint(row);
+            bar.paint(&mut row.at(y - bar_rows.start));
             return;
         }
         match self.kind {
@@ -422,10 +416,11 @@ impl<'v> Scene<'v> {
         self.look
     }
 
-    fn bar_rows(&self) -> usize {
+    fn bar_rows(&self) -> Range<usize> {
         match self.kind {
-            Kind::Ride(RidePage::Map) => self.layout.chrome.status_bar.bottom,
-            _ => self.layout.chrome.content.top,
+            Kind::Ride(RidePage::Map) => 0..self.layout.chrome.status_bar.bottom,
+            Kind::Ride(RidePage::Main) => self.main_bar.clone(),
+            _ => 0..self.layout.chrome.content.top,
         }
     }
 
@@ -444,10 +439,6 @@ impl<'v> Scene<'v> {
 
     pub(super) fn canvas(&self) -> &'v Canvas {
         self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
-    }
-
-    pub(super) fn smooth(&self) -> &'v Smooth {
-        self.shown(self.body.smooth(), "main page body", &NO_SMOOTH)
     }
 
     fn home(&self) -> Option<&'v Home> {
@@ -489,10 +480,11 @@ impl<'v> Scene<'v> {
     fn reference_content(&self, x: usize, y: usize) -> super::chrome::Shown {
         let look = self.look();
         let black = look.ink(BLACK);
+        let bar_rows = self.bar_rows();
         if let Some(bar) = self.bar
-            && y < self.bar_rows()
+            && bar_rows.contains(&y)
         {
-            return bar.pixel(look, x, y);
+            return bar.pixel(look, x, y - bar_rows.start);
         }
         if let Some(color) = self.toast.and_then(|toast| toast.pixel(look, x, y)) {
             return color;
@@ -531,9 +523,7 @@ impl<'v> Scene<'v> {
 impl Scene<'_> {
     /// Check this frame's layout (`check`): fail a screen that breaks it.
     pub fn check_layout(&self) {
-        use super::check::{self, Placed};
-        use std::string::String;
-        use std::vec::Vec;
+        use super::check;
         if !check::enabled() {
             return;
         }
@@ -551,9 +541,7 @@ impl Scene<'_> {
             }
         }
         let panel = self.layout.scaled.screen();
-        if let Kind::Ride(page) = self.kind
-            && page != RidePage::Main
-        {
+        if let Kind::Ride(page) = self.kind {
             let breaks = self.canvas_breaks(page);
             assert!(
                 breaks.is_empty(),
@@ -620,74 +608,7 @@ impl Scene<'_> {
                 self.layout.scaled,
                 breaks.join("\n")
             );
-            return;
         }
-        if !matches!(self.kind, Kind::Ride(RidePage::Main)) {
-            return;
-        }
-        let smooth = self.smooth();
-        let shift = if self.radar.is_some() {
-            0
-        } else {
-            self.frame().centre_shift
-        };
-        let body = self.frame().body;
-        let mut regions: Vec<(&str, super::chrome::Rect)> = Vec::new();
-        regions.push(("status bar", self.layout.chrome.status_bar));
-        if self.radar.is_some() {
-            regions.push(("radar", self.frame().radar));
-        }
-        let bands = self.layout.main.bands(smooth.tags.course);
-        let shown = |rect: super::chrome::Rect| super::chrome::Rect {
-            left: rect.left - shift,
-            right: rect.right - shift,
-            ..rect
-        };
-        let arrived = smooth.tags.bands.first() == Some(&ride::MainBand::Arrived);
-        if arrived {
-            regions.push(("body", shown(body)));
-        } else {
-            regions.extend(bands.map(|(name, band)| (name, shown(band))));
-        }
-        let mut placed: Vec<Placed> = smooth
-            .labels
-            .iter()
-            .zip(&smooth.tags.bands)
-            .map(|(label, &band)| Placed {
-                name: String::from_utf8_lossy(label.line.text()).into_owned(),
-                rect: shown(super::chrome::Rect {
-                    left: label.left,
-                    top: label.top,
-                    right: label.columns().end,
-                    bottom: label.bottom(),
-                }),
-                region: regions.len() - if arrived { 1 } else { 6 - band as usize },
-            })
-            .collect();
-        for (i, gauge) in smooth.gauges.iter().flatten().enumerate() {
-            let rows = [gauge.rows, gauge.band].map(|(top, bottom)| {
-                shown(super::chrome::Rect {
-                    top,
-                    bottom,
-                    ..self.layout.main.text
-                })
-            });
-            for rect in rows {
-                placed.push(Placed {
-                    name: std::format!("gauge {i}"),
-                    rect,
-                    region: regions.len() - 6 + 2 + i,
-                });
-            }
-        }
-        let targets: Vec<_> = self.sign.iter().map(|sign| ("sign", sign.rect())).collect();
-        let breaks = check::region_breaks(panel, &regions, &placed, &targets);
-        assert!(
-            breaks.is_empty(),
-            "the main page on {:?} breaks its layout:\n{}",
-            self.layout.scaled,
-            breaks.join("\n")
-        );
     }
 }
 
@@ -893,7 +814,6 @@ impl Scene<'_> {
 }
 
 static NO_CANVAS: Canvas = Canvas::EMPTY;
-static NO_SMOOTH: Smooth = Smooth::EMPTY;
 static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
 static NO_CHART: ride::WorkoutChart = ride::WorkoutChart::EMPTY;
 static NO_BARS: ride::LapBars = ride::LapBars::new();
@@ -944,6 +864,8 @@ pub struct View<'a> {
     pub ride_pages: ride::PageChoice,
     /// The readings on the main page's lower line.
     pub main_slots: ride::slots::Slots,
+    /// The main page's and the shown screen's tiles, as the runtime solved them.
+    pub laids: Option<&'a crate::compose::builtin::Laids>,
     /// What the shown page prepared for this frame.
     pub(super) body: Body,
     /// What the shown ride page prepared besides its body.
@@ -982,7 +904,7 @@ pub struct View<'a> {
     /// Rides the phone has not confirmed, which LOSE n UNSAVED RIDES? counts.
     pub unsaved: u8,
     /// Button cues prepared for this frame.
-    pub(super) cues: &'static [Cue],
+    pub(super) cues: Cues,
     pub(super) badge: Option<Badge>,
     pub nav: Sign,
     /// A course is loaded, so the main page keeps room for its sign.
@@ -1024,6 +946,7 @@ impl<'a> View<'a> {
             ride_page: RidePage::Main,
             ride_pages: ride::PageChoice::default(),
             main_slots: ride::slots::Slots::default(),
+            laids: None,
             body: Body::Blank,
             extra: Extra::None,
             zone_time: ZoneTime::default(),
@@ -1044,12 +967,32 @@ impl<'a> View<'a> {
             pause_screen: false,
             discard: Discard::Unavailable,
             unsaved: 0,
-            cues: &[],
+            cues: Cues::new(),
             badge: None,
             nav: Sign::None,
             course: false,
         }
     }
+    /// Solve the built-ins for this view, as the runtime's composition does.
+    #[cfg(test)]
+    pub(crate) fn compose_main(&mut self) {
+        self.compose(self.main_slots);
+    }
+
+    /// Solve the built-ins for `slots` and what this view shows.
+    #[cfg(test)]
+    pub(crate) fn compose(&mut self, slots: ride::slots::Slots) {
+        let choices = crate::compose::builtin::Choices { main_slots: slots };
+        let laids =
+            crate::compose::builtin::Laids::new(self.layout, choices, ride::main_flags_of(self));
+        self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
+    }
+
+    /// The main ride page as the composition solved it.
+    pub fn main(&self) -> Option<&'a crate::compose::builtin::Laid> {
+        self.laids.map(crate::compose::builtin::Laids::main)
+    }
+
     /// A canvas page the runtime prepares itself, such as the ride list,
     /// whose cards it makes on demand.
     pub fn set_canvas(&mut self, canvas: Canvas) {
@@ -1059,7 +1002,7 @@ impl<'a> View<'a> {
     /// Show the sensor page the menu drew, with its cues.
     pub fn show_sensors(&mut self, canvas: Canvas, cues: &'static [Cue]) {
         self.body = Body::Canvas(canvas);
-        self.cues = cues;
+        self.cues = cue_set(cues);
     }
 
     /// Show a prepared Home.
@@ -1077,11 +1020,6 @@ impl<'a> View<'a> {
     #[cfg(test)]
     pub(crate) fn canvas(&self) -> &Canvas {
         self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
-    }
-
-    #[cfg(test)]
-    pub(super) fn smooth(&self) -> &Smooth {
-        self.shown(self.body.smooth(), "main page body", &NO_SMOOTH)
     }
 
     /// What the climb page draws from.
@@ -1301,7 +1239,7 @@ impl<'a> View<'a> {
     }
 
     fn full_screen(&self) -> bool {
-        super::cue::any_at_top(self.cues, self.layout)
+        super::cue::any_at_top(&self.cues, self.layout)
             || match self.page {
                 Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => {
                     true
@@ -1355,32 +1293,35 @@ impl<'a> View<'a> {
         };
         let layout = self.layout;
         let frame = &layout.ride;
-        let (gauges, radar) = match kind {
-            Kind::Ride(page) => (
-                if page == RidePage::Main {
-                    self.marks.gauges()
-                } else {
-                    [None; 2]
-                },
-                self.radar_paired
-                    .then(|| ride::radar(&self.graphics.radar, &frame.strip)),
-            ),
-            _ => ([None; 2], None),
+        let radar = match kind {
+            Kind::Ride(_) => self
+                .radar_paired
+                .then(|| ride::radar(&self.graphics.radar, &frame.strip)),
+            _ => None,
         };
         Scene {
             layout,
             kind,
             look: super::look::look(self.light),
             bar: (!sheet && !self.full_screen()).then_some(&self.bar),
+            main_bar: self
+                .main()
+                .and_then(ride::main_status_bar)
+                .map_or(0..0, |bar| bar.top..bar.bottom),
             body: &self.body,
             painted: self.extra.painted(),
-            gauges,
             radar,
-            cues: if sheet { &[] } else { self.cues },
+            cues: if sheet { &[] } else { &self.cues },
             badge: self.badge.as_ref().filter(|_| !sheet),
             toast: self.toast.as_ref().filter(|_| !sheet),
             sign: match kind {
-                Kind::Ride(page) => sign::on_page(page, self.nav, self.radar_paired, layout),
+                Kind::Ride(page) => sign::on_page(
+                    page,
+                    self.nav,
+                    self.radar_paired,
+                    layout,
+                    self.main().and_then(ride::main_chip),
+                ),
                 _ => None,
             },
         }
@@ -1417,7 +1358,58 @@ impl<'a> View<'a> {
         }
         let shown = core::mem::take(&mut self.cues);
         self.badge = None;
-        let cues: &'static [Cue] = match self.page {
+        self.cues = match self.composed() {
+            Some(laid) => self.prepare_composed(laid),
+            None if self.page == Page::Sensors => shown,
+            None => cue_set(self.prepare_legacy()),
+        };
+        // The FTP sheet covers whatever page it shows over.
+        if let Some((new, old)) = self.ftp_offer {
+            fill(self, |view| {
+                super::workouts::ftp_sheet(view.layout, new, old)
+            });
+            self.cues.clear();
+            self.badge = None;
+        }
+        self.scene()
+    }
+
+    /// The built-in shown, once the composition lent its screens and the
+    /// screen has a tree.
+    fn composed(&self) -> Option<&'a crate::compose::builtin::Laid> {
+        let id = crate::compose::builtin::ScreenId::of(
+            self.page,
+            self.ride_page,
+            self.pause_screen,
+            self.ftp_offer.is_some(),
+        );
+        self.laids?.get(id)
+    }
+
+    /// Draw `laid` from its solved tiles; its cues are the ones its focus
+    /// shows.
+    fn prepare_composed(&mut self, laid: &crate::compose::builtin::Laid) -> Cues {
+        let riding = self.page == Page::Ride && !self.pause_screen;
+        if riding {
+            let pages = ride::Pages::new(self.training.is_some(), self.ride_pages);
+            self.bar
+                .set_pages(pages.position(self.ride_page), pages.count());
+            self.marks = ride::marks(self);
+        }
+        fill(self, |view| {
+            let mut canvas = Canvas::default();
+            laid.prepare(view, &mut canvas);
+            canvas
+        });
+        if riding {
+            ride::hide_banner(self);
+        }
+        laid.controls().shown(laid.focus()).collect()
+    }
+
+    /// The screens not yet on the engine: each page's own drawing and cues.
+    fn prepare_legacy(&mut self) -> &'static [Cue] {
+        match self.page {
             Page::Boot => {
                 fill(self, |view| view.boot_canvas());
                 &[]
@@ -1535,20 +1527,18 @@ impl<'a> View<'a> {
                 ride::prepare(self);
                 &[]
             }
-            Page::Sensors => shown,
+            // The menu's cues arrive with `show_sensors`.
+            Page::Sensors => &[],
             Page::Home => &[],
-        };
-        self.cues = cues;
-        // The FTP sheet covers whatever page it shows over.
-        if let Some((new, old)) = self.ftp_offer {
-            fill(self, |view| {
-                super::workouts::ftp_sheet(view.layout, new, old)
-            });
-            self.cues = &[];
-            self.badge = None;
         }
-        self.scene()
     }
+}
+
+/// The button cues a frame shows.
+pub type Cues = heapless::Vec<Cue, 3, u8>;
+
+fn cue_set(cues: &[Cue]) -> Cues {
+    cues.iter().copied().take(3).collect()
 }
 
 /// Discarding the ride END RIDE? asks about.
@@ -1634,8 +1624,7 @@ mod tests {
     /// statics.
     #[test]
     fn a_wrong_variant_has_nothing_and_the_blanks_are_empty() {
-        assert!(Body::Blank.canvas().is_none() && Body::Blank.smooth().is_none());
-        assert!(Body::Canvas(Canvas::EMPTY).smooth().is_none());
+        assert!(Body::Blank.canvas().is_none());
         assert!(Body::Blank.home().is_none());
         let none = Extra::None;
         assert!(none.climb_lent().is_none());
@@ -1649,7 +1638,6 @@ mod tests {
         assert!(none.after().is_none() && none.past_title().is_none());
         assert!(none.elevation().is_none());
         assert!(NO_CANVAS.runs.is_empty() && NO_CANVAS.shapes.is_empty());
-        assert!(NO_SMOOTH.labels.is_empty() && NO_SMOOTH.band.is_none());
         assert!(NO_BARS.is_empty() && ClimbLent::NONE.climbs.climbing().is_none());
         assert!(NO_LINES.iter().all(|line| line.as_bytes().is_empty()));
         assert!(NO_READINESS.riding.as_bytes().is_empty() && NO_TITLE.as_bytes().is_empty());
@@ -1665,11 +1653,11 @@ mod tests {
 
     /// The colour of the prepared label that reads `text`.
     fn label_color(view: &View, text: &[u8]) -> Option<u16> {
-        view.smooth()
-            .labels
+        view.canvas()
+            .runs
             .iter()
-            .find(|label| label.line.text() == text)
-            .map(|label| label.color)
+            .find(|run| run.line.text() == text)
+            .map(|run| run.color)
     }
 
     /// Whether any pixel in the rows and columns has `color`.
@@ -1715,6 +1703,7 @@ mod tests {
         view.totals.add(1000, 12_345, &view.sample, None);
         view.active_secs = 3725;
         view.state = Status::Recording;
+        view.compose_main();
         view.prepare();
         assert!(painted(&mut view, 0..STATUS_BAR.bottom, 0..60, RED), "REC");
         assert_eq!(label_color(&view, b"1:02:05"), Some(WHITE));
@@ -1734,32 +1723,32 @@ mod tests {
             assert!(painted(&mut view, 24..280, 28..240, color), "{color:#x}");
         }
         // The power gauge lights five of seven zones; Z5 is amber.
-        assert!(painted(&mut view, 170..190, 120..200, AMBER));
-        // No button labels: the bottom band is free for toasts.
-        assert!(!painted(&mut view, TOAST.top + 2..320, 28..240, WHITE));
+        let watts = view.canvas().find("250").unwrap();
+        let power = watts.bottom()..watts.bottom() + 30;
+        assert!(painted(&mut view, power.clone(), 120..200, AMBER));
+        // No button labels: a toast may cover the lower line for a moment.
+        assert!(view.prepare().cues().is_empty());
         // The same watts sit in a lower zone for a stronger rider.
         view.profile = crate::ride::zones::TrainingProfile::new(300, 185).unwrap();
         view.prepare();
         assert_eq!(label_color(&view, b"Z3"), Some(zone_color(3)));
-        assert!(!painted(&mut view, 170..190, 120..200, AMBER));
+        assert!(!painted(&mut view, power, 120..200, AMBER));
     }
 
     #[test]
-    fn ride_page_centres_without_a_radar_and_toasts_overlay_the_bottom() {
+    fn the_main_page_retiles_beside_a_radar_and_toasts_overlay_the_bottom() {
         let mut view = View::new(Page::Ride, 0, None);
         view.sample.speed_mm_s = Some(8333);
+        view.compose_main();
         view.prepare();
         let leftmost = |view: &mut View| {
-            let scene = view.prepare();
-            (60..130)
-                .flat_map(|y| (0..240).map(move |x| (x, y)))
-                .filter(|&(x, y)| scene.pixel(x, y) == SPEED)
-                .map(|(x, _)| x)
-                .min()
+            view.prepare();
+            view.canvas().find("29.9").map(|run| run.left)
         };
-        let centred = leftmost(&mut view).unwrap();
+        let alone = leftmost(&mut view).unwrap();
         view.radar_paired = true;
-        assert_eq!(leftmost(&mut view), Some(centred + 14));
+        view.compose_main();
+        assert_eq!(leftmost(&mut view), Some(alone + ride::RADAR_WIDTH));
         view.toast = Some(Toast::new("RIDE SAVED", Tone::Good));
         assert!(painted(&mut view, TOAST.top..320, 0..120, GREEN));
         assert!(painted(&mut view, TOAST.top..320, 0..240, RAISED));
@@ -1891,7 +1880,7 @@ mod tests {
                 let what = std::format!("{page:?} radar {radar_paired}");
                 let bare = view(page, Sign::None, radar_paired);
                 let under = view(page, turn, radar_paired);
-                let banner = sign::on_page(page, turn, radar_paired, under.layout)
+                let banner = sign::on_page(page, turn, radar_paired, under.layout, None)
                     .unwrap()
                     .rect();
                 let canvas = bare.canvas();
@@ -1956,7 +1945,7 @@ mod tests {
             rows(&view)
         };
         let (dark, light) = (page(false), page(true));
-        let rect = sign::on_page(RidePage::Stats, turn, false, &crate::screens::BASE)
+        let rect = sign::on_page(RidePage::Stats, turn, false, &crate::screens::BASE, None)
             .unwrap()
             .rect();
         let banner = rect.top..rect.bottom;
@@ -1990,14 +1979,24 @@ mod tests {
             view.sample.speed_mm_s = Some(8333);
             view.graphics.radar.status = radar::Status::Ready;
             view.graphics.radar.targets[0] = Some(target(0));
+            view.compose_main();
             view.prepare();
             change(&mut view);
             view
         };
         let base = ride(&|_| {});
         let band = |view: &mut View| {
-            if let Body::Main(smooth) = &mut view.body {
-                smooth.band = Some((1, 100..160));
+            if let Body::Canvas(canvas) = &mut view.body {
+                canvas.shape(super::super::canvas::Shape::Bar {
+                    rect: Rect {
+                        left: 100,
+                        top: 200,
+                        right: 160,
+                        bottom: 202,
+                    },
+                    radius: 0,
+                    color: WHITE,
+                });
             }
         };
         type Change<'c> = dyn for<'v> Fn(&mut View<'v>) + 'c;
@@ -2014,7 +2013,9 @@ mod tests {
                 view.graphics.radar.targets[0] = Some(target(500));
             }),
             ("the workout target band", &band),
-            ("button cues", &|view| view.cues = &ride::paused::CUES),
+            ("button cues", &|view| {
+                view.cues = cue_set(&ride::paused::CUES)
+            }),
             ("a badge", &|view| {
                 view.badge = Some(Badge {
                     cx: 120,

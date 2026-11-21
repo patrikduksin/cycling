@@ -58,6 +58,7 @@ pub use crate::ride::current::Journals;
 pub use input::HOLD_GAP_MS;
 pub use seen::Seen;
 pub use storage::{Health, StorageHealth, Store};
+mod composition;
 mod phone;
 mod sensor_links;
 #[cfg(test)]
@@ -136,6 +137,7 @@ pub struct Runtime {
     storage_worked: bool,
     micros_clock: Option<fn() -> u64>,
     latency_clock: Option<fn() -> u64>,
+    composition: composition::Composition,
     layout: &'static crate::screens::Layout,
 }
 
@@ -189,6 +191,7 @@ impl firmware_services::why::State for Runtime {
             out.owner("track", &**track);
         }
         out.owner("reported", &self.reported);
+        out.owner("composition", &self.composition);
     }
 }
 
@@ -238,6 +241,7 @@ impl Runtime {
             storage_worked: false,
             micros_clock: None,
             latency_clock: None,
+            composition: composition::Composition::new(layout),
             layout,
         }
     }

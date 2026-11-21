@@ -171,6 +171,12 @@ impl Runtime {
         }
         self.navigation.pressed(received);
         self.display.redraw();
+        if let Some(pressed) = self.composed_press(button) {
+            if let super::composition::Pressed::Asks(action) = pressed {
+                self.carry(action, held, received, now);
+            }
+            return;
+        }
         match self.navigation.page() {
             Page::Home => self.home_input(button, received, now, ant, held),
             Page::Ride if button == Role::Move => {
@@ -255,10 +261,10 @@ impl Runtime {
     fn hit_test(&self, point: device_api::input::Point, now: u64, radar: bool) -> Hit {
         let (x, y) = (usize::from(point.x), usize::from(point.y));
         let navigation = &self.navigation;
-        let paused_screen = self.navigation.page() == Page::Ride
-            && self.ride.active().status() == Status::Paused
-            && !navigation.pause_hidden();
+        let paused_screen = self.paused_screen_shown();
+        let composed = self.composed_hit(point);
         let control = match navigation.page() {
+            _ if composed.is_some() => composed,
             Page::Home => self.layout.home.tile_at(x, y).map(Control::Tile),
             Page::Ready if self.layout.ready.riding_at(x, y) => Some(Control::ReadyWorkout),
             Page::Ready => (self.layout.ready.line_at(x, y) == Some(ready::Line::Sensors))
@@ -329,7 +335,8 @@ impl Runtime {
     fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
         let sign = super::course::sign_of(&self.track, now);
         let page = self.navigation.ride_page();
-        crate::screens::sign::on_page(page, sign, radar, self.layout)
+        let chip = crate::screens::ride::main_chip(self.composition.main());
+        crate::screens::sign::on_page(page, sign, radar, self.layout, chip)
             .is_some_and(|placed| placed.rect().contains(x, y))
     }
 
@@ -361,6 +368,10 @@ impl Runtime {
     /// A tap lifted on `control`: it acts, and takes the focus if it has one.
     fn activate(&mut self, control: Control, now: u64, ant: &mut impl Ant) {
         match control {
+            Control::Composed(action, focus) => {
+                self.composed_focus(focus);
+                self.carry(action, false, now, now);
+            }
             Control::Tile(tile) => {
                 self.navigation.go(To::HomeCursor(match tile {
                     Tile::Ride => 0,
@@ -706,7 +717,7 @@ impl Runtime {
     /// BottomLeft steps through the ride pages, wrapping after the last.
     /// While paused the paused screen comes first: from it to the page the
     /// rider was on, and from the last page back to it.
-    fn next_ride_page(&mut self) {
+    pub(super) fn next_ride_page(&mut self) {
         let paused = self.ride.active().status() == Status::Paused;
         let pages = self.ride_pages();
         let navigation = &mut self.navigation;

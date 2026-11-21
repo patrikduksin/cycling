@@ -9,7 +9,7 @@ use crate::screens::workout::{Graphics, View};
 pub const COLOURS: [u16; POWER_ZONES] = crate::screens::chrome::ZONES;
 
 /// Pixels in a zone gauge.
-pub(super) const GAUGE_WIDTH: usize = 56;
+pub(in crate::screens) const GAUGE_WIDTH: usize = 56;
 /// Pixels in a time-in-zone bar, beside its caption on the stats page.
 pub(super) const BAR_WIDTH: usize = 148;
 
@@ -17,9 +17,9 @@ pub(super) const BAR_WIDTH: usize = 148;
 #[derive(Clone, Copy, Default, Hash)]
 pub(in crate::screens) struct Mark {
     /// The zone it is in, from 1.
-    pub(super) zone: u8,
+    pub(in crate::screens) zone: u8,
     /// Gauge pixels lit, 1..=GAUGE_WIDTH.
-    pub(super) fill: u8,
+    pub(in crate::screens) fill: u8,
 }
 
 /// Where each zone's share of a bar ends, from the bar's left edge.
@@ -51,7 +51,10 @@ pub(in crate::screens) fn marks(view: &View) -> Marks {
 }
 
 /// The power and heart-rate gauges' marks for the gliding readings.
-pub(super) fn gauges(graphics: &Graphics, profile: &TrainingProfile) -> [Option<Mark>; 2] {
+pub(in crate::screens) fn gauges(
+    graphics: &Graphics,
+    profile: &TrainingProfile,
+) -> [Option<Mark>; 2] {
     [
         graphics.power_3s.map(|watts| {
             let zone = profile.power_zone(watts);

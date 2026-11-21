@@ -7,6 +7,7 @@ pub mod chrome;
 pub mod cue;
 #[cfg(test)]
 mod cue_screens;
+pub(crate) mod data;
 pub mod form;
 pub mod format;
 pub mod history;
@@ -49,7 +50,6 @@ pub struct Layout {
     pub chrome: chrome::Regions,
     pub sign: sign::Regions,
     pub ride: ride::Frame,
-    pub main: ride::MainRegions,
     pub stats: ride::StatsRegions,
     pub lap: ride::LapRegions,
     pub map: ride::MapRegions,
@@ -83,7 +83,6 @@ impl Layout {
             chrome: chrome::regions(&scaled),
             sign: sign::regions(&scaled),
             ride: ride::frame(&scaled),
-            main: ride::main_regions(&scaled),
             stats: ride::stats_regions(&scaled),
             lap: ride::lap_regions(&scaled),
             map: ride::map_regions(&scaled),

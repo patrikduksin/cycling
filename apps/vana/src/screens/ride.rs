@@ -43,7 +43,7 @@ pub mod summary;
 mod workout;
 mod zones;
 
-pub(super) use zones::{Mark, Marks, marks};
+pub(super) use zones::{GAUGE_WIDTH, Mark, Marks, gauges, marks};
 
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
 pub use elevation::Chart as ElevationChart;
@@ -63,7 +63,7 @@ use firmware_shell::rendering::font::FaceRole;
 pub(super) const GRID: u16 = chrome::TERTIARY;
 
 /// The radar strip and its divider.
-pub(super) const RADAR_WIDTH: usize = 28;
+pub(crate) const RADAR_WIDTH: usize = 28;
 
 /// The ride screen's frame on a panel: the radar strip, the body a page
 /// draws into beside it, and where the strip's track and targets run.
@@ -128,7 +128,7 @@ pub const fn frame(at: &Scaled) -> Frame {
 #[cfg(test)]
 pub(super) const BODY: Rect = frame(&BASE).body;
 /// The text's margin from the body's right edge.
-pub(super) const TEXT_RIGHT: u16 = 8;
+pub(crate) const TEXT_RIGHT: u16 = 8;
 /// A cell value's baseline below its band's top.
 pub(super) const VALUE_BASELINE: u16 = 41;
 /// Clear columns between a left cell's ink and the right column.
@@ -148,8 +148,9 @@ pub(super) const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
 /// The regions a page drawn from a canvas lays out in, named, in its
 /// canvas's columns: the radar strip while a radar is paired, then the
 /// page's own. A page lays out in the body, which the frame centres without
-/// a radar. The map spans the strip's columns without a radar; beside one,
-/// its foot still spans them, under the strip, which ends above it.
+/// a radar. The map and the main page, which tile the panel themselves,
+/// span the strip's columns without a radar. Beside one, the map's foot
+/// still spans them, under the strip, which ends above it.
 #[cfg(any(test, feature = "invariants"))]
 pub(super) fn canvas_regions(
     scene: &Scene,
@@ -158,7 +159,7 @@ pub(super) fn canvas_regions(
     let frame = scene.frame();
     let foot = scene.map_regions().foot.rect;
     let regions = match (page, &scene.radar) {
-        (RidePage::Map, None) => heapless::Vec::from_slice(&[(
+        (RidePage::Map | RidePage::Main, None) => heapless::Vec::from_slice(&[(
             "page",
             Rect {
                 left: frame.radar.left,
@@ -241,7 +242,7 @@ impl RidePage {
     /// live, the main page's lower line from `slots`; none for the workout
     /// page, which draws the step's target metric.
     pub fn readings(self, slots: slots::Slots) -> Option<heapless::Vec<&'static str, 7>> {
-        let chosen = [slots.left, slots.right].map(slots::Reading::shown);
+        let chosen = [slots.left, slots.right].map(crate::compose::data::Metric::shown);
         let drawn = |reading: &str| match self {
             Self::Main => {
                 matches!(reading, "time" | "speed" | "power" | "hr" | "grade")
@@ -393,86 +394,11 @@ impl Pages {
     }
 }
 
-/// Text the main page lays out once per frame in the anti-aliased faces,
-/// and the zones its gauges show.
-pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
-
-#[derive(Default, Hash)]
-pub struct Smooth {
-    pub(super) labels: Labels,
-    #[cfg(any(test, feature = "invariants"))]
-    pub(super) tags: Unhashed<Tags>,
-    pub(super) gauges: Option<[main::Gauge; 2]>,
-    /// A workout target under a gauge: which gauge and its columns.
-    pub(super) band: Option<(usize, core::ops::Range<usize>)>,
-    pub(super) span: main::Span,
-}
-
-impl Smooth {
-    pub const EMPTY: Self = Self {
-        labels: heapless::Vec::new(),
-        #[cfg(any(test, feature = "invariants"))]
-        tags: Unhashed(Tags::NONE),
-        gauges: None,
-        band: None,
-        span: main::Span::NONE,
-    };
-}
-
-impl Smooth {
-    #[cfg_attr(not(any(test, feature = "invariants")), allow(unused_variables))]
-    pub(super) fn tag(&mut self, from: usize, band: main::Band) {
-        #[cfg(any(test, feature = "invariants"))]
-        for _ in from..self.labels.len() {
-            let _ = self.tags.bands.push(band);
-        }
-    }
-}
-
-#[cfg(any(test, feature = "invariants"))]
-#[derive(Clone, Default)]
-pub(super) struct Tags {
-    pub(super) bands: heapless::Vec<main::Band, 14>,
-    pub(super) course: bool,
-}
-
-#[cfg(any(test, feature = "invariants"))]
-impl Tags {
-    const NONE: Self = Self {
-        bands: heapless::Vec::new(),
-        course: false,
-    };
-}
-
-#[cfg(any(test, feature = "invariants"))]
-#[derive(Clone, Default)]
-pub(super) struct Unhashed<T>(T);
-
-#[cfg(any(test, feature = "invariants"))]
-impl<T> core::hash::Hash for Unhashed<T> {
-    fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
-}
-
-#[cfg(any(test, feature = "invariants"))]
-impl<T> core::ops::Deref for Unhashed<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-#[cfg(any(test, feature = "invariants"))]
-impl<T> core::ops::DerefMut for Unhashed<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.0
-    }
-}
-
-/// Prepare the shown page once per frame: the main page's labels, or the
-/// other pages' canvas and the climb page's chart.
+/// Prepare the shown page once per frame: its canvas, and the climb page's
+/// chart.
 pub(super) fn prepare(view: &mut View) {
     match view.ride_page {
-        RidePage::Main => smooth(view),
+        RidePage::Main => super::workout::fill(view, |_| Canvas::default()),
         RidePage::Stats => super::workout::fill(view, stats::prepare),
         RidePage::Lap => super::workout::fill(view, lap::prepare),
         RidePage::Climb => {
@@ -483,19 +409,17 @@ pub(super) fn prepare(view: &mut View) {
         RidePage::Workout => super::workout::fill(view, workout::prepare),
         RidePage::Map => super::workout::fill(view, map::prepare),
     }
+    hide_banner(view);
+}
+
+/// Hide what the course banner partly covers on the ride page shown.
+pub(super) fn hide_banner(view: &mut View) {
     let layout = view.layout;
-    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired, layout)
+    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired, layout, None)
         .filter(|sign| sign.form() == SignForm::Banner);
     if let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) {
         canvas.hide(banner.rect().top..banner.rect().bottom);
     }
-}
-
-/// The main page's gauges, prepared in their own frame (#167).
-#[inline(never)]
-fn smooth(view: &mut View) {
-    let smooth = main::prepare(view);
-    view.body = super::workout::Body::Main(smooth);
 }
 
 /// The climb chart, prepared in its own frame (#167).
@@ -547,6 +471,13 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
         paint_map(scene, row);
         return;
     }
+    if page == RidePage::Main {
+        if let Some(radar) = &scene.radar {
+            paint_radar(radar, &mut row.within(strip));
+        }
+        scene.canvas().paint(row);
+        return;
+    }
     if let Some(radar) = &scene.radar {
         paint_radar(radar, &mut row.within(strip));
         paint_page(scene, page, &mut row.within(body.left..body.right));
@@ -571,8 +502,7 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         }
     }
     match page {
-        RidePage::Main => main::parts(scene, parts),
-        RidePage::Stats | RidePage::Lap => {}
+        RidePage::Main | RidePage::Stats | RidePage::Lap => {}
         RidePage::Workout => workout::chart_parts(scene.chart(), &scene.layout().workout, parts),
         RidePage::Climb => climb::chart_parts(scene.climb(), &scene.layout().climb, parts),
         RidePage::Map => {
@@ -580,15 +510,12 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
             parts.add(drawn.top..drawn.bottom, &scene.map());
         }
     }
-    if page != RidePage::Main {
-        scene.canvas().parts(parts);
-    }
+    scene.canvas().parts(parts);
 }
 
 fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
     match page {
-        RidePage::Main => main::paint(scene, row),
-        RidePage::Stats | RidePage::Lap => scene.canvas().paint(row),
+        RidePage::Main | RidePage::Stats | RidePage::Lap => scene.canvas().paint(row),
         RidePage::Workout => {
             workout::paint_chart(scene.chart(), &scene.layout().workout, row);
             scene.canvas().paint(row);
@@ -625,24 +552,25 @@ pub struct Strip {
 
 const RANGE_MM: u32 = 200_000;
 
-/// Where the gliding graphics land: the end of each zone gauge's lit run,
-/// and each radar marker's row and whether it is red. A glide needs a frame
-/// only when this changes.
+/// Where the gliding graphics land: each gliding tile's lit run, and each
+/// radar marker's row and whether it is red. A glide needs a frame only
+/// when this changes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pixels {
-    gauges: [Option<usize>; 2],
+    glides: [Option<crate::compose::Rect16>; main::GLIDES],
     markers: [Option<(u16, bool)>; 8],
 }
 
-/// The glides of the main page as `layout` places it.
-pub fn pixels(graphics: &Graphics, profile: &TrainingProfile, layout: &'static Layout) -> Pixels {
-    let [power, heart] = zones::gauges(graphics, profile);
-    let span = main::Span::of(&layout.main, &layout.scaled);
+/// The glides of `main`, when the main page shows, and of the radar strip.
+pub fn pixels(
+    graphics: &Graphics,
+    profile: &TrainingProfile,
+    main: Option<&crate::compose::builtin::Laid>,
+    layout: &'static Layout,
+) -> Pixels {
+    let gliding = super::data::Gliding { graphics, profile };
     Pixels {
-        gauges: [
-            power.map(|mark| main::gauge_end(&span, 0, mark)),
-            heart.map(|mark| main::gauge_end(&span, 1, mark)),
-        ],
+        glides: main.map_or([None; main::GLIDES], |main| main.glides(&gliding)),
         markers: radar(&graphics.radar, &layout.ride.strip).markers,
     }
 }
@@ -650,7 +578,10 @@ pub fn pixels(graphics: &Graphics, profile: &TrainingProfile, layout: &'static L
 pub use climb::{Regions as ClimbRegions, regions as climb_regions};
 pub use end::{Regions as EndRegions, regions as end_regions};
 pub use lap::{Regions as LapRegions, regions as lap_regions};
-pub use main::{Band as MainBand, Regions as MainRegions, regions as main_regions};
+pub use main::{
+    chip as main_chip, flags as main_flags, flags_of as main_flags_of, laid as main_laid,
+    status_bar as main_status_bar,
+};
 pub use map::{Regions as MapRegions, regions as map_regions};
 pub use paused::{Regions as PausedRegions, regions as paused_regions};
 pub use stats::{Regions as StatsRegions, regions as stats_regions};
@@ -728,6 +659,14 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
             _ => reference_map_pixel(scene, x, y),
         };
     }
+    if page == RidePage::Main {
+        if let Some(radar) = &scene.radar
+            && x < RADAR_WIDTH - 2
+        {
+            return look.ink(reference_radar_pixel(radar, x, y));
+        }
+        return scene.canvas().pixel(look, x, y, black);
+    }
     let x = if let Some(radar) = &scene.radar {
         if x < RADAR_WIDTH - 2 {
             return look.ink(reference_radar_pixel(radar, x, y));
@@ -740,7 +679,7 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
         return black;
     }
     match page {
-        RidePage::Main => main::reference_pixel(scene, x, y),
+        RidePage::Main => unreachable!("the main page is painted unshifted, above"),
         RidePage::Stats | RidePage::Lap => scene.canvas().pixel(look, x, y, black),
         RidePage::Workout => {
             let chart = workout::chart_pixel(scene.chart(), &scene.layout().workout, x, y);
@@ -812,7 +751,7 @@ pub fn lap_toast(lap: Lap) -> Text<19> {
 }
 
 /// km/h with one truncated decimal, as the live reading always showed, or "--".
-pub(super) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
+pub(crate) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
     let _ = match mm_s {
         Some(v) => {
             let k = u64::from(v) * 36 / 1000;
@@ -849,7 +788,7 @@ pub(super) fn lap_time(value: &mut Text<12>, seconds: u64) {
 }
 
 /// A grade in percent with one decimal, or "--%".
-pub(super) fn grade(value: &mut Text<12>, tenths: Option<i32>) {
+pub(crate) fn grade(value: &mut Text<12>, tenths: Option<i32>) {
     let _ = match tenths {
         Some(v) => write!(
             value,
@@ -890,7 +829,7 @@ pub(crate) fn shown(
 }
 
 /// A whole reading, or "--" without one.
-pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Display>) {
+pub(crate) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Display>) {
     let _ = match reading {
         Some(v) => write!(value, "{v}"),
         None => value.push_str("--"),
@@ -961,16 +900,10 @@ mod tests {
                 .iter()
                 .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
                 .collect(),
-            Some(RidePage::Main) => {
-                view.prepare();
-                view.smooth()
-                    .labels
-                    .iter()
-                    .filter_map(chrome::layout::text)
-                    .map(|(text, _)| text)
-                    .collect()
-            }
-            Some(_) => {
+            Some(page) => {
+                if page == RidePage::Main {
+                    view.compose(slots);
+                }
                 view.prepare();
                 view.canvas()
                     .runs
@@ -1003,8 +936,8 @@ mod tests {
     #[test]
     fn each_page_declares_the_readings_it_draws() {
         let chosen = slots::Slots {
-            left: slots::Reading::AvgPower,
-            right: slots::Reading::Distance,
+            left: crate::compose::data::Metric::AvgPower,
+            right: crate::compose::data::Metric::Distance,
         };
         for slots in [slots::Slots::default(), chosen] {
             for page in RidePage::ALL {

@@ -279,6 +279,7 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
                     sign,
                     radar,
                     &crate::screens::BASE,
+                    None,
                 )
                 .unwrap()
                 .rect();

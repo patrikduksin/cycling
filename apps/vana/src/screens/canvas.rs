@@ -38,6 +38,14 @@ pub enum Shape {
         radius: usize,
         color: u16,
     },
+    /// A bar in two colours: the first left of column `split`, the second
+    /// from it, as a zone gauge's segment lit up to where a reading falls.
+    Split {
+        rect: Rect,
+        radius: usize,
+        split: usize,
+        colors: [u16; 2],
+    },
     /// A disc around (cx, cy) of `radius`, all in quarter pixels.
     Disc {
         cx: i32,
@@ -66,7 +74,7 @@ impl Shape {
     /// The box the shape can cover.
     pub fn bounds(&self) -> Rect {
         match *self {
-            Self::Panel { rect, .. } | Self::Bar { rect, .. } => rect,
+            Self::Panel { rect, .. } | Self::Bar { rect, .. } | Self::Split { rect, .. } => rect,
             Self::Disc { cx, cy, radius, .. } => Rect {
                 left: ((cx - radius - 2) / 4).max(0) as usize,
                 top: ((cy - radius - 2) / 4).max(0) as usize,
@@ -100,16 +108,15 @@ impl Shape {
                 rect,
                 radius,
                 color,
+            } => paint_bar(row, rect, radius, color),
+            Self::Split {
+                rect,
+                radius,
+                split,
+                colors: [left, right],
             } => {
-                if !(rect.top..rect.bottom).contains(&row.y()) {
-                    return;
-                }
-                let radius = fitted(rect, radius);
-                let color = row.ink(color);
-                paint_rounded_over(row, rect, radius, 0, |x, y, under| {
-                    let coverage = rounded(rect, radius, x, y);
-                    (coverage > 0).then(|| blend(color, under, coverage))
-                })
+                paint_bar(&mut row.within(rect.left..split), rect, radius, left);
+                paint_bar(&mut row.within(split..rect.right), rect, radius, right);
             }
             Self::Disc {
                 cx,
@@ -140,6 +147,15 @@ impl Shape {
                 radius,
                 color,
             } => (rounded(rect, fitted(rect, radius), x, y), color),
+            Self::Split {
+                rect,
+                radius,
+                split,
+                colors: [left, right],
+            } => (
+                rounded(rect, fitted(rect, radius), x, y),
+                if x < split { left } else { right },
+            ),
             Self::Disc {
                 cx,
                 cy,
@@ -156,6 +172,18 @@ impl Shape {
         };
         (coverage > 0).then(|| blend(look.ink(color), under, coverage))
     }
+}
+
+fn paint_bar(row: &mut Row, rect: Rect, radius: usize, color: u16) {
+    if !(rect.top..rect.bottom).contains(&row.y()) {
+        return;
+    }
+    let radius = fitted(rect, radius);
+    let color = row.ink(color);
+    paint_rounded_over(row, rect, radius, 0, |x, y, under| {
+        let coverage = rounded(rect, radius, x, y);
+        (coverage > 0).then(|| blend(color, under, coverage))
+    })
 }
 
 /// A corner radius no larger than half the shape's shorter side.
@@ -435,7 +463,10 @@ mod tests {
                         Shape::Bar { rect, radius, .. } => {
                             rounded(rect, fitted(rect, radius), x, y)
                         }
-                        Shape::Panel { .. } | Shape::Ring { .. } | Shape::Icon { .. } => 0,
+                        Shape::Panel { .. }
+                        | Shape::Split { .. }
+                        | Shape::Ring { .. }
+                        | Shape::Icon { .. } => 0,
                     })
                     .max()
                     .unwrap_or(0);

@@ -115,6 +115,9 @@ impl Runtime {
             return;
         };
         let due = self.when_due(system, now, ant, position);
+        if let Shows::Page { radar_paired, .. } = due.shows {
+            self.compose(radar_paired, now);
+        }
         let presented = self.present(system, due.shows, now);
         self.after_view(presented, frame, due.moving, now);
     }

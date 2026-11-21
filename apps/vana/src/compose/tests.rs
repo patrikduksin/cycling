@@ -1,16 +1,17 @@
 use super::bench::{MAIN, MAIN_BYTES};
-use super::data::{Data, Effort, ListKind, Metric, Nothing};
+use super::data::{Data, Effort, ListKind, Metric, Nothing, OnGauge};
+use super::input::{Action, Button, Buttons, Controls, OnPage};
 use super::node::{Flags, MAX_NODES, Node, Size, Sizing, What, When};
 use super::parse::{self, Anchor, Hold, Layer, Screen, Screens, VERSION};
-use super::registry::{CAPTION, GAUGE, ICON, REGISTRY, SPACE, UNIT, VALUE, ZONE};
-use super::reject::{Axis, Misfit, Place, Reject, Why};
-use super::solve::{
-    self, Balance, Cues, MAX_RUNS, MAX_SHAPES, Placed, Rect16, Scroll, Sink, Solved,
+use super::registry::{
+    self, CAPTION, EFFORT, GAUGE, ICON, READING, SPACE, TOTAL, UNIT, VALUE, ZONE,
 };
+use super::reject::{Axis, Misfit, Place, Reject, Why};
+use super::solve::{self, Balance, MAX_RUNS, MAX_SHAPES, Placed, Rect16, Scroll, Sink, Solved};
 use super::tiles::icon::Glyph;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
-use crate::screens::cue::{Cue, Icon};
+use crate::screens::cue::Icon;
 use crate::screens::limits::PANELS;
 use crate::screens::scaled::{BASE, Scaled, Track};
 use crate::screens::workout::Text;
@@ -35,8 +36,8 @@ fn bytes(nodes: &[Node]) -> Vec<u8> {
     nodes.iter().flat_map(|node| node.bytes()).collect()
 }
 
-fn no_cues(_: u8) -> Option<Cues> {
-    None
+fn no_cues(_: u8) -> Controls {
+    Controls::FREE
 }
 
 fn tile(component: u8, arg: u8, size: Size) -> Node {
@@ -111,7 +112,7 @@ fn forms_of(node: Node, at: &Scaled) -> super::tile::Forms {
     let What::Leaf { component, arg } = node.what().unwrap() else {
         panic!("not a leaf");
     };
-    REGISTRY[usize::from(component)].forms(arg, at)
+    registry::tile(component).forms(arg, at)
 }
 
 #[derive(Clone, Debug)]
@@ -387,7 +388,7 @@ fn slack_becomes_even_gaps_outer_edges_included_measured_ink_to_ink() {
         let nodes = any_screen(&mut rng, 32);
         let end = ends(&nodes);
         for at in panels() {
-            let Ok(screen) = Screen::parse(0, &bytes(&nodes), &at, None) else {
+            let Ok(screen) = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE) else {
                 continue;
             };
             screens += 1;
@@ -484,7 +485,7 @@ fn the_hero_upgrades_before_the_others_and_the_others_in_order() {
             nodes.push(if Some(i) == hero { leaf.hero() } else { leaf });
         }
         let at = rng.pick(&panels());
-        let Ok(screen) = Screen::parse(0, &bytes(&nodes), &at, None) else {
+        let Ok(screen) = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE) else {
             continue;
         };
         let mut solved = Solved::EMPTY;
@@ -522,7 +523,7 @@ fn contest(first: Node, second: Node, room: u16) -> Vec<Placed> {
         first,
         second,
     ];
-    let screen = Screen::parse(0, &bytes(&nodes), &at, None).unwrap();
+    let screen = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).unwrap();
     let mut solved = Solved::EMPTY;
     screen.solve(Flags::NONE, &mut solved);
     solved.leaves().to_vec()
@@ -576,7 +577,7 @@ fn the_heavier_tile_upgrades_before_the_lighter() {
 fn a_tile_alone_takes_the_whole_box_and_its_best_look() {
     let nodes = [tile(VALUE, Metric::Speed as u8, Size::CONTENT)];
     for at in panels() {
-        let screen = Screen::parse(0, &bytes(&nodes), &at, None).unwrap();
+        let screen = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).unwrap();
         let mut solved = Solved::EMPTY;
         screen.solve(Flags::NONE, &mut solved);
         assert_eq!(solved.leaves()[0].rect, whole(&at));
@@ -587,7 +588,7 @@ fn a_tile_alone_takes_the_whole_box_and_its_best_look() {
 #[test]
 fn tiles_in_a_row_share_the_baseline_of_their_largest_look() {
     for at in panels() {
-        let screen = Screen::parse(0, &MAIN_BYTES, &at, None).unwrap();
+        let screen = Screen::parse(0, &MAIN_BYTES, &at, Controls::FREE).unwrap();
         let end = ends(&MAIN);
         let mut solved = Solved::EMPTY;
         screen.solve(Flags::NONE, &mut solved);
@@ -612,7 +613,7 @@ fn tiles_in_a_row_share_the_baseline_of_their_largest_look() {
                     continue;
                 };
                 let mut own = Canvas::default();
-                REGISTRY[usize::from(component)].prepare(arg, placed, &at, &Nothing, &mut own);
+                registry::tile(component).prepare(arg, placed, &at, &Nothing, &mut own);
                 for run in &own.runs {
                     let face = run.line.face();
                     let baseline = run.top + face.fit_height();
@@ -686,7 +687,7 @@ fn any_bytes_are_refused_or_encode_back_to_themselves() {
             }
         }
         let nodes = rng.bytes(40);
-        if let Ok(screen) = Screen::parse(1, &nodes, &at, None) {
+        if let Ok(screen) = Screen::parse(1, &nodes, &at, Controls::FREE) {
             assert_eq!(bytes(screen.tree().nodes()), nodes, "seed {seed}");
         }
     }
@@ -711,7 +712,11 @@ fn a_record_names_what_it_refuses() {
     let leaf = tile(SPACE, 0, Size::CONTENT).bytes();
     let twice = [&[VERSION, 2, 4, 1][..], &leaf, &[4, 1], &leaf, &[0]].concat();
     assert_eq!(refuse(&twice), Why::DuplicateScreen(4));
-    let screen = |nodes: &[Node]| Screen::parse(0, &bytes(nodes), &at, None).unwrap_err().why;
+    let screen = |nodes: &[Node]| {
+        Screen::parse(0, &bytes(nodes), &at, Controls::FREE)
+            .unwrap_err()
+            .why
+    };
     let space = tile(SPACE, 0, Size::CONTENT);
     assert_eq!(
         screen(&[Node::col(2, Size::CONTENT), space]),
@@ -750,7 +755,7 @@ fn a_record_names_what_it_refuses() {
     assert_eq!(screen(&deep), Why::Depth { node: 6 });
     deep.remove(0);
     assert!(
-        Screen::parse(0, &bytes(&deep), &at, None).is_ok(),
+        Screen::parse(0, &bytes(&deep), &at, Controls::FREE).is_ok(),
         "six levels"
     );
     let scrolls = [
@@ -821,7 +826,7 @@ fn accept_refuses_a_tile_squeezed_under_one_condition_with_the_node_and_pixels()
         tile(VALUE, Metric::Speed as u8, Size::CONTENT),
     ];
     let needs = at.face(FaceRole::Body).fit_height() as u16;
-    let reject = Screen::parse(7, &bytes(&nodes), &at, None).unwrap_err();
+    let reject = Screen::parse(7, &bytes(&nodes), &at, Controls::FREE).unwrap_err();
     assert_eq!(
         reject,
         Reject {
@@ -841,7 +846,7 @@ fn accept_refuses_a_tile_squeezed_under_one_condition_with_the_node_and_pixels()
         format!("screen 7: node 5 value(SPEED) gets 4 px tall, needs {needs} (with COURSE)")
     );
     let without = [Node::col(2, Size::grow(1)), nodes[1], nodes[5]];
-    assert!(Screen::parse(7, &bytes(&without), &at, None).is_ok());
+    assert!(Screen::parse(7, &bytes(&without), &at, Controls::FREE).is_ok());
 }
 
 #[test]
@@ -853,7 +858,7 @@ fn a_band_too_wide_for_its_tiles_is_refused_across() {
         tile(SPACE, 0, Size::units(30)),
         tile(GAUGE, Effort::Power as u8, Size::CONTENT),
     ];
-    let reject = Screen::parse(0, &bytes(&nodes), &at, None).unwrap_err();
+    let reject = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).unwrap_err();
     let Why::Misfit(misfit) = reject.why else {
         panic!("{reject}");
     };
@@ -872,7 +877,7 @@ fn a_stack_shows_its_first_present_child_and_fits_every_child() {
         tile(VALUE, Metric::Speed as u8, Size::CONTENT).when(course),
         tile(CAPTION, Metric::Power as u8, Size::CONTENT),
     ];
-    let screen = Screen::parse(0, &bytes(&nodes), &at, None).unwrap();
+    let screen = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).unwrap();
     let mut solved = Solved::EMPTY;
     screen.solve(Flags::COURSE, &mut solved);
     assert_eq!(
@@ -891,7 +896,7 @@ fn a_stack_shows_its_first_present_child_and_fits_every_child() {
         tile(SPACE, 0, Size::CONTENT),
         tile(VALUE, Metric::Speed as u8, Size::CONTENT),
     ];
-    let reject = Screen::parse(0, &bytes(&hidden_misfit), &at, None).unwrap_err();
+    let reject = Screen::parse(0, &bytes(&hidden_misfit), &at, Controls::FREE).unwrap_err();
     assert!(
         matches!(reject.why, Why::Misfit(Misfit { node: 4, .. })),
         "{reject}"
@@ -909,7 +914,7 @@ fn a_scroll_places_one_item_of_its_template_at_its_top() {
         tile(CAPTION, Metric::Distance as u8, Size::CONTENT),
         tile(VALUE, Metric::Distance as u8, Size::CONTENT),
     ];
-    let screen = Screen::parse(0, &bytes(&nodes), &at, None).unwrap();
+    let screen = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).unwrap();
     let mut solved = Solved::EMPTY;
     screen.solve(Flags::NONE, &mut solved);
     let (scroll, template) = solved.scroll().unwrap();
@@ -991,28 +996,33 @@ fn a_push_layer_takes_a_band_and_the_screen_retiles_under_it() {
     );
 }
 
-static PLAY_AND_BACK: [Cue; 2] = [
-    Cue::new(Role::Act, Icon::Play),
-    Cue::new(Role::Back, Icon::Back),
-];
-
-fn play_and_back() -> Option<Cues> {
-    Some(Cues {
-        corners: crate::screens::BASE.corners,
-        shown: &PLAY_AND_BACK,
-    })
+fn play_and_back() -> Controls {
+    let buttons = Buttons {
+        act: Some(Button {
+            action: Action::Ride(Role::Act),
+            cue: Some(Icon::Play),
+        }),
+        back: Some(Button {
+            action: Action::Page(OnPage::Back),
+            cue: Some(Icon::Back),
+        }),
+        move_: None,
+        held: None,
+    };
+    Controls::new(buttons, crate::screens::BASE.corners)
 }
 
 #[test]
 fn a_tile_is_accepted_clear_of_its_screens_cues_or_refused_at_accept() {
     let at = BASE;
-    let cues = play_and_back().unwrap();
+    let controls = play_and_back();
+    let cues = controls.cues().unwrap().clone();
     let (mut cut, mut drawn, mut refused) = (0, 0, 0);
     let filler = tile(SPACE, 0, Size::grow(1));
-    for (component, kind) in REGISTRY.iter().enumerate() {
+    for (component, kind) in registry::every() {
         for arg in (0..=255).filter(|&arg| kind.accepts(arg)) {
             for width in (4..=127).step_by(3) {
-                let leaf = tile(component as u8, arg, Size::units(width));
+                let leaf = tile(component, arg, Size::units(width));
                 for band in [[leaf, filler], [filler, leaf]] {
                     let nodes = [
                         Node::col(2, Size::grow(1)),
@@ -1022,10 +1032,10 @@ fn a_tile_is_accepted_clear_of_its_screens_cues_or_refused_at_accept() {
                         band[1],
                     ];
                     let node = if band[0] == leaf { 3 } else { 4 };
-                    if Screen::parse(0, &bytes(&nodes), &at, None).is_err() {
+                    if Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).is_err() {
                         continue;
                     }
-                    let screen = match Screen::parse(0, &bytes(&nodes), &at, Some(cues)) {
+                    let screen = match Screen::parse(0, &bytes(&nodes), &at, controls.clone()) {
                         Ok(screen) => screen,
                         Err(Reject {
                             why: Why::Misfit(misfit),
@@ -1051,9 +1061,11 @@ fn a_tile_is_accepted_clear_of_its_screens_cues_or_refused_at_accept() {
                     );
                     assert!(solve.is_ok());
                     let layout = seen.rects[node].unwrap();
-                    let clear = cues
-                        .corners
-                        .columns_clear_of(cues.shown, layout.rect(), at.panel);
+                    let clear = crate::screens::BASE.corners.columns_clear_of(
+                        cues.shown(),
+                        layout.rect(),
+                        at.panel,
+                    );
                     let mut canvas = Canvas::default();
                     solved.prepare(&Nothing, &mut canvas);
                     let shapes = canvas.shapes.iter().map(|shape| {
@@ -1104,7 +1116,7 @@ fn a_tile_too_wide_beside_a_cue_is_refused_by_the_screen_that_shows_it() {
         filler,
         time,
     ];
-    let screen = Screen::parse(7, &bytes(&nodes), &at, None).unwrap();
+    let screen = Screen::parse(7, &bytes(&nodes), &at, Controls::FREE).unwrap();
     let mut solved = Solved::EMPTY;
     screen.solve(Flags::NONE, &mut solved);
     let reject = Screen::parse(7, &bytes(&nodes), &at, play_and_back()).unwrap_err();
@@ -1123,7 +1135,13 @@ fn a_tile_too_wide_beside_a_cue_is_refused_by_the_screen_that_shows_it() {
     ]
     .concat();
     let mut screens = Box::new(Screens::EMPTY);
-    let only_seven = |key| if key == 7 { play_and_back() } else { None };
+    let only_seven = |key| {
+        if key == 7 {
+            play_and_back()
+        } else {
+            Controls::FREE
+        }
+    };
     assert_eq!(
         parse::parse(&record, &at, only_seven, &mut screens),
         Err(reject)
@@ -1135,13 +1153,16 @@ fn a_tile_too_wide_beside_a_cue_is_refused_by_the_screen_that_shows_it() {
 fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
     assert_eq!(Canvas::default().shapes.capacity(), usize::from(MAX_SHAPES));
     assert_eq!(Canvas::default().runs.capacity(), usize::from(MAX_RUNS));
-    let names: Vec<&str> = REGISTRY.iter().map(|tile| tile.name()).collect();
+    let names: Vec<&str> = registry::every().map(|(_, tile)| tile.name()).collect();
     assert_eq!(
         names,
-        ["space", "value", "caption", "unit", "gauge", "zone", "icon"]
+        [
+            "space", "value", "caption", "unit", "gauge", "zone", "icon", "status", "tap",
+            "reading", "total", "effort", "chip"
+        ]
     );
     for at in panels() {
-        for tile in REGISTRY {
+        for (_, tile) in registry::every() {
             for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
                 let forms = tile.forms(arg, &at);
                 assert!(!forms.is_empty(), "{}({arg})", tile.name());
@@ -1155,8 +1176,8 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
             }
         }
     }
-    assert!(!REGISTRY[usize::from(VALUE)].accepts(Metric::ALL.len() as u8));
-    assert!(REGISTRY[usize::from(ICON)].accepts(Glyph::Puck as u8));
+    assert!(!registry::tile(VALUE).accepts(Metric::ALL.len() as u8));
+    assert!(registry::tile(ICON).accepts(Glyph::Puck as u8));
 }
 
 struct Reading(Option<i32>);
@@ -1195,7 +1216,7 @@ fn every_reading_shows_whole_in_its_metrics_smallest_look() {
     let mut checked = 0;
     for at in panels() {
         for metric in Metric::ALL {
-            let forms = REGISTRY[usize::from(VALUE)].forms(metric as u8, &at);
+            let forms = registry::tile(VALUE).forms(metric as u8, &at);
             let smallest = forms.len() - 1;
             let look = forms[smallest];
             let placed = Placed {
@@ -1218,7 +1239,7 @@ fn every_reading_shows_whole_in_its_metrics_smallest_look() {
                 let mut text = Text::<12>::new();
                 metric.write(value, &mut text);
                 let mut canvas = Canvas::default();
-                REGISTRY[usize::from(VALUE)].prepare(
+                registry::tile(VALUE).prepare(
                     metric as u8,
                     &placed,
                     &at,
@@ -1254,13 +1275,17 @@ fn a_reading_past_its_metrics_ends_shows_as_the_end() {
     };
     assert_eq!(shows(Metric::Elapsed, 36_000), "10:00:00");
     assert_eq!(shows(Metric::Elapsed, i32::MAX), "99:59:59");
-    assert_eq!(shows(Metric::Distance, 1_234_560), "1234.6");
-    assert_eq!(shows(Metric::Speed, 33_333), "120.0");
-    assert_eq!(shows(Metric::Speed, 40_000), "144.0");
-    assert_eq!(shows(Metric::Speed, i32::MAX), "144.0");
+    assert_eq!(shows(Metric::Distance, 1_234_560), "1234.5");
+    assert_eq!(shows(Metric::Distance, i32::MAX), "9999.9");
+    assert_eq!(shows(Metric::Speed, 27_777), "99.9");
+    assert_eq!(shows(Metric::Speed, 27_778), "100");
+    assert_eq!(shows(Metric::Speed, 33_334), "120");
+    assert_eq!(shows(Metric::Speed, 40_000), "144");
+    assert_eq!(shows(Metric::Speed, i32::MAX), "144");
     assert_eq!(shows(Metric::Speed, -5_000), "0.0");
     assert_eq!(shows(Metric::Power, 2_400), "2400");
-    assert_eq!(shows(Metric::Grade, i32::MIN), "-99.9");
+    assert_eq!(shows(Metric::Grade, i32::MIN), "-99.9%");
+    assert_eq!(shows(Metric::Kcal, i32::MAX), "999K");
 }
 
 /// The widest text of each tile: every reading past its far end.
@@ -1285,8 +1310,8 @@ impl Data for Widest {
 fn a_text_tile_in_a_box_exactly_its_look_shows_its_whole_text() {
     let mut checked = 0;
     for at in panels() {
-        for component in [VALUE, CAPTION, UNIT, ZONE] {
-            let tile = REGISTRY[usize::from(component)];
+        for component in [VALUE, CAPTION, UNIT, ZONE, READING, TOTAL, EFFORT] {
+            let tile = registry::tile(component);
             for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
                 for (form, look) in tile.forms(arg, &at).iter().enumerate() {
                     let draw = |width: u16| {
@@ -1303,12 +1328,17 @@ fn a_text_tile_in_a_box_exactly_its_look_shows_its_whole_text() {
                         };
                         let mut canvas = Canvas::default();
                         tile.prepare(arg, &placed, &at, &Widest, &mut canvas);
-                        canvas.runs[0].line
+                        let texts: Vec<Vec<u8>> = canvas
+                            .runs
+                            .iter()
+                            .map(|run| run.line.text().to_vec())
+                            .collect();
+                        texts
                     };
                     let (exact, roomy) = (draw(look.width), draw(look.width * 2 + 8));
                     assert_eq!(
-                        exact.text(),
-                        roomy.text(),
+                        exact,
+                        roomy,
                         "{}({arg}) look {form} on {:?}",
                         tile.name(),
                         at.panel
@@ -1324,9 +1354,9 @@ fn a_text_tile_in_a_box_exactly_its_look_shows_its_whole_text() {
 #[test]
 fn a_layout_draws_the_tiles_of_the_screen_it_was_last_solved_for() {
     let at = BASE;
-    let main = Screen::parse(0, &MAIN_BYTES, &at, None).unwrap();
+    let main = Screen::parse(0, &MAIN_BYTES, &at, Controls::FREE).unwrap();
     let one = [tile(VALUE, Metric::Speed as u8, Size::CONTENT)];
-    let one = Screen::parse(1, &bytes(&one), &at, None).unwrap();
+    let one = Screen::parse(1, &bytes(&one), &at, Controls::FREE).unwrap();
     let mut solved = Solved::EMPTY;
     let mut canvas = Canvas::default();
     solved.prepare(&Nothing, &mut canvas);
@@ -1356,7 +1386,7 @@ fn a_text_tile_in_a_top_layer_draws_inside_its_band() {
     let mut drawn = 0;
     for at in panels() {
         for component in [VALUE, CAPTION, UNIT, ZONE] {
-            let kind = REGISTRY[usize::from(component)];
+            let kind = registry::tile(component);
             for arg in (0..=255).filter(|&arg| kind.accepts(arg)) {
                 let popover = [tile(component, arg, Size::CONTENT)];
                 let record = [&[VERSION, 0, 1, 0, 0, 5, 1][..], &bytes(&popover)].concat();
@@ -1397,7 +1427,7 @@ fn a_stack_costs_the_canvas_what_its_costliest_slide_does() {
         gauge,
         gauge,
     ];
-    let screen = Screen::parse(7, &bytes(&nodes), &at, None).unwrap();
+    let screen = Screen::parse(7, &bytes(&nodes), &at, Controls::FREE).unwrap();
     let mut solved = Solved::EMPTY;
     screen.solve(Flags::NONE, &mut solved);
     let mut canvas = Canvas::default();
@@ -1417,7 +1447,7 @@ fn a_stack_costs_the_canvas_what_its_costliest_slide_does() {
         gauge,
     ];
     assert_eq!(
-        Screen::parse(7, &bytes(&beside), &at, None)
+        Screen::parse(7, &bytes(&beside), &at, Controls::FREE)
             .unwrap_err()
             .why,
         Why::Canvas {
@@ -1473,4 +1503,167 @@ fn a_screen_and_a_layer_over_it_are_refused_when_together_they_overflow_the_canv
         reject.to_string(),
         "screen 7: with layer 0 over it the looks need 0 shapes and 32 runs"
     );
+}
+
+/// Every reading at one of the places its range turns: none, its low end,
+/// its high end, or the last reading before it changes format. The other
+/// queries answer at the matching end, so the high side is each one's
+/// widest.
+#[derive(Clone, Copy, Debug)]
+enum Reach {
+    Nothing,
+    Low,
+    Turn,
+    High,
+}
+
+impl Data for Reach {
+    fn metric(&self, metric: Metric) -> Option<i32> {
+        let (low, high) = metric.ends();
+        match self {
+            Self::Nothing => None,
+            Self::Low => Some(low),
+            Self::Turn => Some(metric.turn().unwrap_or(high)),
+            Self::High => Some(high),
+        }
+    }
+    fn zone(&self, effort: Effort) -> Option<u8> {
+        match self {
+            Self::Nothing => None,
+            Self::Low => Some(1),
+            Self::Turn | Self::High => Some(effort.zones()),
+        }
+    }
+    fn list(&self, _: ListKind) -> u16 {
+        match self {
+            Self::Nothing | Self::Low => 0,
+            Self::Turn | Self::High => u16::MAX,
+        }
+    }
+    fn gauge(&self, effort: Effort) -> Option<OnGauge> {
+        let range = 100;
+        match self {
+            Self::Nothing => None,
+            Self::Low => Some(OnGauge {
+                zone: 1,
+                within: 0,
+                range,
+            }),
+            Self::Turn | Self::High => Some(OnGauge {
+                zone: effort.zones(),
+                within: range,
+                range,
+            }),
+        }
+    }
+    fn target(&self, effort: Effort) -> Option<[OnGauge; 2]> {
+        let from = self.gauge(effort)?;
+        let low = OnGauge {
+            zone: 1,
+            within: 0,
+            range: from.range,
+        };
+        Some([low, from])
+    }
+}
+
+/// Every tile of every family, for every arg it accepts and in every one of
+/// its looks, drawn in a box exactly that look on every panel with no
+/// readings and with every reading at each of its turns: it draws all of
+/// its text (as in a box twice as wide), inside the box, with no two lines
+/// of text over each other. A look that understates its tile fails here.
+#[test]
+fn every_tile_draws_inside_each_look_at_every_reading_s_reach() {
+    let mut checked = 0;
+    for at in panels() {
+        for (_, tile) in registry::every() {
+            for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
+                for (form, look) in tile.forms(arg, &at).iter().enumerate() {
+                    for reach in [Reach::Nothing, Reach::Low, Reach::Turn, Reach::High] {
+                        let what = format!(
+                            "{}({arg}) look {form} {look:?} at {reach:?} on {:?}",
+                            tile.name(),
+                            at.panel
+                        );
+                        let draw = |width: u16| {
+                            let placed = Placed {
+                                rect: Rect16 {
+                                    left: 4,
+                                    top: 4,
+                                    right: 4 + width,
+                                    bottom: 4 + look.height,
+                                },
+                                node: 0,
+                                form: form as u8,
+                            };
+                            let mut canvas = Canvas::default();
+                            tile.prepare(arg, &placed, &at, &reach, &mut canvas);
+                            canvas
+                        };
+                        let exact = draw(look.width);
+                        let roomy = draw(look.width * 2 + 8);
+                        let texts = |canvas: &Canvas| -> Vec<Vec<u8>> {
+                            canvas
+                                .runs
+                                .iter()
+                                .map(|run| run.line.text().to_vec())
+                                .collect()
+                        };
+                        assert_eq!(texts(&exact), texts(&roomy), "{what}: text is cut");
+                        let inside = Rect {
+                            left: 4,
+                            top: 4,
+                            right: 4 + usize::from(look.width),
+                            bottom: 4 + usize::from(look.height),
+                        };
+                        let lines: Vec<Rect> = exact
+                            .runs
+                            .iter()
+                            .filter(|run| !run.line.text().is_empty())
+                            .map(|run| Rect {
+                                left: run.left,
+                                top: run.top,
+                                right: run.left + run.line.width() + SPILL,
+                                bottom: run.top + run.line.face().fit_height(),
+                            })
+                            .collect();
+                        let shapes = exact.shapes.iter().map(|shape| shape.bounds());
+                        for drawn in lines.iter().copied().chain(shapes) {
+                            assert!(
+                                drawn.left >= inside.left
+                                    && drawn.top >= inside.top
+                                    && drawn.right <= inside.right
+                                    && drawn.bottom <= inside.bottom,
+                                "{what}: {drawn:?} leaves {inside:?}"
+                            );
+                        }
+                        // Lines meet on their ink: a unit follows its value's
+                        // last glyph, not the spill past its advance.
+                        let inks: Vec<Rect> = exact
+                            .runs
+                            .iter()
+                            .filter(|run| !run.line.text().is_empty())
+                            .map(|run| Rect {
+                                left: run.left,
+                                top: run.top,
+                                right: run.left + run.line.face().ink_width(run.line.text()),
+                                bottom: run.top + run.line.face().fit_height(),
+                            })
+                            .collect();
+                        for (i, a) in inks.iter().enumerate() {
+                            for b in &inks[i + 1..] {
+                                let apart = a.right <= b.left
+                                    || b.right <= a.left
+                                    || a.bottom <= b.top
+                                    || b.bottom <= a.top;
+                                assert!(apart, "{what}: {a:?} over {b:?}");
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked} drawn");
 }

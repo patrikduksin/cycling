@@ -329,7 +329,20 @@ mod tests {
     }
 
     fn on_screen(graphics: &Graphics) -> Pixels {
-        pixels(graphics, &TrainingProfile::default(), &crate::screens::BASE)
+        static MAIN: std::sync::LazyLock<crate::compose::builtin::Laid> =
+            std::sync::LazyLock::new(|| {
+                crate::screens::ride::main_laid(
+                    &crate::screens::BASE,
+                    crate::screens::ride::slots::Slots::default(),
+                    crate::compose::Flags::NONE,
+                )
+            });
+        pixels(
+            graphics,
+            &TrainingProfile::default(),
+            Some(&MAIN),
+            &crate::screens::BASE,
+        )
     }
 
     /// Take `sample` and `radar` and draw a frame at `now`, as the runtime

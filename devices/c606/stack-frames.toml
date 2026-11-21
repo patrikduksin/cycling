@@ -4,7 +4,7 @@
 # demangled name applies; `*` matches any text, and the last rule bounds
 # every frame not named above it. Each budget is the measured frame plus
 # max(1 KiB, 10%). A rule that matches nothing prints a warning: inlining
-# can remove a function after unrelated edits. View::prepare, smooth and
+# can remove a function after unrelated edits. View::prepare and
 # climb_frame sit under every frame VANA prepares, so their budgets are
 # tighter than the catch-all on purpose. A failed build prints the command
 # that suggests new budgets for its ELF.
@@ -19,7 +19,6 @@
 "<vana::screens::workout::View>::new" = 5040
 "vana::screens::workout::fill::<*>" = 8912
 "vana::screens::ride::climb_frame" = 4208
-"vana::screens::ride::smooth" = 3024
 "<vana::app::Runtime>::history_canvas" = 5424
 "<firmware_shell::storage::Store<*> as firmware_shell::storage::Settings>::load" = 5792
 "*" = 5520

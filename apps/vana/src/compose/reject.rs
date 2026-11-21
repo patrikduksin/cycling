@@ -1,5 +1,5 @@
 use super::node::{Flags, Node, What};
-use super::registry::REGISTRY;
+use super::registry;
 use core::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +89,16 @@ pub enum Why {
         runs: u16,
         flags: Flags,
     },
+    /// A tile acts on a screen that keeps MOVE, and no button of the screen
+    /// does what it does.
+    NoButtonPath {
+        node: u8,
+    },
+    /// A tile of the list's item template acts, and no button of the screen
+    /// does what it does: focus steps past the template.
+    ItemAction {
+        node: u8,
+    },
     /// The screen and a layer over it overflow the canvas they share.
     Beneath {
         layer: u8,
@@ -137,6 +147,15 @@ impl fmt::Display for Why {
             Self::Arg { node, arg } => write!(f, "node {node} refuses setting {arg}"),
             Self::Root => f.write_str("the root shows under a condition"),
             Self::Never { node } => write!(f, "node {node} needs a flag it forbids"),
+            Self::NoButtonPath { node } => {
+                write!(f, "node {node} acts where no button of its screen reaches")
+            }
+            Self::ItemAction { node } => {
+                write!(
+                    f,
+                    "node {node} is a list item that acts where no button reaches"
+                )
+            }
             Self::Hero { node } => write!(f, "node {node} cannot be the hero"),
             Self::Heavy { node } => write!(f, "node {node} is a second map or chart"),
             Self::Scroll { node } => write!(f, "node {node} is a second scroll"),
@@ -200,7 +219,7 @@ fn name(node: Node, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Some(What::Scroll { .. }) => f.write_str("scroll"),
         Some(What::Stack { .. }) => f.write_str("stack"),
         Some(What::Leaf { component, arg }) => {
-            let tile = REGISTRY[usize::from(component)];
+            let tile = registry::tile(component);
             f.write_str(tile.name())?;
             f.write_str("(")?;
             tile.label(arg, f)?;

@@ -1,4 +1,5 @@
 use super::data::Data;
+use super::input::Action;
 use super::solve::{Placed, Rect16};
 use crate::screens::canvas::Canvas;
 use crate::screens::scaled::Scaled;
@@ -60,15 +61,6 @@ impl Arg for () {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
-    StartRide,
-    ExtendStep,
-    CourseOff,
-    Item(u8),
-    Answer(bool),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Landed(pub Rect16);
 
 pub trait Tile: Sync + 'static {
@@ -81,7 +73,9 @@ pub trait Tile: Sync + 'static {
     fn action(_: Self::Arg) -> Option<Action> {
         None
     }
-    fn glide(_: Self::Arg, _: &Placed, _: &dyn Data) -> Option<Landed> {
+    /// Where the tile's gliding graphic lands for `data`; a glide needs a
+    /// frame only while this moves.
+    fn glide(_: Self::Arg, _: &Placed, _: &Scaled, _: &dyn Data) -> Option<Landed> {
         None
     }
     /// A map or a chart: one a screen.
@@ -98,7 +92,7 @@ pub trait Component: Sync {
     fn forms(&self, arg: u8, at: &Scaled) -> Forms;
     fn prepare(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas);
     fn action(&self, arg: u8) -> Option<Action>;
-    fn glide(&self, arg: u8, placed: &Placed, data: &dyn Data) -> Option<Landed>;
+    fn glide(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data) -> Option<Landed>;
     fn heavy(&self) -> bool;
 }
 
@@ -140,8 +134,8 @@ impl<T: Tile> Component for Erased<T> {
         T::action(T::Arg::decode(arg)?)
     }
 
-    fn glide(&self, arg: u8, placed: &Placed, data: &dyn Data) -> Option<Landed> {
-        T::glide(T::Arg::decode(arg)?, placed, data)
+    fn glide(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data) -> Option<Landed> {
+        T::glide(T::Arg::decode(arg)?, placed, at, data)
     }
 
     fn heavy(&self) -> bool {

@@ -6,12 +6,14 @@
 //! The record: the catalogue version, the screens the rider changed, each
 //! `[key][count][count × node]`, then the layers, each
 //! `[anchor << 4 | mode][event][hold][count][count × node]`.
+use super::input::{Buttons, Controls, Cues};
 use super::node::{Flags, MAX_DEPTH, MAX_NODES, Node, What, When};
-use super::registry::REGISTRY;
+use super::registry;
 use super::reject::{Place, Reject, Why};
-use super::solve::{self, Balance, Cues, Placed, Rect16, Scroll, Sink, Solved};
+use super::solve::{self, Balance, Placed, Rect16, Scroll, Sink, Solved};
 use crate::screens::scaled::Scaled;
 use core::num::NonZeroU8;
+use core::ops::Range;
 
 pub const VERSION: u8 = 1;
 pub const RECORD: usize = firmware_services::storage::CAPACITY;
@@ -40,7 +42,7 @@ impl Tree {
 pub struct Screen {
     key: u8,
     tree: Tree,
-    cues: Option<Cues>,
+    controls: Controls,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,22 +102,44 @@ impl Sink<'_> for Check {
 }
 
 impl Screen {
-    /// Accept screen `key`, which shows `cues` over its tiles.
-    pub fn parse(key: u8, bytes: &[u8], at: &Scaled, cues: Option<Cues>) -> Result<Self, Reject> {
+    /// A screen the firmware ships, on one panel. It skips accept: a test
+    /// accepts every built-in on every panel a device declares, so a
+    /// built-in that does not fit fails the build gate, never a ride.
+    pub fn builtin(key: u8, nodes: &[Node], at: Scaled, controls: Controls) -> Self {
+        Self {
+            key,
+            tree: Tree {
+                nodes: nodes.iter().copied().collect(),
+                at,
+            },
+            controls,
+        }
+    }
+
+    /// Accept screen `key` with the buttons and cues code gives it.
+    pub fn parse(key: u8, bytes: &[u8], at: &Scaled, controls: Controls) -> Result<Self, Reject> {
         let place = Place::Screen(key);
         let tree = tree(bytes, at).map_err(|why| Reject { place, why })?;
+        if let Some(why) = unreachable_tile(&tree, controls.buttons()) {
+            return Err(Reject { place, why });
+        }
+        let cues = controls.cues();
         for flags in mentioned(&tree).subsets() {
             solve::solve(
                 &tree,
                 Rect16::of(at.screen()),
                 flags,
                 Balance::On,
-                cues.as_ref(),
+                cues,
                 &mut Check,
             )
             .map_err(|why| Reject { place, why })?;
         }
-        Ok(Self { key, tree, cues })
+        Ok(Self {
+            key,
+            tree,
+            controls,
+        })
     }
 
     pub const fn key(&self) -> u8 {
@@ -126,13 +150,22 @@ impl Screen {
         &self.tree
     }
 
+    /// The cues it was accepted with, which its tiles keep clear of.
+    pub const fn cues(&self) -> Option<&Cues> {
+        self.controls.cues()
+    }
+
+    pub const fn controls(&self) -> &Controls {
+        &self.controls
+    }
+
     /// Lay the screen out clear of the cues it was accepted with.
     pub fn solve<'a>(&'a self, flags: Flags, out: &mut Solved<'a>) {
         self.solve_in(Rect16::of(self.tree.at.screen()), flags, out);
     }
 
     fn solve_in<'a>(&'a self, area: Rect16, flags: Flags, out: &mut Solved<'a>) {
-        let cues = self.cues.as_ref();
+        let cues = self.controls.cues();
         let solved = solve::solve(&self.tree, area, flags, Balance::On, cues, out);
         if let Err(why) = solved {
             unreachable!(
@@ -140,6 +173,43 @@ impl Screen {
             );
         }
     }
+}
+
+/// The first tile with an action no button of its screen reaches where
+/// focus never lands on it: anywhere on a screen that keeps MOVE, and in a
+/// list's item template, which stands for every item rather than one.
+fn unreachable_tile(tree: &Tree, buttons: &Buttons) -> Option<Why> {
+    let items = items(&tree.nodes);
+    tree.nodes.iter().enumerate().find_map(|(index, node)| {
+        let What::Leaf { component, arg } = node.known() else {
+            return None;
+        };
+        let action = registry::tile(component).action(arg)?;
+        let node = index as u8;
+        if buttons.reach(action) {
+            None
+        } else if buttons.move_.is_some() {
+            Some(Why::NoButtonPath { node })
+        } else {
+            items.contains(&index).then_some(Why::ItemAction { node })
+        }
+    })
+}
+
+/// The nodes of the scroll's item template: the subtree after the scroll.
+fn items(nodes: &[Node]) -> Range<usize> {
+    let Some(scroll) = nodes
+        .iter()
+        .position(|node| matches!(node.known(), What::Scroll { .. }))
+    else {
+        return 0..0;
+    };
+    let (mut end, mut open) = (scroll + 1, 1);
+    while open > 0 {
+        open = open - 1 + usize::from(nodes[end].children());
+        end += 1;
+    }
+    scroll + 1..end
 }
 
 impl Layer {
@@ -267,16 +337,16 @@ impl Screens {
 }
 
 /// Accept a whole record into `out`, which is left empty on a refusal.
-/// `cues_of` names the corner cues each screen shows, by key: what the
+/// `controls_of` names each screen's buttons and cues, by key: what the
 /// buttons do stays in code.
 pub fn parse(
     bytes: &[u8],
     at: &Scaled,
-    cues_of: fn(u8) -> Option<Cues>,
+    controls_of: fn(u8) -> Controls,
     out: &mut Screens,
 ) -> Result<(), Reject> {
     *out = Screens::EMPTY;
-    let result = parse_into(bytes, at, cues_of, out);
+    let result = parse_into(bytes, at, controls_of, out);
     if result.is_err() {
         *out = Screens::EMPTY;
     }
@@ -286,7 +356,7 @@ pub fn parse(
 fn parse_into(
     bytes: &[u8],
     at: &Scaled,
-    cues_of: fn(u8) -> Option<Cues>,
+    controls_of: fn(u8) -> Controls,
     out: &mut Screens,
 ) -> Result<(), Reject> {
     let record = |why| Reject {
@@ -307,7 +377,7 @@ fn parse_into(
         if out.screen(key).is_some() {
             return Err(record(Why::DuplicateScreen(key)));
         }
-        let screen = Screen::parse(key, nodes, at, cues_of(key))?;
+        let screen = Screen::parse(key, nodes, at, controls_of(key))?;
         out.screens
             .push(screen)
             .map_err(|_| record(Why::Screens(count)))?;
@@ -346,7 +416,7 @@ fn beneath(screen: &Screen, (index, layer): (u8, &Layer), at: &Scaled) -> Result
             Mode::Push => under(at, band),
             Mode::Overlay => Rect16::of(at.screen()),
         };
-        let cues = screen.cues.as_ref();
+        let cues = screen.cues();
         let below = solve::solve(&screen.tree, area, flags, Balance::On, cues, &mut Check)
             .map_err(refuse)?;
         let above = solve::solve(&layer.tree, band, flags, Balance::On, None, &mut Check)
@@ -432,7 +502,7 @@ pub(crate) fn tree(bytes: &[u8], at: &Scaled) -> Result<Tree, Why> {
                 1
             }
             What::Leaf { component, arg } => {
-                let tile = REGISTRY[usize::from(component)];
+                let tile = registry::tile(component);
                 if !tile.accepts(arg) {
                     return Err(Why::Arg { node: at, arg });
                 }

@@ -749,8 +749,8 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::data::Metric as Reading;
     use crate::screens::ride::RidePage;
-    use crate::screens::ride::slots::Reading;
 
     fn sensor(device_type: u8, device_number: u16) -> device_api::ant::Identity {
         device_api::ant::Identity {
@@ -1175,8 +1175,8 @@ mod tests {
             ride_pages: PageChoice::from_bits(rng.range(0, u64::from(PageChoice::BITS)) as u8)
                 .unwrap_or_default(),
             main_slots: Slots {
-                left: rng.pick(&Reading::ALL),
-                right: rng.pick(&Reading::ALL),
+                left: rng.pick(&Reading::LOWER),
+                right: rng.pick(&Reading::LOWER),
             },
             mode: DisplayMode::from_byte(rng.below(2) as u8).unwrap(),
             auto_brightness: rng.one_in(2),

@@ -70,6 +70,14 @@ fn ride_shows_live_metrics_and_records_the_gps_track() {
     sim.expect_field("W", "210");
     sim.expect_field("BPM", "142");
     assert_eq!(sim.screen().elapsed().as_deref(), Some("0:05:00"));
+    use vana::compose::data::Metric;
+    assert_eq!(sim.reading(Metric::Power).as_deref(), Some("210"));
+    assert_eq!(sim.reading(Metric::Heart).as_deref(), Some("142"));
+    assert_eq!(
+        sim.reading(Metric::AvgPower),
+        None,
+        "the shown line has no averages"
+    );
     sim.checkpoint("five minutes riding");
     sim.stop_ride();
     sim.checkpoint("ride saved");
@@ -5840,10 +5848,10 @@ fn the_clock_reads_santiago_summer_time_in_december() {
 /// columns in between and lands on the reading.
 #[test]
 fn numbers_jump_to_each_reading_while_the_gauges_glide() {
-    // The heart-rate gauge's rows on the main page.
-    const HEART_GAUGE: std::ops::Range<usize> = 237..242;
+    let heart_gauge = heart_gauge_rows();
     let lit = |screen: &Screen| {
-        HEART_GAUGE
+        heart_gauge
+            .clone()
             .flat_map(|y| screen.pixels[y * screen.width..(y + 1) * screen.width].iter())
             .filter(|pixel| ZONES.contains(pixel))
             .count()
@@ -5881,6 +5889,40 @@ fn numbers_jump_to_each_reading_while_the_gauges_glide() {
         "the gauge glides: {gauge:?}"
     );
     sim.checkpoint("the gauge settled on the reading");
+}
+
+/// The heart-rate gauge's rows on the main page, where its tree lays it out
+/// for a rider with no course, radar or workout.
+fn heart_gauge_rows() -> std::ops::Range<usize> {
+    use vana::compose::data::{Data, Effort, ListKind, Metric, OnGauge};
+    struct Heart;
+    impl Data for Heart {
+        fn metric(&self, _: Metric) -> Option<i32> {
+            None
+        }
+        fn zone(&self, _: Effort) -> Option<u8> {
+            None
+        }
+        fn list(&self, _: ListKind) -> u16 {
+            0
+        }
+        fn gauge(&self, effort: Effort) -> Option<OnGauge> {
+            (effort == Effort::Heart).then_some(OnGauge {
+                zone: 1,
+                within: 0,
+                range: 1,
+            })
+        }
+    }
+    let main = vana::screens::ride::main_laid(
+        &vana::screens::BASE,
+        vana::screens::ride::slots::Slots::default(),
+        vana::compose::Flags::NONE,
+    );
+    let [Some(gauge), ..] = main.glides(&Heart) else {
+        panic!("the main page shows a heart-rate gauge");
+    };
+    usize::from(gauge.top)..usize::from(gauge.bottom)
 }
 
 /// A new rider's device: nothing saved, so it opens first-run setup.

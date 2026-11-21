@@ -1,7 +1,12 @@
 pub mod caption;
+pub mod chip;
+pub mod effort;
 pub mod gauge;
 pub mod icon;
+pub mod reading;
 pub mod space;
+pub mod status;
+pub mod total;
 pub mod unit;
 pub mod value;
 pub mod zone;

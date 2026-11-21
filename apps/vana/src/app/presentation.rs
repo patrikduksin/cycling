@@ -350,6 +350,7 @@ impl Runtime {
         view.nav = super::course::sign_of(&self.track, now);
         view.course = course;
         view.main_slots = self.preferences.options.main_slots;
+        view.laids = Some(self.composition.laids());
         let readout = self.shown.readout();
         let (climbing, paused_secs) = (readout.climbing, readout.paused_secs);
         view.totals = readout.totals;
@@ -489,7 +490,12 @@ impl Runtime {
         Presented::Page {
             page,
             drawn,
-            pixels: crate::screens::ride::pixels(&view.graphics, &view.profile, view.layout),
+            pixels: crate::screens::ride::pixels(
+                &view.graphics,
+                &view.profile,
+                self.motion_visible().main.then(|| self.composition.main()),
+                view.layout,
+            ),
         }
     }
 
@@ -1199,17 +1205,13 @@ impl Runtime {
     pub(super) fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
         let profile = self.preferences.profile;
         let visible = self.motion_visible();
-        let layout = if visible.main {
-            self.layout
-        } else {
-            &crate::screens::BASE
-        };
+        let (main, layout) = (visible.main.then(|| self.composition.main()), self.layout);
         self.motion.due(
             visible,
             shown,
             self.policy().min_motion_frame_gap_ms,
             now,
-            |graphics| crate::screens::ride::pixels(graphics, &profile, layout),
+            |graphics| crate::screens::ride::pixels(graphics, &profile, main, layout),
         )
     }
 }

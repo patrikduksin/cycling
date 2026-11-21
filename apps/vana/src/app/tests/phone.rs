@@ -1181,10 +1181,10 @@ fn device_rows(runtime: &Runtime) -> (bool, Vec<&'static str>) {
     (canvas.shows("DEVICE"), shown)
 }
 
-fn past_ride_cues(runtime: &Runtime) -> &'static [crate::screens::cue::Cue] {
+fn past_ride_cues(runtime: &Runtime) -> std::vec::Vec<crate::screens::cue::Cue> {
     let mut view = runtime.navigation.view(None);
     runtime.past_view(&mut view);
-    view.prepare().cues()
+    view.prepare().cues().to_vec()
 }
 
 #[test]

@@ -821,6 +821,14 @@ impl Sim {
             .seen_at(self.device.now)
     }
 
+    /// The latest reading of `metric` on the trace's shown line, which only
+    /// the ride page writes. None before one is recorded or for a metric the
+    /// line does not carry.
+    pub fn reading(&self, metric: vana::compose::data::Metric) -> Option<String> {
+        let (_, shown) = self.seen().shown?;
+        crate::trace::timeline::field(&shown, metric.shown()?).map(str::to_owned)
+    }
+
     /// An ANT+ sensor near the rider; created in range when new.
     pub fn ant_sensor(&mut self, device_type: u8, device_number: u16) -> &mut AntSensor {
         self.note(

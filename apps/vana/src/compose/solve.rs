@@ -1,12 +1,12 @@
 use super::data::Data;
+use super::input::{Action, Cues};
 use super::node::{Flags, MAX_DEPTH, MAX_NODES, Node, Sizing, What};
 use super::parse::{Anchor, Tree};
-use super::registry::REGISTRY;
+use super::registry;
 use super::reject::{Axis, Misfit, Why};
 use super::tile::Component;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
-use crate::screens::cue::{Corners, Cue};
 use crate::screens::scaled::Scaled;
 
 pub const MAX_LEAVES: usize = 24;
@@ -157,6 +157,12 @@ impl Solved<'_> {
         }
     }
 
+    /// What a tap or ACT on `placed`, a tile of this layout, asks for.
+    pub fn action(&self, placed: &Placed) -> Option<Action> {
+        let (tile, arg) = component(self.tree?.nodes()[usize::from(placed.node)])?;
+        tile.action(arg)
+    }
+
     pub fn focus_order(&self) -> impl Iterator<Item = &Placed> {
         let focus = self.focus;
         self.leaves
@@ -164,29 +170,6 @@ impl Solved<'_> {
             .enumerate()
             .filter(move |(index, _)| focus & (1 << index) != 0)
             .map(|(_, placed)| placed)
-    }
-}
-
-/// The corner cues a screen shows. Accept fits the screen's tiles clear of
-/// them and every solve of the screen cuts them out, so the two agree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Cues {
-    pub corners: Corners,
-    pub shown: &'static [Cue],
-}
-
-impl Cues {
-    fn clear(&self, rect: Rect16, at: &Scaled) -> Rect16 {
-        let clear = Rect16::of(
-            self.corners
-                .columns_clear_of(self.shown, rect.rect(), at.panel),
-        );
-        let left = clear.left.min(rect.right);
-        Rect16 {
-            left,
-            right: clear.right.max(left),
-            ..rect
-        }
     }
 }
 
@@ -297,7 +280,7 @@ const fn index(axis: Axis) -> usize {
 
 fn component(node: Node) -> Option<(&'static dyn Component, u8)> {
     match node.known() {
-        What::Leaf { component, arg } => Some((REGISTRY[usize::from(component)], arg)),
+        What::Leaf { component, arg } => Some((registry::tile(component), arg)),
         _ => None,
     }
 }

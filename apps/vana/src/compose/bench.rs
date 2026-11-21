@@ -1,4 +1,5 @@
 use super::data::{Effort, Metric};
+use super::input::Controls;
 use super::node::{Flags, Node, Size, When};
 use super::parse::Screen;
 use super::registry::{GAUGE, ICON, SPACE, UNIT, VALUE, ZONE};
@@ -82,10 +83,10 @@ pub struct Timing {
 pub fn measure(at: &Scaled, now: &dyn Fn() -> u64) -> Result<Timing, Reject> {
     let started = now();
     for _ in 0..ROUNDS {
-        black_box(Screen::parse(0, black_box(&MAIN_BYTES), at, None))?;
+        black_box(Screen::parse(0, black_box(&MAIN_BYTES), at, Controls::FREE))?;
     }
     let accept_ns = (now() - started) * 1000 / u64::from(ROUNDS);
-    let screen = Screen::parse(0, &MAIN_BYTES, at, None)?;
+    let screen = Screen::parse(0, &MAIN_BYTES, at, Controls::FREE)?;
     let mut solved = Solved::EMPTY;
     let started = now();
     for _ in 0..ROUNDS {

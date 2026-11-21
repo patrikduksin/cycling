@@ -1,7 +1,7 @@
 //! A screen's config tree: four bytes a node, in preorder, a container's
 //! children following it.
 use super::data::ListKind;
-use super::registry::REGISTRY;
+use super::registry;
 use core::num::NonZeroU8;
 
 pub const MAX_NODES: usize = 32;
@@ -261,9 +261,7 @@ impl Node {
             Self::STACK => What::Stack { children: arg },
             kind => {
                 let component = kind - Self::LEAF;
-                if usize::from(component) >= REGISTRY.len() {
-                    return None;
-                }
+                registry::get(component)?;
                 What::Leaf { component, arg }
             }
         })

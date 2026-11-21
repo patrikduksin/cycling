@@ -2,7 +2,7 @@
 //! gliding graphics alone for asking where a glide lands.
 use super::ride::{ClimbRoad, GAUGE_WIDTH, Mark, Training, gauges};
 use super::workout::{Graphics, View};
-use crate::compose::data::{Data, Effort, ListKind, Metric, OnGauge};
+use crate::compose::data::{Count, Data, Effort, ListKind, Metric, OnGauge};
 use crate::ride::zones::TrainingProfile;
 
 impl Data for View<'_> {
@@ -54,6 +54,45 @@ impl Data for View<'_> {
 
     fn recording(&self) -> bool {
         self.state == crate::ride::log::Status::Recording
+    }
+
+    fn count(&self, count: Count) -> Option<i32> {
+        use super::form::Mode as FormMode;
+        let form = || match self.form() {
+            FormMode::Form { form, left_out } => Some((form, left_out)),
+            _ => None,
+        };
+        let mark = |index| super::bests::mark(self.bests(), index);
+        let int = |value: u32| i32::try_from(value).unwrap_or(i32::MAX);
+        match count {
+            Count::Unsaved => Some(i32::from(self.unsaved)),
+            Count::Goes => self.format.goes().map(i32::from),
+            Count::BestsNote => self.bests_mode().note().map(i32::from),
+            Count::Best(index) => Some(int(mark(index).value)),
+            Count::BestDay(index) => Some(i32::from(mark(index).day)),
+            Count::BestPerKg(index) => {
+                let watts = mark(index).value;
+                (index < 4 && watts != 0)
+                    .then(|| self.rider.watts_per_kg_tenths(watts))
+                    .flatten()
+                    .map(int)
+            }
+            Count::FormNote => super::form::note(self.form()).map(i32::from),
+            Count::Fitness => form().map(|(form, _)| i32::from(form.fitness)),
+            Count::Fatigue => form().map(|(form, _)| i32::from(form.fatigue)),
+            Count::Form => form().map(|(form, _)| i32::from(form.form)),
+            Count::FormWeek(week) => form()
+                .and_then(|(form, _)| form.trend.get(usize::from(week)).copied())
+                .map(i32::from),
+            Count::LeftOut => form().map(|(_, left_out)| i32::from(left_out)),
+            Count::FtpNew => self.ftp_offer.map(|(new, _)| i32::from(new)),
+            Count::FtpOld => self.ftp_offer.map(|(_, old)| i32::from(old)),
+            Count::Seconds
+            | Count::Farewell
+            | Count::Charge
+            | Count::ChargeFill
+            | Count::Charging => None,
+        }
     }
 
     fn gauge(&self, effort: Effort) -> Option<OnGauge> {

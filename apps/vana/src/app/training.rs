@@ -300,13 +300,13 @@ impl Runtime {
         self.navigation.go(To::Page(Page::Ready));
     }
 
-    /// ACT saves a test's FTP, BACK keeps the one in force; MOVE does nothing.
-    pub(super) fn ftp_input(&mut self, button: Role, now: u64) -> bool {
+    /// Yes saves a test's FTP, no keeps the one in force.
+    pub(super) fn answer_ftp(&mut self, yes: bool, now: u64) {
         let Some(Question::Test { ftp, current }) = self.ftp_question() else {
-            return false;
+            return;
         };
-        match button {
-            Role::Act => {
+        match yes {
+            true => {
                 let mut profile = self.preferences.profile;
                 profile.ftp_watts = ftp;
                 self.preferences.set(profile, now);
@@ -314,15 +314,13 @@ impl Runtime {
                 let _ = write!(text, "FTP {ftp} W SAVED");
                 self.navigation.toast(text.as_str(), Tone::Good, now);
             }
-            Role::Back => {
+            false => {
                 let mut text = Text::<20>::new();
                 let _ = write!(text, "FTP KEPT {current} W");
                 self.navigation.toast(text.as_str(), Tone::Info, now);
             }
-            _ => return true,
         }
         self.training.ftp.answered(Source::WorkoutTest);
-        true
     }
 
     /// MARK during a workout: the lap the press closed ends the step too.

@@ -4,7 +4,7 @@
 //! device keeps in PSRAM, so a frame only reads where the tiles go.
 use super::Runtime;
 use crate::compose::Flags;
-use crate::compose::builtin::{Choices, Laid, Laids, ScreenId};
+use crate::compose::builtin::{Asks, Choices, Laid, Laids, ScreenId};
 use crate::compose::input::{self, Action, Focus, Go, OnPage, Owners};
 use crate::ride::course::nav::Sign;
 use crate::screens::ride::main_flags;
@@ -30,6 +30,10 @@ impl Composition {
 
     pub(super) fn main(&self) -> &Laid {
         self.laids.main()
+    }
+
+    pub(super) fn show(&mut self, id: ScreenId, layout: &crate::screens::Layout) {
+        self.laids.show(id, layout);
     }
 }
 
@@ -68,6 +72,7 @@ impl Runtime {
     /// A press of `role` on the built-in shown, if one is.
     pub(super) fn composed_press(&mut self, role: Role) -> Option<Pressed> {
         let id = self.screen_id();
+        self.composition.laids.show(id, self.layout);
         let laid = self.composition.laids.get_mut(id)?;
         let mut focus = laid.focus();
         let asked = input::press(role, laid.buttons(), &laid.solved(), &mut focus);
@@ -111,13 +116,29 @@ impl Runtime {
     }
 
     pub(super) fn screen_id(&self) -> ScreenId {
+        if let Some(sheet) = self.power.view() {
+            return sheet.screen();
+        }
         let navigation = &self.navigation;
         ScreenId::of(
             navigation.page(),
             navigation.ride_page(),
             self.paused_screen_shown(),
             self.ftp_sheet().is_some(),
+            self.asks(),
         )
+    }
+
+    fn asks(&self) -> Asks {
+        match self.navigation.page() {
+            Page::Bests => self.bests.mode().asks(),
+            Page::Form => self.form.mode.asks(),
+            Page::Format => self.format.shows().asks(),
+            Page::DiscardRide if self.ride.discard() != crate::ride::current::Discard::Idle => {
+                Asks::Wait
+            }
+            _ => Asks::Own,
+        }
     }
 }
 
@@ -164,6 +185,27 @@ impl Owners for Carried<'_> {
     }
 
     fn page(&mut self, act: OnPage) {
-        why!("compose.unowned", act);
+        let (runtime, held) = (&mut *self.runtime, self.held);
+        // A power sheet covers every page, the FTP sheet whatever page it
+        // shows over.
+        if runtime.power.view().is_some() {
+            if let OnPage::Answer(yes) = act {
+                runtime.answer_power(yes);
+            }
+            return;
+        }
+        if runtime.ftp_sheet().is_some() {
+            if let OnPage::Answer(yes) = act {
+                runtime.answer_ftp(yes, self.now);
+            }
+            return;
+        }
+        match (runtime.navigation.page(), act) {
+            (Page::Bests, _) => runtime.bests_input(act, held),
+            (Page::Form, _) => runtime.form_input(act, held),
+            (Page::Format, OnPage::Answer(yes)) => runtime.format_input(yes, held, self.received),
+            (Page::LoseRides, OnPage::Answer(yes)) if !held => runtime.lose_rides_input(yes),
+            _ => why!("compose.unowned", act),
+        }
     }
 }

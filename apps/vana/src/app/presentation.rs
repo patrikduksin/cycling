@@ -301,12 +301,16 @@ impl Runtime {
     ) -> Presented {
         let (gps, radar_paired) = match shows {
             Shows::Sheet(sheet) => {
-                let canvas = sheet.canvas(self.layout);
+                let Some(laid) = self.composition.laids().get(sheet.screen()) else {
+                    unreachable!("the frame showed the sheet's screen");
+                };
+                let (canvas, cues) = (sheet.canvas(laid), PowerSheet::cues(laid));
                 #[cfg(any(test, feature = "invariants"))]
                 PowerSheet::check_layout(&canvas, self.layout);
                 let look = look::look(self.light());
                 system.draw_rows(|y, pixels| {
-                    PowerSheet::paint(&canvas, &mut Row::new(y, pixels).looked(look));
+                    let mut row = Row::new(y, pixels);
+                    PowerSheet::paint(&canvas, &cues, self.layout, &mut row.looked(look));
                 });
                 return Presented::Sheet {
                     ok: !system.display_error,

@@ -6,14 +6,8 @@
 //! focus's place pin at the top. MOVE focuses the next card, ACT chooses the
 //! focused one and opens Ready, BACK returns Home, and a tap chooses the
 //! card under the finger. The chosen workout carries a green dot.
-//!
-//! The FTP sheet follows a test: the new FTP as the hero, the old one under
-//! it, ACT (its corner lit) saves and BACK keeps the old one.
-use super::Layout as Screens;
 use super::canvas::{Canvas, Shape};
-use super::chrome::{
-    ACCENT, Align, CARD, GREEN, MUTED, POWER, PRESSED, RAISED, Rect, SECONDARY, WHITE,
-};
+use super::chrome::{ACCENT, Align, CARD, GREEN, MUTED, PRESSED, RAISED, Rect, WHITE};
 use super::scaled::{Scaled, Track};
 use super::scroll::{Column, Layout, PAGE, Pin};
 use super::workout::{Text, View};
@@ -25,8 +19,7 @@ use firmware_shell::rendering::font::FaceRole;
 /// Held MOVE pages by this many cards.
 pub const VISIBLE: usize = 4;
 
-/// The picker and the FTP sheet on one panel; each text row's capitals end
-/// on its bottom.
+/// The picker on one panel; each text row's capitals end on its bottom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Regions {
     /// The page under the status bar: the title, then the cards 8 units
@@ -36,19 +29,6 @@ pub struct Regions {
     pub title: Rect,
     /// The band they pin in once the title has scrolled away.
     pub band: Rect,
-    pub sheet: Sheet,
-}
-
-/// The FTP sheet over the whole panel: KEEP by BACK, the new FTP, the hero,
-/// the old FTP and SAVE? down the middle, and ACT's corner lit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Sheet {
-    pub keep: Rect,
-    pub new: Rect,
-    pub hero: Rect,
-    pub now: Rect,
-    pub save: Rect,
-    pub act: [Rect; 2],
 }
 
 pub const fn regions(at: &Scaled) -> Regions {
@@ -78,39 +58,6 @@ pub const fn regions(at: &Scaled) -> Regions {
         },
         title,
         band,
-        sheet: sheet(at),
-    }
-}
-
-const fn sheet(at: &Scaled) -> Sheet {
-    use Track::{Fr, Unit};
-    let screen = at.screen();
-    let [_, text, _] = screen.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
-    let [keep, new, hero, now, save, _, _] = text.rows(
-        [
-            Unit(20),
-            Fr(2),
-            Unit(80),
-            Unit(34),
-            Unit(56),
-            Fr(1),
-            Unit(22),
-        ],
-        Unit(0),
-        at,
-    );
-    let [_, by_back, _] = screen.cols([Unit(8), Unit(60), Fr(1)], Unit(0), at);
-    let [_, along] = screen.cols([Fr(1), Unit(70)], Unit(0), at);
-    let [_, edge] = screen.cols([Fr(1), Unit(4)], Unit(0), at);
-    let [_, low] = screen.rows([Fr(1), Unit(4)], Unit(0), at);
-    let [_, up] = screen.rows([Fr(1), Unit(50)], Unit(0), at);
-    Sheet {
-        keep: keep.with_columns(by_back),
-        new,
-        hero,
-        now,
-        save,
-        act: [low.with_columns(along), up.with_columns(edge)],
     }
 }
 
@@ -292,82 +239,6 @@ pub(super) fn prepare(view: &View) -> Canvas {
     canvas
 }
 
-/// The FTP sheet over the whole panel.
-pub fn ftp_sheet(layout: &Screens, new: u16, old: u16) -> Canvas {
-    let (at, sheet) = (&layout.scaled, &layout.workouts.sheet);
-    let face = |role| at.face(role);
-    let mut canvas = Canvas::default();
-    let centre = sheet.new.center_x();
-    let width = sheet.new.width();
-    canvas.fit(
-        &[face(FaceRole::Body)],
-        b"NEW FTP",
-        width,
-        centre,
-        sheet.new.bottom,
-        Align::Center,
-        SECONDARY,
-    );
-    let mut value = Text::<12>::new();
-    let _ = write!(value, "{new}");
-    let hero = canvas.fit(
-        &[face(FaceRole::Hero)],
-        value.as_bytes(),
-        width - at.unit(40),
-        centre,
-        sheet.hero.bottom,
-        Align::Center,
-        POWER,
-    );
-    canvas.fit(
-        &[face(FaceRole::Caption)],
-        b"W",
-        at.unit(30),
-        hero.right() + at.unit(6),
-        sheet.hero.bottom,
-        Align::Left,
-        SECONDARY,
-    );
-    let mut was = Text::<24>::new();
-    let _ = write!(was, "NOW {old} W");
-    canvas.fit(
-        &[face(FaceRole::Body), face(FaceRole::Caption)],
-        was.as_bytes(),
-        width,
-        centre,
-        sheet.now.bottom,
-        Align::Center,
-        SECONDARY,
-    );
-    canvas.fit(
-        &[face(FaceRole::Title), face(FaceRole::Body)],
-        b"SAVE?",
-        width,
-        centre,
-        sheet.save.bottom,
-        Align::Center,
-        WHITE,
-    );
-    // BACK keeps the old FTP, by its button; ACT saves, its corner lit.
-    let keep = sheet.keep;
-    canvas.caption(
-        at,
-        b"KEEP",
-        keep.width(),
-        keep.left,
-        keep.bottom,
-        Align::Left,
-    );
-    for rect in sheet.act {
-        canvas.shape(Shape::Bar {
-            rect,
-            radius: 0,
-            color: ACCENT,
-        });
-    }
-    canvas
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,7 +246,11 @@ mod tests {
 
     const LAYOUT: Layout = crate::screens::BASE.workouts.list;
 
-    fn picker_on(layout: &'static Screens, rows: usize, cursor: usize) -> View<'static> {
+    fn picker_on(
+        layout: &'static crate::screens::Layout,
+        rows: usize,
+        cursor: usize,
+    ) -> View<'static> {
         let mut view = View::new(Page::Workouts, 0, None);
         view.layout = layout;
         let list = &layout.workouts.list;
@@ -436,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_and_the_sheet_lay_out_whole_on_every_panel() {
+    fn rows_lay_out_whole_on_every_panel() {
         for layout in crate::screens::panels::ALL {
             let screen = layout.scaled.screen();
             let page = Rect {
@@ -453,17 +328,6 @@ mod tests {
                     _ => &["WORKOUTS"],
                 };
                 view.canvas().assert_laid_out(page, want, &what);
-            }
-            for (new, old) in [(247, 215), (600, 50), (50, 600), (999, 1000)] {
-                let mut view = View::new(Page::Workouts, 0, None);
-                view.layout = layout;
-                view.show_picker(Picker::default());
-                view.ftp_offer = Some((new, old));
-                view.prepare().check_layout();
-                let sheet = view.canvas();
-                let what = std::format!("sheet on {:?}", layout.scaled.panel);
-                sheet.assert_laid_out(screen, &["NEW FTP", "SAVE?", "KEEP"], &what);
-                assert!(sheet.shows(&std::format!("{new}")), "{what}");
             }
         }
     }

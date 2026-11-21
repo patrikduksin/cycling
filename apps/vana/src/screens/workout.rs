@@ -978,16 +978,10 @@ impl<'a> View<'a> {
     /// Solve the built-ins for `slots` and what this view shows.
     #[cfg(test)]
     pub(crate) fn compose(&mut self, slots: ride::slots::Slots) {
-        use crate::compose::builtin::{Choices, Laids, ScreenId};
-        let choices = Choices { main_slots: slots };
-        let mut laids = Laids::new(self.layout, choices, ride::main_flags_of(self));
-        let shown = ScreenId::of(
-            self.page,
-            self.ride_page,
-            self.pause_screen,
-            self.ftp_offer.is_some(),
-        );
-        laids.show(shown, self.layout);
+        let choices = crate::compose::builtin::Choices { main_slots: slots };
+        let mut laids =
+            crate::compose::builtin::Laids::new(self.layout, choices, ride::main_flags_of(self));
+        laids.show(self.screen_id(), self.layout);
         self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
     }
 
@@ -1315,7 +1309,7 @@ impl<'a> View<'a> {
             body: &self.body,
             painted: self.extra.painted(),
             radar,
-            cues: if sheet { &[] } else { &self.cues },
+            cues: &self.cues,
             badge: self.badge.as_ref().filter(|_| !sheet),
             toast: self.toast.as_ref().filter(|_| !sheet),
             sign: match kind {
@@ -1367,27 +1361,34 @@ impl<'a> View<'a> {
             None if self.page == Page::Sensors => shown,
             None => cue_set(self.prepare_legacy()),
         };
-        // The FTP sheet covers whatever page it shows over.
-        if let Some((new, old)) = self.ftp_offer {
-            fill(self, |view| {
-                super::workouts::ftp_sheet(view.layout, new, old)
-            });
-            self.cues.clear();
-            self.badge = None;
-        }
         self.scene()
     }
 
     /// The built-in shown, once the composition lent its screens and the
     /// screen has a tree.
     fn composed(&self) -> Option<&'a crate::compose::builtin::Laid> {
-        let id = crate::compose::builtin::ScreenId::of(
+        self.laids?.get(self.screen_id())
+    }
+
+    fn screen_id(&self) -> crate::compose::builtin::ScreenId {
+        crate::compose::builtin::ScreenId::of(
             self.page,
             self.ride_page,
             self.pause_screen,
             self.ftp_offer.is_some(),
-        );
-        self.laids?.get(id)
+            self.asks(),
+        )
+    }
+
+    fn asks(&self) -> crate::compose::builtin::Asks {
+        use crate::compose::builtin::Asks;
+        match self.page {
+            Page::Bests => self.bests_mode().asks(),
+            Page::Form => self.form().asks(),
+            Page::Format => self.format.asks(),
+            Page::DiscardRide if self.discard == Discard::Answered => Asks::Wait,
+            _ => Asks::Own,
+        }
     }
 
     /// Draw `laid` from its solved tiles; its cues are the ones its focus
@@ -1421,15 +1422,6 @@ impl<'a> View<'a> {
                 fill(self, |view| view.boot_canvas());
                 &[]
             }
-            Page::Format => {
-                fill(self, |view| {
-                    super::format::prepare(view.layout, view.format)
-                });
-                match self.format {
-                    super::format::Shows::Question(_) => &ride::end::TRASH_CUES,
-                    super::format::Shows::Wait => &[],
-                }
-            }
             Page::Settings => {
                 fill(self, super::settings::prepare);
                 let (section, _) = self.sections.section(self.cursor);
@@ -1452,18 +1444,6 @@ impl<'a> View<'a> {
                     &ride::end::DISCARD_CUES
                 } else {
                     &ride::end::CUES
-                }
-            }
-            Page::LoseRides => {
-                fill(self, super::unsaved::prepare);
-                &ride::end::TRASH_CUES
-            }
-            Page::DiscardRide => {
-                fill(self, ride::end::discard);
-                if self.discard == Discard::Answered {
-                    &[]
-                } else {
-                    &ride::end::TRASH_CUES
                 }
             }
             Page::Summary => {
@@ -1489,17 +1469,6 @@ impl<'a> View<'a> {
             }
             Page::Phone => {
                 fill(self, super::phone::prepare);
-                &[]
-            }
-            Page::Bests => {
-                fill(self, super::bests::prepare);
-                match self.bests_mode() {
-                    super::bests::Mode::Confirm => &super::bests::CONFIRM_CUES,
-                    _ => &[],
-                }
-            }
-            Page::Form => {
-                fill(self, super::form::prepare);
                 &[]
             }
             Page::Workouts => {
@@ -1536,6 +1505,8 @@ impl<'a> View<'a> {
             }
             // The menu's cues arrive with `show_sensors`.
             Page::Sensors => &[],
+            // On the engine: `composed` drew them.
+            Page::Format | Page::LoseRides | Page::DiscardRide | Page::Bests | Page::Form => &[],
             Page::Home => &[],
         }
     }
@@ -2245,6 +2216,7 @@ mod tests {
             for (i, line) in lines.into_iter().flatten().enumerate() {
                 let _ = write!(line, "LINE {i} OK");
             }
+            view.compose_main();
             view.prepare();
             assert_paints_reference(&view, "text page");
         }

@@ -1,41 +1,5 @@
 //! FORMAT STORAGE?: what boot found made by another version, and what
-//! formatting takes, centred down the panel as END RIDE? is; and the wait
-//! while storage is checked.
-use crate::screens::Layout;
-use crate::screens::canvas::Canvas;
-use crate::screens::chrome::{Align, Rect, SECONDARY, WHITE};
-use crate::screens::scaled::{Scaled, Track};
-use firmware_shell::rendering::font::FaceRole;
-
-/// The question on one panel: rows whose capitals end on their bottoms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    pub title: Rect,
-    /// MADE BY ANOTHER VERSION, wider than the title.
-    pub made: Rect,
-    /// What goes, as wide.
-    pub goes: Rect,
-    /// CHECKING STORAGE, in the title's columns.
-    pub wait: Rect,
-}
-
-pub const fn regions(at: &Scaled) -> Regions {
-    use Track::{Fr, Unit};
-    let screen = at.screen();
-    let [_, text, _] = screen.cols([Unit(24), Fr(1), Unit(24)], Unit(0), at);
-    let [_, wide, _] = screen.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
-    let [_, title, made, goes, _, _] = screen.rows(
-        [Fr(1), Unit(112), Unit(66), Unit(66), Unit(76), Fr(1)],
-        Unit(0),
-        at,
-    );
-    Regions {
-        title: title.with_columns(text),
-        made: made.with_columns(wide),
-        goes: goes.with_columns(wide),
-        wait: made.with_columns(text),
-    }
-}
+//! formatting takes; and the wait while storage is checked.
 
 pub const TITLE_TEXT: &str = "FORMAT STORAGE?";
 pub const MADE_ELSEWHERE: &str = "MADE BY ANOTHER VERSION";
@@ -46,6 +10,26 @@ pub enum Shows {
     Question(Goes),
     #[default]
     Wait,
+}
+
+impl Shows {
+    pub const fn asks(self) -> crate::compose::builtin::Asks {
+        match self {
+            Self::Question(_) => crate::compose::builtin::Asks::Own,
+            Self::Wait => crate::compose::builtin::Asks::Wait,
+        }
+    }
+
+    /// What formatting takes, as its place in `Goes::ALL`.
+    pub fn goes(self) -> Option<u8> {
+        let Self::Question(goes) = self else {
+            return None;
+        };
+        Goes::ALL
+            .iter()
+            .position(|&it| it == goes)
+            .map(|at| at as u8)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,39 +79,10 @@ impl Goes {
     }
 }
 
-pub fn prepare(layout: &Layout, shows: Shows) -> Canvas {
-    let (at, regions) = (&layout.scaled, &layout.format);
-    let [title, body, caption] =
-        [FaceRole::Title, FaceRole::Body, FaceRole::Caption].map(|role| at.face(role));
-    let mut canvas = Canvas::default();
-    let mut line = |faces: &[_], text: &str, row: Rect, color| {
-        let (width, x) = (row.width(), row.center_x());
-        canvas.fit(
-            faces,
-            text.as_bytes(),
-            width,
-            x,
-            row.bottom,
-            Align::Center,
-            color,
-        );
-    };
-    let goes = match shows {
-        Shows::Question(goes) => goes,
-        Shows::Wait => {
-            line(&[body, caption], WAIT, regions.wait, WHITE);
-            return canvas;
-        }
-    };
-    line(&[title, body], TITLE_TEXT, regions.title, WHITE);
-    line(&[body, caption], MADE_ELSEWHERE, regions.made, WHITE);
-    line(&[caption], goes.text(), regions.goes, SECONDARY);
-    canvas
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::chrome::Rect;
     use crate::screens::workout::{Page, View};
 
     #[test]
@@ -146,6 +101,7 @@ mod tests {
                 let mut view = View::new(Page::Format, 0, None);
                 view.layout = layout;
                 view.format = shows;
+                view.compose_main();
                 view.prepare().check_layout();
                 let want: &[&str] = match shows {
                     Shows::Question(goes) => &[TITLE_TEXT, MADE_ELSEWHERE, goes.text()],

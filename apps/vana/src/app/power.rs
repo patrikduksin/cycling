@@ -270,28 +270,22 @@ impl Runtime {
         }
     }
 
-    /// Buttons while a power sheet is shown. Returns whether the sheet took them.
-    pub(super) fn power_input(&mut self, button: device_api::input::Role) -> bool {
-        use device_api::input::Role;
-        match self.power.sheet {
-            Sheet::Confirm { .. } => {
-                let off = !self.recorder_busy() && !self.holds_unsynced();
-                why!(
-                    "power.confirm_answered",
-                    button,
-                    busy = self.recorder_busy(),
-                    unsynced = self.holds_unsynced()
-                );
-                self.power.sheet = if button == Role::Act && off {
-                    TURNING_OFF
-                } else {
-                    Sheet::Closed
-                };
-                true
-            }
-            Sheet::TurningOff { .. } | Sheet::Requested { .. } => true,
-            // The idle warning closes once the shell sees this press as activity.
-            Sheet::Closed => matches!(self.power.auto, AutoOff::Warning { .. } | AutoOff::Due),
+    /// Yes turns the device off unless a ride is recording or rides await
+    /// the phone.
+    pub(super) fn answer_power(&mut self, yes: bool) {
+        if let Sheet::Confirm { .. } = self.power.sheet {
+            let off = !self.recorder_busy() && !self.holds_unsynced();
+            why!(
+                "power.confirm_answered",
+                yes,
+                busy = self.recorder_busy(),
+                unsynced = self.holds_unsynced()
+            );
+            self.power.sheet = if yes && off {
+                TURNING_OFF
+            } else {
+                Sheet::Closed
+            };
         }
     }
 
@@ -527,13 +521,17 @@ impl Runtime {
             },
             known: percent.is_some(),
         };
-        let canvas = sheet.canvas(self.layout);
+        self.composition.show(sheet.screen(), self.layout);
+        let Some(laid) = self.composition.laids().get(sheet.screen()) else {
+            unreachable!("the sheet's screen was just shown");
+        };
+        let canvas = sheet.canvas(laid);
         #[cfg(any(test, feature = "invariants"))]
         View::check_layout(&canvas, self.layout);
         let look = crate::screens::look::look(self.light());
         system.draw_rows(|y, pixels| {
             let row = &mut crate::screens::chrome::Row::new(y, pixels);
-            View::paint(&canvas, &mut row.looked(look));
+            View::paint(&canvas, &[], self.layout, &mut row.looked(look));
         });
         true
     }

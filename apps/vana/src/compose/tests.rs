@@ -1178,6 +1178,12 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
             "target band",
             "step left",
             "workout chart",
+            "line",
+            "ftp",
+            "best",
+            "form band",
+            "form trend",
+            "power ring",
             "script"
         ]
     );
@@ -1689,4 +1695,199 @@ fn every_tile_draws_inside_each_look_at_every_reading_s_reach() {
         }
     }
     assert!(checked > 1000, "{checked} drawn");
+}
+
+/// Every number a static screen reads, the same for each: a world at one of
+/// the far ends a reading can stand at, or at one a word switches on.
+/// None stands for no reading at all.
+struct Everywhere(Option<i32>);
+
+impl Data for Everywhere {
+    fn metric(&self, _: Metric) -> Option<i32> {
+        self.0
+    }
+    fn zone(&self, _: Effort) -> Option<u8> {
+        self.0
+            .and_then(|value| u8::try_from(value.clamp(1, 7)).ok())
+    }
+    fn list(&self, _: ListKind) -> u16 {
+        0
+    }
+    fn count(&self, _: super::data::Count) -> Option<i32> {
+        self.0
+    }
+}
+
+const EVERYWHERE: [i32; 20] = [
+    i32::MIN,
+    -32_768,
+    -9_999,
+    -301,
+    -31,
+    -1,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    26,
+    99,
+    100,
+    255,
+    9_999,
+    32_767,
+    65_535,
+    i32::MAX,
+];
+
+#[test]
+fn a_static_tile_at_its_smallest_box_shows_every_reading_whole_and_apart() {
+    use crate::screens::chrome::{Look, Shown};
+    let (mut checked, mut faults) = (0, Vec::new());
+    for at in panels() {
+        for component in [
+            registry::LINE,
+            registry::FTP,
+            registry::BEST,
+            registry::FORM_BAND,
+            registry::TREND,
+            registry::POWER_RING,
+        ] {
+            let tile = registry::tile(component);
+            for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
+                for (form, look) in tile.forms(arg, &at).iter().enumerate() {
+                    let draw = |width: u16, data: &dyn Data| {
+                        let rect = Rect16 {
+                            left: 4,
+                            top: 4,
+                            right: 4 + width,
+                            bottom: 4 + look.height,
+                        };
+                        let placed = Placed {
+                            rect,
+                            node: 0,
+                            form: form as u8,
+                        };
+                        let mut canvas = Canvas::default();
+                        tile.prepare(arg, &placed, &at, data, &mut canvas);
+                        (rect.rect(), canvas)
+                    };
+                    let worlds = EVERYWHERE.iter().map(|&value| Everywhere(Some(value)));
+                    for world in core::iter::once(Everywhere(None)).chain(worlds) {
+                        let data = &world as &dyn Data;
+                        let what = format!(
+                            "{}({arg}) look {form} on {:?} at {:?}",
+                            tile.name(),
+                            at.panel,
+                            world.0
+                        );
+                        let (rect, exact) = draw(look.width, data);
+                        let (_, roomy) = draw(look.width * 2 + 8, data);
+                        let texts = |canvas: &Canvas| -> Vec<Vec<u8>> {
+                            canvas
+                                .runs
+                                .iter()
+                                .map(|run| run.line.text().to_vec())
+                                .collect()
+                        };
+                        if texts(&exact) != texts(&roomy) {
+                            faults.push(format!(
+                                "{what}: a text is cut: {:?}",
+                                exact
+                                    .runs
+                                    .iter()
+                                    .map(|run| core::str::from_utf8(run.line.text()).unwrap_or("?"))
+                                    .collect::<Vec<_>>()
+                            ));
+                        }
+                        for run in &exact.runs {
+                            for y in run.top..run.bottom() {
+                                for x in run.columns() {
+                                    let inside = rect.left <= x
+                                        && x < rect.right
+                                        && rect.top <= y
+                                        && y < rect.bottom;
+                                    if !inside && run.pixel(Look::PLAIN, x, y, Shown(0)).is_some() {
+                                        faults.push(format!(
+                                            "{what}: {:?} inks ({x}, {y}) outside {rect:?}",
+                                            core::str::from_utf8(run.line.text()),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        for (index, one) in exact.runs.iter().enumerate() {
+                            for other in &exact.runs[index + 1..] {
+                                let rows = one.top.max(other.top)..one.bottom().min(other.bottom());
+                                let columns = one.columns().start.max(other.columns().start)
+                                    ..one.columns().end.min(other.columns().end);
+                                let shared =
+                                    rows.flat_map(|y| columns.clone().map(move |x| (x, y)));
+                                let both = shared
+                                    .filter(|&(x, y)| {
+                                        one.pixel(Look::PLAIN, x, y, Shown(0)).is_some()
+                                            && other.pixel(Look::PLAIN, x, y, Shown(0)).is_some()
+                                    })
+                                    .count();
+                                if both > 0 {
+                                    faults.push(format!(
+                                        "{what}: {:?} and {:?} share ink",
+                                        core::str::from_utf8(one.line.text()),
+                                        core::str::from_utf8(other.line.text()),
+                                    ));
+                                }
+                            }
+                        }
+                        for &shape in &exact.shapes {
+                            let bounds = shape.bounds();
+                            let mut alone = Canvas::default();
+                            alone.shape(shape);
+                            for y in bounds.top..bounds.bottom {
+                                for x in bounds.left..bounds.right {
+                                    let inside = rect.left <= x
+                                        && x < rect.right
+                                        && rect.top <= y
+                                        && y < rect.bottom;
+                                    let inked =
+                                        [Shown(0), Shown(0xffff)].into_iter().any(|under| {
+                                            alone.pixel(Look::PLAIN, x, y, under) != under
+                                        });
+                                    if !inside && inked {
+                                        faults.push(format!(
+                                            "{what}: a shape inks ({x}, {y}) outside {rect:?}"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    faults.dedup();
+    assert!(
+        faults.is_empty(),
+        "{} faults:\n{}",
+        faults.len(),
+        faults[..faults.len().min(40)].join("\n")
+    );
+    assert!(checked > 100, "{checked} draws");
+}
+
+#[test]
+fn a_best_narrower_than_its_watts_a_kilo_is_refused() {
+    let nodes = [
+        Node::row(3, Size::grow(1)),
+        tile(SPACE, 0, Size::units(70)),
+        tile(registry::BEST, 0, Size::units(70)),
+        tile(SPACE, 0, Size::grow(1)),
+    ];
+    let reject = Screen::parse(1, &bytes(&nodes), &BASE, Controls::FREE).unwrap_err();
+    assert!(
+        matches!(reject.why, Why::Misfit(Misfit { node: 2, .. })),
+        "{reject:?}"
+    );
 }

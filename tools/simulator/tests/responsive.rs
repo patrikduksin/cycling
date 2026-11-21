@@ -723,7 +723,7 @@ fn the_ftp_sheet_draws_on_both_test_panels() {
         twin.guide(|sim| {
             sim.wait_for("NEW FTP", seconds(25 * 60)).unwrap();
         });
-        shows(&twin.sim, &["NEW FTP", "247", "SAVE?", "KEEP"]);
+        shows(&twin.sim, &["NEW FTP", "247", "SAVE?"]);
         twin.sim.checkpoint(&format!("ftp sheet on {}", model.name));
     }
 }
@@ -849,7 +849,7 @@ fn turning_off_and_the_charge_draw_on_both_test_panels() {
             sim.press(Role::Back);
             sim.expect_text("TURN OFF");
         });
-        shows(&twin.sim, &["TURN OFF", "RIDES ARE SAVED", "BACK"]);
+        shows(&twin.sim, &["TURN OFF", "RIDES ARE SAVED"]);
         twin.sim.checkpoint(&format!("turn off on {name}"));
         twin.both(|sim| {
             sim.report(Role::Act);

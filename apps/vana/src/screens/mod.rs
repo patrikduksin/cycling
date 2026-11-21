@@ -28,7 +28,6 @@ pub mod settings;
 pub mod setup;
 pub mod sign;
 pub mod touch;
-pub mod unsaved;
 pub mod workout;
 pub mod workouts;
 
@@ -58,18 +57,13 @@ pub struct Layout {
     pub end: ride::EndRegions,
     pub sensors: sensors::Regions,
     pub home: home::Regions,
-    pub bests: bests::Regions,
-    pub form: form::Regions,
     pub history: history::Regions,
     pub workouts: workouts::Regions,
     pub settings: settings::Regions,
     pub brand: brand::Regions,
-    pub power: power::Regions,
-    pub format: format::Regions,
     pub ready: ready::Regions,
     pub setup: setup::Regions,
     pub phone: phone::Regions,
-    pub unsaved: unsaved::Regions,
 }
 
 impl Layout {
@@ -89,18 +83,13 @@ impl Layout {
             end: ride::end_regions(&scaled),
             sensors: sensors::regions(&scaled),
             home: home::regions(&scaled),
-            bests: bests::regions(&scaled),
-            form: form::regions(&scaled),
             history: history::regions(&scaled),
             workouts: workouts::regions(&scaled),
             settings: settings::regions(&scaled),
             brand: brand::regions(&scaled),
-            power: power::regions(&scaled),
-            format: format::regions(&scaled),
             ready: ready::regions(&scaled, &corners),
             setup: setup::regions(&scaled),
             phone: phone::regions(&scaled),
-            unsaved: unsaved::regions(&scaled),
         }
     }
 }

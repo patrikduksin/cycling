@@ -13,7 +13,6 @@ use super::storage::Store;
 use crate::ride::current::VOLATILE_STARTS;
 use crate::ride::medium::Medium;
 use crate::screens::workout::Page;
-use device_api::input::Role;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Protected {
@@ -136,25 +135,24 @@ impl Runtime {
         });
     }
 
-    /// ACT discards the unsaved rides with the journal; BACK keeps them and
+    /// Yes discards the unsaved rides with the journal; no keeps them and
     /// refuses the host's CLEAR.
-    pub(super) fn lose_rides_input(&mut self, button: Role) {
+    pub(super) fn lose_rides_input(&mut self, yes: bool) {
         let Some(token) = self.sync.asked else {
             return;
         };
-        match button {
-            Role::Act => {
+        match yes {
+            true => {
                 self.sync = Sync::default();
                 self.clear_confirmed(token);
             }
-            Role::Back => {
+            false => {
                 self.sync.asked = None;
                 self.ride.refuse_clear(token);
                 let page = self.first_page();
                 self.navigation.go(To::Page(page));
                 self.display.redraw();
             }
-            Role::Move => {}
         }
     }
 }

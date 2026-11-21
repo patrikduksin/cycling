@@ -190,6 +190,7 @@ fn every_cue_screen_lays_out_clear_of_its_cues_for_every_button_arrangement() {
         screens.extend(summaries(layout, chart));
         let panel = layout.scaled.panel;
         for (what, mut view) in screens {
+            view.compose_main();
             let cues = view.prepare().cues().len();
             assert!(cues > 0, "{what} shows its cues");
             let what = std::format!("{what} on {panel:?}, {:?}", layout.corners);

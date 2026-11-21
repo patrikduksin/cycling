@@ -24,6 +24,8 @@ mod history;
 mod home;
 mod lose_rides;
 mod phone;
+mod power;
+mod question;
 mod ready;
 mod ride_climb;
 mod ride_end;
@@ -70,10 +72,32 @@ pub enum ScreenId {
     History,
     Settings,
     Sensors,
+    ClearBests,
+    BestsNote,
+    FormNote,
+    FormatWait,
+    Discarding,
+    TurnOff,
+    SyncFirst,
+    AutoOff,
+    TurningOff,
+    Charging,
+}
+
+/// Which of its screens a page shows where it has more than one: its own,
+/// the question it asks over itself, a note in place of what it lists, or
+/// its owner's work under way, when its buttons rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Asks {
+    #[default]
+    Own,
+    Question,
+    Note,
+    Wait,
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 24;
+    pub const COUNT: usize = 34;
     pub const ALL: [Self; Self::COUNT] = [
         Self::RideMain,
         Self::RideStats,
@@ -99,14 +123,25 @@ impl ScreenId {
         Self::History,
         Self::Settings,
         Self::Sensors,
+        Self::ClearBests,
+        Self::BestsNote,
+        Self::FormNote,
+        Self::FormatWait,
+        Self::Discarding,
+        Self::TurnOff,
+        Self::SyncFirst,
+        Self::AutoOff,
+        Self::TurningOff,
+        Self::Charging,
     ];
 
-    pub const fn of(page: Page, ride: RidePage, paused: bool, sheet: bool) -> Self {
+    pub const fn of(page: Page, ride: RidePage, paused: bool, sheet: bool, asks: Asks) -> Self {
         if sheet {
             return Self::Sheets;
         }
         match page {
             Page::Boot => Self::Brand,
+            Page::Format if matches!(asks, Asks::Wait) => Self::FormatWait,
             Page::Format => Self::Format,
             Page::Home => Self::Home,
             Page::Sensors => Self::Sensors,
@@ -121,10 +156,16 @@ impl ScreenId {
                 RidePage::Map => Self::RideMap,
             },
             Page::EndRide => Self::RideEnd,
+            Page::DiscardRide if matches!(asks, Asks::Wait) => Self::Discarding,
             Page::DiscardRide => Self::Discard,
             Page::Summary | Page::PastRide => Self::RideSummary,
             Page::Settings => Self::Settings,
-            Page::Bests => Self::Bests,
+            Page::Bests => match asks {
+                Asks::Question => Self::ClearBests,
+                Asks::Note => Self::BestsNote,
+                Asks::Own | Asks::Wait => Self::Bests,
+            },
+            Page::Form if matches!(asks, Asks::Note) => Self::FormNote,
             Page::Form => Self::Form,
             Page::Workouts => Self::Workouts,
             Page::Phone => Self::Phone,
@@ -202,6 +243,26 @@ impl ScreenId {
             Self::Settings => settings::BUILTIN,
 
             Self::Sensors => sensors::BUILTIN,
+
+            Self::ClearBests => bests::CLEAR,
+
+            Self::BestsNote => bests::NOTE,
+
+            Self::FormNote => form::NOTE,
+
+            Self::FormatWait => format::WAIT,
+
+            Self::Discarding => discard::SAVING,
+
+            Self::TurnOff => power::TURN_OFF,
+
+            Self::SyncFirst => power::SYNC_FIRST,
+
+            Self::AutoOff => power::AUTO_OFF,
+
+            Self::TurningOff => power::TURNING_OFF,
+
+            Self::Charging => power::CHARGING,
         }
     }
 }

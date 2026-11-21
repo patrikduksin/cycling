@@ -56,13 +56,26 @@ impl Panel {
     }
     /// The whole frame is `sheet`, pixel for pixel.
     pub(super) fn shows_sheet(&self, sheet: crate::screens::power::Sheet) -> bool {
-        let canvas = sheet.canvas(&crate::screens::BASE);
+        let layout = &crate::screens::BASE;
+        let laid = crate::compose::builtin::Laid::new(
+            sheet.screen(),
+            layout,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("every sheet has a tree");
+        let (canvas, cues) = (
+            sheet.canvas(&laid),
+            crate::screens::power::Sheet::cues(&laid),
+        );
+        let look = crate::screens::chrome::Look::PLAIN;
         (0..HEIGHT).all(|y| {
             (0..WIDTH).all(|x| {
-                self.pixel(x, y)
-                    == canvas
-                        .pixel(crate::screens::chrome::Look::PLAIN, x, y, Shown(0))
-                        .0
+                let under = canvas.pixel(look, x, y, Shown(0));
+                let shown = cues
+                    .iter()
+                    .fold(under, |under, cue| cue.pixel(look, x, y, under, layout));
+                self.pixel(x, y) == shown.0
             })
         })
     }

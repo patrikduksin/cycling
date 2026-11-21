@@ -35,7 +35,8 @@ const FAMILIES: &[Family] = &[
     ),
     family(16, 32, ride::TILES),
     family(32, 40, climb_workout::TILES),
-    family(48, 64, statics::TILES),
+    family(48, 56, statics::TILES),
+    family(statics::LINE, 64, statics::QUESTIONS),
     family(64, 80, scroll::TILES),
     family(80, 96, script::TILES),
 ];

@@ -1,10 +1,14 @@
+pub mod best;
 pub mod caption;
 pub mod chip;
 pub mod climb_effort;
 pub mod climb_profile;
 pub mod effort;
+pub mod form;
 pub mod gauge;
 pub mod icon;
+pub mod line;
+pub mod power;
 pub mod reading;
 pub mod road;
 pub mod script;

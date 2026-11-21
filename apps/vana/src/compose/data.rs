@@ -35,6 +35,10 @@ pub trait Data {
     fn recording(&self) -> bool {
         false
     }
+    /// A number a static screen states, or none where it has none.
+    fn count(&self, _: Count) -> Option<i32> {
+        None
+    }
 }
 
 /// What a tile reads, for a trace's shown line: a metric, or whatever the
@@ -43,6 +47,44 @@ pub trait Data {
 pub enum Reads {
     Metric(Metric),
     Target,
+}
+
+/// The numbers the static screens state: the questions, the sheets, BESTS
+/// and FORM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Count {
+    /// Rides the phone has not confirmed.
+    Unsaved,
+    /// What formatting takes, as its place in `format::Goes::ALL`.
+    Goes,
+    /// Why BESTS shows a note, as its place in `bests::NOTES`.
+    BestsNote,
+    /// A best by its place on BESTS: its value, the day it was set, and
+    /// watts a kilo in tenths for a power best.
+    Best(u8),
+    BestDay(u8),
+    BestPerKg(u8),
+    /// Why FORM shows a note, as its place in `form::NOTES`.
+    FormNote,
+    Fitness,
+    Fatigue,
+    Form,
+    /// Form at the end of a week of the trend, oldest first.
+    FormWeek(u8),
+    /// 1 when rides without power are left out of FORM.
+    LeftOut,
+    /// The FTP the sheet offers, and the one in force.
+    FtpNew,
+    FtpOld,
+    /// Seconds left before the idle warning turns VANA off.
+    Seconds,
+    /// Thousandths of the way through the farewell.
+    Farewell,
+    /// The battery's charge in percent, none until it reports; how far the
+    /// charging arc has climbed; 1 while it charges.
+    Charge,
+    ChargeFill,
+    Charging,
 }
 
 /// A point on an effort's zone gauge: the zone it falls in, from 1, and

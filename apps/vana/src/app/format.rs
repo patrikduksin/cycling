@@ -501,7 +501,9 @@ impl Runtime {
         }
     }
 
-    pub(super) fn format_input(&mut self, button: Role, held: bool, at: u64) {
+    /// Yes formats, no declines.
+    pub(super) fn format_input(&mut self, yes: bool, held: bool, at: u64) {
+        let button = if yes { Role::Act } else { Role::Back };
         self.format_event(Event::Report { button, held, at });
     }
 

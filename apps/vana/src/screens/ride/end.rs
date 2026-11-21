@@ -72,10 +72,6 @@ pub fn prepare(view: &View) -> Canvas {
     question(view, b"END RIDE?", b"YOUR RIDE WILL BE SAVED")
 }
 
-pub fn discard(view: &View) -> Canvas {
-    question(view, b"DISCARD RIDE?", b"IT WILL NOT BE SAVED")
-}
-
 /// A question about a ride: `title`, the ride time, the distance and a grey
 /// `line` saying what the answer does.
 pub fn question(view: &View, title: &[u8], line: &[u8]) -> Canvas {
@@ -146,6 +142,7 @@ mod tests {
                 view.active_secs = 359_999;
                 let sample = crate::ride::log::Sample::default();
                 view.totals.add(1000, 999_999_999, &sample, None);
+                view.compose_main();
                 view.prepare().check_layout();
                 let at = &layout.scaled;
                 let screen = at.screen();

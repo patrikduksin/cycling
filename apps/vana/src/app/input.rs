@@ -101,10 +101,11 @@ impl Runtime {
             } = input
                 && !held
                 && received.saturating_sub(self.navigation.last_press()) >= DEBOUNCE_MS
-                && self.power_input(button)
+                && let Some(super::composition::Pressed::Asks(action)) = self.composed_press(button)
             {
                 self.navigation.pressed(received);
                 self.display.redraw();
+                self.carry(action, held, received, now);
             }
             return;
         }
@@ -117,10 +118,11 @@ impl Runtime {
             } = input
                 && !held
                 && received.saturating_sub(self.navigation.last_press()) >= DEBOUNCE_MS
-                && self.ftp_input(button, now)
+                && let Some(super::composition::Pressed::Asks(action)) = self.composed_press(button)
             {
                 self.navigation.pressed(received);
                 self.display.redraw();
+                self.carry(action, held, received, now);
             }
             return;
         }
@@ -183,7 +185,7 @@ impl Runtime {
                 self.timing.press(received);
                 self.next_ride_page();
             }
-            Page::Ready | Page::Ride | Page::EndRide | Page::DiscardRide => {
+            Page::Ready | Page::Ride | Page::EndRide => {
                 self.timing.press(received);
                 self.ride_press(button, held, received, now);
             }
@@ -196,8 +198,6 @@ impl Runtime {
                 self.ride_press(button, held, received, now);
             }
             Page::Summary => self.ride_press(button, held, received, now),
-            Page::Bests => self.bests_input(button, held),
-            Page::Form => self.form_input(button, held),
             Page::Phone => self.phone_input(button, held),
             Page::History => self.history_input(button, held, now),
             Page::PastRide => self.past_ride_input(button, held),
@@ -206,9 +206,9 @@ impl Runtime {
             Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.go(To::Page(self.first_page())),
-            Page::Format => self.format_input(button, held, received),
-            Page::LoseRides if !held => self.lose_rides_input(button),
-            Page::Sensors | Page::LoseRides => {}
+            Page::Sensors => {}
+            // On the engine: `composed_press` took the press.
+            Page::Bests | Page::Form | Page::Format | Page::LoseRides | Page::DiscardRide => {}
         }
     }
 

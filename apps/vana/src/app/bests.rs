@@ -10,6 +10,7 @@
 //! again, with the ride's outcome waiting.
 use super::Runtime;
 use super::navigation::To;
+use crate::compose::input::OnPage;
 use crate::kept::bests::{Bests, Found, Kept, Seen, Store};
 use crate::ride::log::Status;
 use crate::screens::bests::Mode;
@@ -138,23 +139,22 @@ impl Runtime {
         self.navigation.go(To::Page(Page::Bests));
     }
 
-    /// BACK returns to Settings. ACT asks to clear the bests, and then ACT
-    /// confirms while BACK keeps them.
-    pub(super) fn bests_input(&mut self, button: Role, held: bool) {
+    /// BACK returns to Settings. ACT asks to clear the bests, and then the
+    /// answer clears them or keeps them.
+    pub(super) fn bests_input(&mut self, act: OnPage, held: bool) {
         let kept = &mut self.bests;
-        match button {
-            Role::Act if kept.confirming => {
+        match act {
+            OnPage::Answer(yes) if kept.confirming => {
                 kept.confirming = false;
-                kept.clear = true;
+                kept.clear |= yes;
             }
-            Role::Act
+            OnPage::ClearBests
                 if kept.store == Store::Damaged
                     || (kept.store == Store::Kept && kept.bests.count() != 0) =>
             {
                 kept.confirming = true;
             }
-            Role::Back if kept.confirming => kept.confirming = false,
-            Role::Back if !held => self.navigation.go(To::Page(Page::Settings)),
+            OnPage::Back if !held => self.navigation.go(To::Page(Page::Settings)),
             _ => {}
         }
     }

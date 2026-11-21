@@ -1,23 +1,14 @@
 //! Full-screen power sheets: confirm turning off, the idle warning, the
 //! farewell before the device turns off, and the charge shown while the
-//! device rests on USB power with VANA off. Like every screen they carry no
-//! bottom button labels: an `ACCENT` corner marks ACT where it turns the
-//! device off.
-//!
-//! Each sheet is built round one ring (`chrome::Ring`): the power symbol,
-//! the countdown, the VANA mark and the charge all use the same shape.
-use super::Layout;
-use super::brand::{self, ring};
-use super::canvas::{Canvas, Shape};
-use super::chrome::{
-    ACCENT, AMBER, Align, BLACK, Battery, GREEN, Rect, Row, SECONDARY, TURN, WHITE, mix,
-};
-use super::scaled::{Scaled, Track};
-use core::fmt::Write;
-use firmware_shell::rendering::font::{Face, FaceRole};
+//! device rests on USB power with VANA off.
+use super::canvas::Canvas;
+use super::chrome::{BLACK, Battery, Row};
+use super::cue::Cue;
+use crate::compose::builtin::{Laid, ScreenId};
+use crate::compose::data::{Count, Data, Effort, ListKind, Metric};
 
 /// The idle warning's ring is full at this many seconds.
-pub const WARNING_SECONDS: u64 = 30;
+pub const WARNING_SECONDS: u64 = crate::compose::tiles::power::WARNING_SECONDS as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sheet {
@@ -34,154 +25,6 @@ pub enum Sheet {
     Charging { battery: Battery, known: bool },
 }
 
-/// The sheets on one panel. Text rows end on their capitals' baseline and
-/// keep 10 units from the panel's edges; each ring runs round a square.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    pub confirm: Confirm,
-    pub warning: Warning,
-    /// TURNING OFF under the farewell's mark.
-    pub farewell: Rect,
-    pub charge: Charge,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Confirm {
-    /// The power symbol's ring, and the bar from above it to its centre.
-    pub ring: Rect,
-    pub stem: Rect,
-    pub title: Rect,
-    pub line: Rect,
-    /// BACK, by its button.
-    pub back: Rect,
-    /// The lit corner by ACT: along the bottom edge and up the right one.
-    pub act: [Rect; 2],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Warning {
-    pub heading: Rect,
-    pub ring: Rect,
-    pub count: Rect,
-    pub seconds: Rect,
-    pub press: Rect,
-    pub stay: Rect,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Charge {
-    pub ring: Rect,
-    pub percent: Rect,
-    pub state: Rect,
-}
-
-const fn square(rows: Rect, side: u16, at: &Scaled) -> Rect {
-    use Track::{Fr, Unit};
-    let [_, columns, _] = rows.cols([Fr(1), Unit(side), Fr(1)], Unit(0), at);
-    rows.with_columns(columns)
-}
-
-pub const fn regions(at: &Scaled) -> Regions {
-    use Track::{Fr, Unit};
-    let screen = at.screen();
-    let [_, text, _] = screen.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
-    let [_, _, above, upper, lower, title, line, _, _] = screen.rows(
-        [
-            Unit(76),
-            Fr(1),
-            Unit(10),
-            Unit(32),
-            Unit(32),
-            Unit(58),
-            Unit(32),
-            Fr(1),
-            Unit(80),
-        ],
-        Unit(0),
-        at,
-    );
-    let symbol = square(
-        Rect {
-            bottom: lower.bottom,
-            ..upper
-        },
-        64,
-        at,
-    );
-    let [_, stem, _] = symbol.cols([Unit(29), Unit(7), Fr(1)], Unit(0), at);
-    let [back, _] = screen.rows([Unit(20), Fr(1)], Unit(0), at);
-    let [_, back, _] = back.cols([Unit(8), Unit(60), Fr(1)], Unit(0), at);
-    let [_, bottom_edge] = screen.rows([Fr(1), Unit(4)], Unit(0), at);
-    let [_, along] = bottom_edge.cols([Fr(1), Unit(70)], Unit(0), at);
-    let [_, right_edge] = screen.cols([Fr(1), Unit(4)], Unit(0), at);
-    let [_, up] = right_edge.rows([Fr(1), Unit(50)], Unit(0), at);
-    let confirm = Confirm {
-        ring: symbol,
-        stem: Rect {
-            top: above.top,
-            bottom: upper.bottom,
-            ..stem
-        },
-        title: title.with_columns(text),
-        line: line.with_columns(text),
-        back,
-        act: [along, up],
-    };
-
-    let [heading, _, _, ring, press, stay, _, _] = screen.rows(
-        [
-            Unit(72),
-            Fr(1),
-            Unit(26),
-            Unit(140),
-            Unit(38),
-            Unit(24),
-            Fr(1),
-            Unit(20),
-        ],
-        Unit(0),
-        at,
-    );
-    let ring = square(ring, 140, at);
-    let [count, seconds, _] = ring.rows([Unit(92), Unit(22), Fr(1)], Unit(0), at);
-    let [_, inside, _] = ring.cols([Unit(15), Fr(1), Unit(15)], Unit(0), at);
-    let warning = Warning {
-        heading: heading.with_columns(text),
-        ring,
-        count: count.with_columns(inside),
-        seconds: seconds.with_columns(text),
-        press: press.with_columns(text),
-        stay: stay.with_columns(text),
-    };
-
-    let [_, _, ring, state, _, _] = screen.rows(
-        [Unit(62), Fr(1), Unit(168), Unit(50), Fr(1), Unit(40)],
-        Unit(0),
-        at,
-    );
-    let ring = square(ring, 168, at);
-    let [percent, _] = ring.rows([Unit(104), Fr(1)], Unit(0), at);
-    let [_, inside, _] = ring.cols([Unit(13), Fr(1), Unit(13)], Unit(0), at);
-    let charge = Charge {
-        ring,
-        percent: percent.with_columns(inside),
-        state: state.with_columns(text),
-    };
-
-    Regions {
-        confirm,
-        warning,
-        farewell: brand::regions(at).below.with_columns(text),
-        charge,
-    }
-}
-
-/// A share (0 to 100) of a turn.
-const fn share(percent: u32) -> u16 {
-    let percent = if percent > 100 { 100 } else { percent };
-    (percent * TURN as u32 / 100) as u16
-}
-
 impl Sheet {
     /// Whether the sheet moves from frame to frame.
     pub const fn animated(self) -> bool {
@@ -192,170 +35,65 @@ impl Sheet {
         }
     }
 
-    /// The sheet laid out for one frame on `layout`'s panel.
-    pub fn canvas(self, layout: &Layout) -> Canvas {
+    pub const fn screen(self) -> ScreenId {
+        ScreenId::power(self)
+    }
+
+    /// The sheet laid out for one frame from its screen's tiles.
+    pub fn canvas(self, laid: &Laid) -> Canvas {
         let mut canvas = Canvas::default();
-        match self {
-            Self::Confirm { unsaved } => confirm(&mut canvas, layout, unsaved),
-            Self::Warning { seconds } => warning(&mut canvas, layout, seconds),
-            Self::TurningOff { progress } => {
-                brand::farewell(&mut canvas, layout, progress);
-                let quiet = brand::fade(SECONDARY, progress);
-                let body = layout.scaled.face(FaceRole::Body);
-                let row = layout.power.farewell;
-                centred(&mut canvas, &[body], b"TURNING OFF", row, quiet);
-            }
-            Self::Charging { battery, known } => charging(&mut canvas, layout, battery, known),
-        }
+        laid.prepare(&self, &mut canvas);
         canvas
     }
 
-    /// Paint one row of the sheet from its `canvas`.
-    pub fn paint(canvas: &Canvas, row: &mut Row) {
+    /// Paint one row of the sheet from its `canvas`, and the cues of the
+    /// buttons that answer it.
+    pub fn paint(canvas: &Canvas, cues: &[Cue], layout: &super::Layout, row: &mut Row) {
         row.fill(BLACK);
         canvas.paint(row);
+        for cue in cues {
+            cue.paint(row, layout);
+        }
+    }
+
+    pub fn cues(laid: &Laid) -> heapless::Vec<Cue, 3> {
+        laid.controls().shown(laid.focus()).collect()
     }
 }
 
-/// The power symbol, the question and the ACT corner, which unsaved rides
-/// take away.
-fn confirm(canvas: &mut Canvas, layout: &Layout, unsaved: u8) {
-    let (at, regions) = (&layout.scaled, &layout.power.confirm);
-    // A ring open at the top with a bar through the gap.
-    let gap = TURN / 12;
-    let symbol = ring(at, regions.ring, 7, gap, TURN - 2 * gap);
-    canvas.shape(Shape::ring(symbol, WHITE));
-    canvas.shape(Shape::Bar {
-        rect: regions.stem,
-        radius: at.unit(3),
-        color: WHITE,
-    });
-    let [title, body, caption] =
-        [FaceRole::Title, FaceRole::Body, FaceRole::Caption].map(|role| at.face(role));
-    centred(canvas, &[title, body], b"TURN OFF", regions.title, WHITE);
-    let (line, color): (&[u8], u16) = match unsaved {
-        0 => (b"RIDES ARE SAVED", SECONDARY),
-        1 => (b"SYNC RIDE FIRST", AMBER),
-        _ => (b"SYNC RIDES FIRST", AMBER),
-    };
-    centred(canvas, &[body, caption], line, regions.line, color);
-    // BACK sits by its button, top left.
-    let back = regions.back;
-    canvas.caption(
-        at,
-        b"BACK",
-        back.width(),
-        back.left,
-        back.bottom,
-        Align::Left,
-    );
-    if unsaved > 0 {
-        return;
+impl Data for Sheet {
+    fn metric(&self, _: Metric) -> Option<i32> {
+        None
     }
-    // ACT, bottom right, turns off: its corner is lit.
-    for rect in regions.act {
-        canvas.shape(Shape::Bar {
-            rect,
-            radius: 0,
-            color: ACCENT,
-        });
+
+    fn zone(&self, _: Effort) -> Option<u8> {
+        None
     }
-}
 
-/// The seconds left inside an amber ring that empties with them.
-fn warning(canvas: &mut Canvas, layout: &Layout, seconds: u64) {
-    let (at, regions) = (&layout.scaled, &layout.power.warning);
-    let track = mix(AMBER, BLACK, 4);
-    canvas.shape(Shape::ring(ring(at, regions.ring, 8, 0, TURN), track));
-    let left = seconds.min(WARNING_SECONDS) as u32;
-    let sweep = (left * u32::from(TURN) / WARNING_SECONDS as u32) as u16;
-    let arc = ring(at, regions.ring, 8, TURN - sweep, sweep);
-    canvas.shape(Shape::ring(arc, AMBER));
-    let [hero, large, body, caption] = [
-        FaceRole::Hero,
-        FaceRole::Large,
-        FaceRole::Body,
-        FaceRole::Caption,
-    ]
-    .map(|role| at.face(role));
-    centred(canvas, &[body], b"TURNING OFF IN", regions.heading, AMBER);
-    let mut count = super::workout::Text::<4>::new();
-    let _ = write!(count, "{}", seconds.min(99));
-    centred(
-        canvas,
-        &[hero, large],
-        count.as_bytes(),
-        regions.count,
-        WHITE,
-    );
-    centred(canvas, &[caption], b"SECONDS", regions.seconds, SECONDARY);
-    let press = regions.press;
-    centred(
-        canvas,
-        &[body, caption],
-        b"PRESS ANY BUTTON",
-        press,
-        SECONDARY,
-    );
-    centred(
-        canvas,
-        &[body, caption],
-        b"TO STAY ON",
-        regions.stay,
-        SECONDARY,
-    );
-}
-
-/// The charge as a green ring with its percentage inside. While charging,
-/// a lighter arc climbs from the charge to full, as the status bar's icon
-/// fills, so the screen shows it is alive.
-fn charging(canvas: &mut Canvas, layout: &Layout, battery: Battery, known: bool) {
-    let (at, regions) = (&layout.scaled, &layout.power.charge);
-    let arc = |start, sweep| ring(at, regions.ring, 14, start, sweep);
-    canvas.shape(Shape::ring(arc(0, TURN), mix(GREEN, BLACK, 4)));
-    let level = if known {
-        u32::from(battery.percent.min(100))
-    } else {
+    fn list(&self, _: ListKind) -> u16 {
         0
-    };
-    if known && battery.charging && level < 100 {
-        let climbing = share(u32::from(battery.fill()));
-        canvas.shape(Shape::ring(arc(0, climbing), mix(GREEN, BLACK, 8)));
     }
-    canvas.shape(Shape::ring(arc(0, share(level)), GREEN));
-    let mut percent = super::workout::Text::<6>::new();
-    if known {
-        let _ = write!(percent, "{level}%");
-    } else {
-        let _ = percent.push_str("--");
-    }
-    let [hero, large, body] =
-        [FaceRole::Hero, FaceRole::Large, FaceRole::Body].map(|role| at.face(role));
-    centred(
-        canvas,
-        &[hero, large, body],
-        percent.as_bytes(),
-        regions.percent,
-        WHITE,
-    );
-    let (state, color): (&[u8], u16) = match (battery.charging, level) {
-        (_, 100) => (b"CHARGED", GREEN),
-        (true, _) => (b"CHARGING", GREEN),
-        (false, _) => (b"ON USB POWER", SECONDARY),
-    };
-    centred(canvas, &[body], state, regions.state, color);
-}
 
-fn centred(canvas: &mut Canvas, faces: &[&'static Face], text: &[u8], row: Rect, color: u16) {
-    let (width, x) = (row.width(), row.center_x());
-    canvas.fit(faces, text, width, x, row.bottom, Align::Center, color);
+    fn count(&self, count: Count) -> Option<i32> {
+        match (*self, count) {
+            (Self::Confirm { unsaved }, Count::Unsaved) => Some(i32::from(unsaved)),
+            (Self::Warning { seconds }, Count::Seconds) => Some(seconds.min(999) as i32),
+            (Self::TurningOff { progress }, Count::Farewell) => Some(i32::from(progress)),
+            (Self::Charging { battery, known }, Count::Charge) => {
+                known.then_some(i32::from(battery.percent.min(100)))
+            }
+            (Self::Charging { battery, .. }, Count::ChargeFill) => Some(i32::from(battery.fill())),
+            (Self::Charging { battery, .. }, Count::Charging) => Some(i32::from(battery.charging)),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(any(test, feature = "invariants"))]
 impl Sheet {
     /// Fail a sheet whose runs or shapes leave the panel, or whose runs
     /// overlap.
-    pub fn check_layout(canvas: &Canvas, layout: &Layout) {
+    pub fn check_layout(canvas: &Canvas, layout: &super::Layout) {
         if !super::check::enabled() {
             return;
         }
@@ -374,16 +112,39 @@ impl Sheet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::{Look, Shown};
+    use crate::screens::Layout;
+    use crate::screens::brand;
+    use crate::screens::canvas::Shape;
+    use crate::screens::chrome::{AMBER, GREEN, Look, Shown, WHITE, mix};
+    use crate::screens::cue::Icon;
     use crate::screens::{BASE, panels};
 
+    fn laid(sheet: Sheet, layout: &Layout) -> Laid {
+        Laid::new(
+            sheet.screen(),
+            layout,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("every sheet has a tree")
+    }
+
+    fn canvas(sheet: Sheet, layout: &Layout) -> Canvas {
+        sheet.canvas(&laid(sheet, layout))
+    }
+
     fn assert_paints_reference(sheet: Sheet, layout: &Layout) {
-        let canvas = sheet.canvas(layout);
+        let canvas = canvas(sheet, layout);
         let panel = layout.scaled.panel;
         for look in [false, true].map(crate::screens::look::look) {
             for y in 0..panel.height {
                 let mut pixels = std::vec![0x5555; panel.width];
-                Sheet::paint(&canvas, &mut Row::new(y, &mut pixels).looked(look));
+                Sheet::paint(
+                    &canvas,
+                    &[],
+                    layout,
+                    &mut Row::new(y, &mut pixels).looked(look),
+                );
                 for (x, &pixel) in pixels.iter().enumerate() {
                     let want = canvas.pixel(look, x, y, look.ink(BLACK));
                     assert_eq!(Shown(pixel), want, "{sheet:?} at {x},{y}");
@@ -403,12 +164,15 @@ mod tests {
         }
     }
 
-    fn count(sheet: Sheet, color: u16) -> usize {
-        let canvas = sheet.canvas(&BASE);
+    fn lit(canvas: &Canvas, color: u16, columns: core::ops::Range<usize>) -> usize {
         (0..320)
-            .flat_map(|y| (0..240).map(move |x| (x, y)))
+            .flat_map(|y| columns.clone().map(move |x| (x, y)))
             .filter(|&(x, y)| canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == color)
             .count()
+    }
+
+    fn count(sheet: Sheet, color: u16) -> usize {
+        lit(&canvas(sheet, &BASE), color, 0..240)
     }
 
     #[test]
@@ -416,15 +180,15 @@ mod tests {
         let sheets = [
             (
                 Sheet::Confirm { unsaved: 0 },
-                &["TURN OFF", "RIDES ARE SAVED", "BACK"][..],
+                &["TURN OFF", "RIDES ARE SAVED"][..],
             ),
             (
                 Sheet::Confirm { unsaved: 1 },
-                &["TURN OFF", "SYNC RIDE FIRST", "BACK"][..],
+                &["TURN OFF", "SYNC RIDE FIRST"][..],
             ),
             (
                 Sheet::Confirm { unsaved: 3 },
-                &["TURN OFF", "SYNC RIDES FIRST", "BACK"][..],
+                &["TURN OFF", "SYNC RIDES FIRST"][..],
             ),
             (
                 Sheet::Warning { seconds: 9 },
@@ -451,10 +215,10 @@ mod tests {
                 &["--", "ON USB POWER"],
             ),
         ];
-        super::super::check::enable(true);
+        crate::screens::check::enable(true);
         for layout in panels::ALL {
             for (sheet, want) in sheets {
-                let canvas = sheet.canvas(layout);
+                let canvas = canvas(sheet, layout);
                 let what = std::format!("{sheet:?} on {:?}", layout.scaled.panel);
                 canvas.assert_laid_out(layout.scaled.screen(), want, &what);
                 Sheet::check_layout(&canvas, layout);
@@ -467,10 +231,12 @@ mod tests {
     #[test]
     fn the_last_farewell_frame_is_black() {
         for layout in panels::ALL {
-            let canvas = Sheet::TurningOff {
-                progress: brand::DONE,
-            }
-            .canvas(layout);
+            let canvas = canvas(
+                Sheet::TurningOff {
+                    progress: brand::DONE,
+                },
+                layout,
+            );
             let panel = layout.scaled.panel;
             let dark = (0..panel.height).all(|y| {
                 (0..panel.width).all(|x| canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == BLACK)
@@ -480,27 +246,36 @@ mod tests {
     }
 
     #[test]
-    fn confirm_marks_act_and_draws_the_power_symbol() {
+    fn turn_off_answers_with_corner_cues_and_draws_the_power_symbol() {
         for layout in panels::ALL {
-            let confirm = Sheet::Confirm { unsaved: 0 }.canvas(layout);
-            let panel = layout.scaled.panel;
-            let (right, bottom) = (panel.width - 1, panel.height - 1);
+            let cues = |sheet| {
+                let laid = laid(sheet, layout);
+                let focus = laid.focus();
+                let shown = laid.controls().shown(focus).map(|cue| cue.icon);
+                shown.collect::<std::vec::Vec<_>>()
+            };
+            let answers = cues(Sheet::Confirm { unsaved: 0 });
+            assert_eq!(answers.len(), 2);
+            assert!(answers.contains(&Icon::Back) && answers.contains(&Icon::Check));
             assert_eq!(
-                confirm.pixel(Look::PLAIN, right, bottom, Shown(BLACK)).0,
-                ACCENT,
-                "ACT corner marker on {panel:?}"
+                cues(Sheet::Confirm { unsaved: 2 }),
+                [Icon::Back],
+                "unsaved rides take away the way to turn off"
             );
+            let confirm = canvas(Sheet::Confirm { unsaved: 0 }, layout);
             assert_eq!(confirm.find("TURN OFF").map(|run| run.color), Some(WHITE));
+            let ring = confirm.shapes.iter().any(|shape| {
+                matches!(shape, Shape::Ring { ring, color: WHITE, .. } if ring.sweep < crate::screens::chrome::TURN)
+            });
+            let bar = confirm
+                .shapes
+                .iter()
+                .any(|shape| matches!(shape, Shape::Bar { color: WHITE, .. }));
+            assert!(
+                ring && bar,
+                "the ring open at the top, the bar through its gap"
+            );
         }
-        let confirm = Sheet::Confirm { unsaved: 0 }.canvas(&BASE);
-        // The ring's left side and the bar through its gap are white.
-        assert_eq!(confirm.pixel(Look::PLAIN, 88, 118, Shown(BLACK)).0, WHITE);
-        assert_eq!(confirm.pixel(Look::PLAIN, 120, 80, Shown(BLACK)).0, WHITE);
-        assert_eq!(
-            confirm.pixel(Look::PLAIN, 132, 87, Shown(BLACK)).0,
-            BLACK,
-            "the gap"
-        );
     }
 
     #[test]
@@ -524,9 +299,13 @@ mod tests {
         assert!(charge(40, true, 1).animated());
         assert!(!charge(100, true, 1).animated());
         assert!(!charge(40, false, 1).animated());
-        // The same arc on the right of the ring, 25% charge, is lit green.
-        let canvas = charge(25, false, 0).canvas(&BASE);
-        assert_eq!(canvas.pixel(Look::PLAIN, 204, 146, Shown(BLACK)).0, GREEN);
-        assert_ne!(canvas.pixel(Look::PLAIN, 36, 146, Shown(BLACK)).0, GREEN);
+        // A quarter's charge lights the ring from 12 o'clock to 3: the right
+        // half only.
+        let canvas = canvas(charge(25, false, 0), &BASE);
+        assert!(lit(&canvas, GREEN, 120..240) > 500);
+        assert!(
+            lit(&canvas, GREEN, 0..120) < 100,
+            "only the arc's round start"
+        );
     }
 }

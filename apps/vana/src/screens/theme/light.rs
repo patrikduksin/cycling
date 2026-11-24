@@ -1,6 +1,6 @@
-//! Day: every word and number black on white, to read in direct sun; only
-//! bars, charts and zone fills carry colour.
-use super::{Theme, rgb};
+//! Day: words and numbers in black on white, to read in direct sun; colour
+//! stays on bars, charts, fills and state marks.
+use super::{DARK, Theme, rgb};
 
 const BLACK: u16 = rgb(0x00, 0x00, 0x00);
 const RED: u16 = rgb(0xd7, 0x00, 0x15);
@@ -35,14 +35,5 @@ pub const LIGHT: Theme = Theme {
         RED,
         rgb(0x89, 0x44, 0xab),
     ],
-    // Fills under black ink stay as bright as at night.
-    zone_fill: [
-        rgb(0x8e, 0x8e, 0x93),
-        rgb(0x0a, 0x84, 0xff),
-        rgb(0x30, 0xd1, 0x58),
-        rgb(0xff, 0xd6, 0x0a),
-        rgb(0xff, 0x9f, 0x0a),
-        rgb(0xff, 0x45, 0x3a),
-        rgb(0xbf, 0x5a, 0xf2),
-    ],
+    zone_fill: DARK.zone_fill,
 };

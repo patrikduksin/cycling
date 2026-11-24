@@ -1,5 +1,4 @@
-//! Ids 112–123: the minimal kit every rebuilt screen draws with
-//! (`compose::kit`).
+//! Ids 112–123: the minimal tile kit (`compose::kit`).
 use crate::compose::kit::{bar, facts, field, item, rule, symbol, text, top_line};
 use crate::compose::tile::{Component, Erased};
 

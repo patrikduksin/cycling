@@ -1,4 +1,4 @@
-//! The minimal tile kit (#517): every new screen is built from these tiles
+//! The minimal tile kit: every new screen is built from these tiles
 //! and the containers row, column, stack and scroll, nothing bespoke.
 //!
 //! - A tile's setting byte names an entry of its spec table: an enum with a
@@ -11,10 +11,6 @@
 //!   share, so a layout solves once for both.
 //! - A tile with an action takes the focus ring and the tap with no code of
 //!   its own: `Tile::action` returns its spec's action.
-//!
-//! Not built yet, for the screens that need them: chart, slider, sheet,
-//! toast and cue. Each comes as a tile of this block with a spec table of
-//! its own, in the same pattern.
 pub mod bar;
 pub mod facts;
 pub mod field;

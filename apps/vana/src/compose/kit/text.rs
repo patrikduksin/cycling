@@ -124,7 +124,6 @@ impl Tile for Text {
                 number.as_bytes()
             }
         };
-        // The box holds the words' advance and their spill past it.
         let advance = rect.width().saturating_sub(SPILL);
         let x = match spec.align {
             Align::Left => rect.left,

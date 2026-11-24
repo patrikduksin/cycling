@@ -1,5 +1,4 @@
-//! The time-in-zone bar the summary still draws by hand. The Stats ride
-//! page is the built-in `RideMain` (`compose::builtin`).
+//! The time-in-zone bar the summary draws.
 use super::zones::{BAR_WIDTH, Bar};
 use crate::compose::tiles::zones::segments;
 use crate::screens::canvas::Canvas;

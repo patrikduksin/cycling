@@ -787,7 +787,6 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     runtime.input_received(press(Role::Move), 1000, 1000, &mut radio);
     assert_eq!(runtime.navigation.ride_page(), RidePage::Lap);
 
-    // A climb shows the climb page; its end goes back to the page it left.
     barometer_climb(&mut runtime);
     assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     barometer_top(&mut runtime);

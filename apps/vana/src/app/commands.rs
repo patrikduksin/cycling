@@ -237,14 +237,37 @@ impl Runtime {
                 self.preferences.set(profile, now);
                 self.display.redraw();
             }
+            (Some(field @ ("WEIGHT" | "AGE" | "SEX")), Some(value)) => {
+                let mut body = self.preferences.options.rider.encode();
+                let parsed = match (field, value) {
+                    ("SEX", "M") => Some((2, 1)),
+                    ("SEX", "F") => Some((2, 2)),
+                    ("SEX", "-") => Some((2, 0)),
+                    ("SEX", _) => None,
+                    ("WEIGHT", value) => value.parse().ok().map(|kg| (0, kg)),
+                    (_, value) => value.parse().ok().map(|years| (1, years)),
+                };
+                let Some((index, byte)) = parsed else {
+                    return "INVALID";
+                };
+                body[index] = byte;
+                let Some(rider) = crate::ride::rider::Rider::decode(body) else {
+                    return "INVALID";
+                };
+                let mut options = self.preferences.options;
+                options.rider = rider;
+                self.preferences.set_options(options, now);
+            }
             _ => return "INVALID",
         }
         let preferences = &self.preferences;
+        let [weight, age, sex] = preferences.options.rider.encode();
         if write!(
             output,
-            "ftp={} lthr={} stored={} persistence={}",
+            "ftp={} lthr={} weight={weight} age={age} sex={} stored={} persistence={}",
             preferences.profile.ftp_watts,
             preferences.profile.lthr_bpm,
+            ["-", "m", "f"][usize::from(sex)],
             preferences.stored.name(),
             preferences.persistence().name()
         )

@@ -848,7 +848,7 @@ fn an_older_vana_record_resets_vana_alone_and_keeps_the_shell_settings() {
     let (status, profile) = sim.command("PROFILE");
     assert_eq!(status, "OK");
     assert_eq!(
-        profile, "ftp=215 lthr=185 stored=current persistence=saved",
+        profile, "ftp=215 lthr=185 weight=0 age=0 sex=- stored=current persistence=saved",
         "VANA's own preferences are back to their defaults"
     );
     let after = SettingsStore::new(sim.device.media.untapped())

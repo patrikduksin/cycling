@@ -1358,7 +1358,7 @@ fn training_profile_survives_power_loss() {
     let mut sim = rider();
     let (_, before) = sim.command("PROFILE");
     assert_eq!(
-        before, "ftp=215 lthr=185 stored=current persistence=saved",
+        before, "ftp=215 lthr=185 weight=0 age=0 sex=- stored=current persistence=saved",
         "a fresh device has the defaults, saved when setup was skipped"
     );
     // Edited by touch this time: tap a field, then the minus/plus pads.
@@ -1369,7 +1369,10 @@ fn training_profile_survives_power_loss() {
     sim.power_loss();
     let (status, after) = sim.command("PROFILE");
     assert_eq!(status, "OK");
-    assert_eq!(after, "ftp=280 lthr=170 stored=current persistence=saved");
+    assert_eq!(
+        after,
+        "ftp=280 lthr=170 weight=0 age=0 sex=- stored=current persistence=saved"
+    );
     sim.home("SETTINGS");
     sim.expect_field("FTP WATTS", "280");
     sim.expect_field("LTHR BPM", "170");
@@ -1379,19 +1382,33 @@ fn training_profile_survives_power_loss() {
     // power was cut is not saved.
     let (status, reply) = sim.command("PROFILE LTHR 175");
     assert_eq!(status, "OK");
-    assert_eq!(reply, "ftp=280 lthr=175 stored=current persistence=pending");
+    assert_eq!(
+        reply,
+        "ftp=280 lthr=175 weight=0 age=0 sex=- stored=current persistence=pending"
+    );
     assert_eq!(sim.command("PROFILE FTP 9000").0, "INVALID");
     sim.power_loss();
     assert_eq!(
         sim.command("PROFILE").1,
-        "ftp=280 lthr=170 stored=current persistence=saved"
+        "ftp=280 lthr=170 weight=0 age=0 sex=- stored=current persistence=saved"
     );
     sim.command("PROFILE LTHR 175");
     sim.advance(seconds(3));
     sim.power_loss();
     assert_eq!(
         sim.command("PROFILE").1,
-        "ftp=280 lthr=175 stored=current persistence=saved"
+        "ftp=280 lthr=175 weight=0 age=0 sex=- stored=current persistence=saved"
+    );
+    sim.command("PROFILE WEIGHT 72");
+    sim.command("PROFILE AGE 41");
+    sim.command("PROFILE SEX M");
+    assert_eq!(sim.command("PROFILE WEIGHT 12").0, "INVALID");
+    assert_eq!(sim.command("PROFILE SEX X").0, "INVALID");
+    sim.advance(seconds(3));
+    sim.power_loss();
+    assert_eq!(
+        sim.command("PROFILE").1,
+        "ftp=280 lthr=175 weight=72 age=41 sex=m stored=current persistence=saved"
     );
     // Shell preferences saved later keep the profile.
     assert_eq!(sim.command("BRIGHTNESS 70").0, "OK");
@@ -1400,7 +1417,7 @@ fn training_profile_survives_power_loss() {
     assert!(sim.command("SETTINGS").1.contains("brightness=70"));
     assert_eq!(
         sim.command("PROFILE").1,
-        "ftp=280 lthr=175 stored=current persistence=saved"
+        "ftp=280 lthr=175 weight=72 age=41 sex=m stored=current persistence=saved"
     );
 }
 
@@ -2362,7 +2379,7 @@ fn saved_sensors_keep_the_training_profile() {
     sim.power_loss();
     assert_eq!(
         sim.command("PROFILE").1,
-        "ftp=250 lthr=175 stored=current persistence=saved"
+        "ftp=250 lthr=175 weight=0 age=0 sex=- stored=current persistence=saved"
     );
     wait_connected(&mut sim, device_type::POWER, seconds(5));
 }
@@ -5974,7 +5991,7 @@ fn first_start_sets_up_power_heart_and_sensors_then_rides() {
     assert_eq!(sim.vana_page(), "ready");
     assert_eq!(
         sim.command("PROFILE").1,
-        "ftp=250 lthr=185 stored=current persistence=saved"
+        "ftp=250 lthr=185 weight=0 age=0 sex=- stored=current persistence=saved"
     );
     // Setup is done for good: the next start opens Home.
     sim.power_loss();

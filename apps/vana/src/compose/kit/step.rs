@@ -17,7 +17,7 @@ use crate::screens::workout::Text;
 use crate::workout::model::{Intensity, Length, Metric};
 use crate::workout::player::{Left, TestReadout};
 use core::fmt::Write;
-use firmware_shell::rendering::font::FaceRole;
+use firmware_shell::rendering::font::{Face, FaceRole};
 
 pub struct StepTile;
 
@@ -52,17 +52,29 @@ specs! {
 }
 
 const RANGE_SLOT: &[u8] = b"888";
-const HERO_SLOT: &[u8] = b"888";
-const HERO_STEPPED: &[u8] = b"65535";
+/// The hero's slot in its own face, then in each face a longer reading
+/// steps down to: one digit more a step, so a sprint drops a face whole
+/// rather than cut.
+const HERO_SLOTS: [&[u8]; 3] = [b"888", b"8888", b"65535"];
 const LEFT_SLOT: &[u8] = b"88:88";
 const NEXT_SLOT: &[u8] = b"88:88";
-const HERO_FACES: [FaceRole; 3] = [
+const HERO_FACES: [FaceRole; 4] = [
     LAYOUT.face.hero,
+    LAYOUT.face.hero_narrow,
     LAYOUT.face.digits,
     LAYOUT.face.digits_small,
 ];
+/// The hero's looks, best first.
+const HERO_LOOKS: usize = HERO_FACES.len() - 1;
 const POWER_NOTE: &[u8] = b"3s";
 const FINISH: &[u8] = b"FINISH";
+
+/// Look `form`'s face for the hero and the faces a longer reading steps
+/// down to.
+fn hero_faces(form: usize, at: &Scaled) -> [&'static Face; 3] {
+    let last = HERO_FACES.len() - 1;
+    [0, 1, 2].map(|step| at.face(HERO_FACES[(form + step).min(last)]))
+}
 
 fn power_column(at: &Scaled) -> usize {
     at.face(LAYOUT.face.label)
@@ -96,16 +108,18 @@ impl Tile for StepTile {
                     runs: 2,
                 }])
             }
-            Shows::Reading => HERO_FACES
-                .windows(2)
-                .map(|faces| {
-                    let (digits, stepped) = (at.face(faces[0]), at.face(faces[1]));
-                    let number = digits
-                        .fit_width(HERO_SLOT)
-                        .max(stepped.fit_width(HERO_STEPPED));
+            Shows::Reading => (0..HERO_LOOKS)
+                .map(|form| {
+                    let faces = hero_faces(form, at);
+                    let number = faces
+                        .iter()
+                        .zip(HERO_SLOTS)
+                        .map(|(face, slot)| face.fit_width(slot))
+                        .max()
+                        .unwrap_or(0);
                     Form {
                         width: (number + gap + power_column(at) + gutter) as u16,
-                        height: digits.fit_height() as u16,
+                        height: faces[0].fit_height() as u16,
                         shapes: 0,
                         runs: 3,
                     }
@@ -289,8 +303,7 @@ fn reading(training: &Training, placed: &Placed, at: &Scaled, theme: &Theme, out
         Some(reading) => write!(value, "{reading}"),
         None => value.push_str("--"),
     };
-    let form = usize::from(placed.form).min(HERO_FACES.len() - 2);
-    let faces = [HERO_FACES[form], HERO_FACES[form + 1]].map(|role| at.face(role));
+    let faces = hero_faces(usize::from(placed.form), at);
     let hero_right = column_left - px(at, space.gap);
     out.fit(
         &faces,

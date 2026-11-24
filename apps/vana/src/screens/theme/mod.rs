@@ -180,6 +180,8 @@ pub struct Type {
     pub tag: FaceRole,
     /// The one reading a page is about, such as a workout's power.
     pub hero: FaceRole,
+    /// The hero where its own face does not fit, as beside a radar.
+    pub hero_narrow: FaceRole,
     /// A ride field's number.
     pub digits: FaceRole,
     /// The % beside `digits`, and a field's look when `digits` does not fit.

@@ -474,6 +474,23 @@ mod tests {
     }
 
     #[test]
+    fn beside_a_radar_the_hero_steps_down_one_face_and_a_sprint_one_more() {
+        use firmware_shell::rendering::font::FaceRole;
+        let at = &crate::screens::C606.scaled;
+        let hero_face = |player: &Player, watts: u16, radar: bool| {
+            let view = page_on(&crate::screens::C606, player, Some(watts), radar, false);
+            let text = std::format!("{}", view.training.unwrap().now.reading.unwrap());
+            core::ptr::from_ref(view.canvas().find(&text).unwrap().line.face())
+        };
+        let face = |role| core::ptr::from_ref(at.face(role));
+        let (steady, sprint) = (interval(243), interval(1999));
+        assert_eq!(hero_face(&steady, 243, false), face(FaceRole::Hero));
+        assert_eq!(hero_face(&steady, 243, true), face(FaceRole::Large));
+        assert_eq!(hero_face(&sprint, 1999, false), face(FaceRole::Large));
+        assert_eq!(hero_face(&sprint, 1999, true), face(FaceRole::Digits40));
+    }
+
+    #[test]
     fn ridden_steps_dim_and_a_line_marks_where_the_ride_is() {
         let player = interval(240);
         let rect = chart_box(&crate::screens::C606);

@@ -26,6 +26,7 @@ pub const LAYOUT: Layout = Layout {
     face: Type {
         tag: FaceRole::Tag,
         hero: FaceRole::Hero,
+        hero_narrow: FaceRole::Large,
         digits: FaceRole::Digits40,
         digits_small: FaceRole::Digits26,
         line: FaceRole::Digits15,

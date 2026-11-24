@@ -454,7 +454,6 @@ impl<'a> Frame<'a> {
     fn smooth_glyphs(&self) -> Vec<Glyph> {
         let templates = templates(self.faces);
         let (width, height) = (self.width, self.height);
-        let blank = self.look.ink(0).0;
         let mut claimed = vec![false; width * height];
         let mut found = Vec::new();
         for y in 0..height {
@@ -464,8 +463,7 @@ impl<'a> Frame<'a> {
                 // it belongs to a glyph already read, as touching capitals do.
                 let joined =
                     |nx: usize, ny: usize| self.at(nx, ny) == color && !claimed[ny * width + nx];
-                if color == blank
-                    || claimed[y * width + x]
+                if claimed[y * width + x]
                     || (x > 0 && joined(x - 1, y))
                     || (y > 0 && joined(x, y - 1))
                 {

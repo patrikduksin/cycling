@@ -49,7 +49,7 @@ FACES = [
     ("TOTAL_30", 700, 30, NUMBERS, 0, "The ride's averages when a course is done."),
     ("TOTAL_11", 900, 11, "ABCDEGHIKMNPRSTVW /", 0.6, "The captions over those totals."),
     ("FOOT_20", 700, 20, NUMBERS, 0, "The distance left in the map's footer."),
-    ("TAG", 800, 11, TEXT, 0.6, "Ride-page field titles, zone tags and the top line's battery."),
+    ("TAG", 800, 11, TEXT, 0, "Ride-page field titles, zone tags and the top line's battery."),
     ("NOTE", 700, 13, PRINTABLE, 0, "Sentence-case subtitles and list labels."),
     ("LABEL", 800, 15, PRINTABLE, 0, "List values and button labels."),
     ("HEADING", 800, 21, PRINTABLE, 0, "A phone-style screen's title."),

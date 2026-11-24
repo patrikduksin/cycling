@@ -58,30 +58,6 @@ fn a_grid_shares_its_room_evenly_and_its_rules_line_up() {
 }
 
 #[test]
-fn zz_measure() {
-    use firmware_shell::rendering::font::FaceRole;
-    let at = BASE;
-    let tag = at.face(FaceRole::Tag);
-    for t in ["HEART BPM", "PWR 3S W", "Z7", "SPD KM/H", "1888", "88.8", "18.8"] {
-        std::println!(
-            "{t}: tag {} d40 {} d26 {}",
-            tag.fit_width(t.as_bytes()),
-            at.face(FaceRole::Digits40).fit_width(t.as_bytes()),
-            at.face(FaceRole::Digits26).fit_width(t.as_bytes())
-        );
-    }
-    for s in [crate::screens::icons::Symbol::Heart, crate::screens::icons::Symbol::Power] {
-        std::println!("{s:?} {:?}", at.art.symbol(s).ink(0, 0));
-    }
-    for &field in Field::ALL {
-        let forms = tile(FIELD).forms(field as u8, &at);
-        std::println!("{field:?} {:?}", forms[0]);
-    }
-    let d40 = at.face(FaceRole::Digits40);
-    std::println!("tag h {} d40 h {} cap {}", tag.fit_height(), d40.fit_height(), d40.cap);
-}
-
-#[test]
 fn a_field_names_itself_by_its_title_and_reads_its_metric() {
     let kind = tile(FIELD);
     let mut label = std::string::String::new();

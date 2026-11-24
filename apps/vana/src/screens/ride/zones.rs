@@ -1,13 +1,11 @@
-//! Training-zone colours: the zone chips and gauges on the main page and the
-//! time-in-zone bars on the stats page. Everything is measured in `marks`,
-//! once per frame; drawing only compares coordinates.
-use crate::ride::zones::{HEART_ZONES, POWER_ZONES, TrainingProfile, ZoneTime};
+//! Training-zone colours: the zone chips and gauges on the main page.
+//! Everything is measured in `marks`, once per frame; drawing only compares
+//! coordinates.
+use crate::ride::zones::TrainingProfile;
 use crate::screens::workout::{Graphics, View};
 
 /// Pixels in a zone gauge.
 pub(in crate::screens) const GAUGE_WIDTH: usize = 56;
-/// Pixels in a time-in-zone bar, beside its caption on the summary.
-pub(super) const BAR_WIDTH: usize = 148;
 
 /// A gliding reading's position on its zone gauge.
 #[derive(Clone, Copy, Default, Hash)]
@@ -18,15 +16,10 @@ pub(in crate::screens) struct Mark {
     pub(in crate::screens) fill: u8,
 }
 
-/// Where each zone's share of a bar ends, from the bar's left edge.
-pub(super) type Bar<const N: usize> = Option<[usize; N]>;
-
 #[derive(Clone, Copy, Default)]
 pub(in crate::screens) struct Marks {
     pub(super) power: Option<Mark>,
     pub(super) heart: Option<Mark>,
-    pub(super) power_time: Bar<POWER_ZONES>,
-    pub(super) heart_time: Bar<HEART_ZONES>,
 }
 
 impl Marks {
@@ -36,14 +29,8 @@ impl Marks {
 }
 
 pub(in crate::screens) fn marks(view: &View) -> Marks {
-    let time: &ZoneTime = &view.zone_time;
     let [power, heart] = gauges(&view.graphics, &view.profile);
-    Marks {
-        power,
-        heart,
-        power_time: bar(&time.power_ms),
-        heart_time: bar(&time.heart_ms),
-    }
+    Marks { power, heart }
 }
 
 /// The power and heart-rate gauges' marks for the gliding readings.
@@ -69,18 +56,6 @@ fn mark(zone: u8, value: u32, (low, high): (u32, u32)) -> Mark {
         zone,
         fill: (into as usize * GAUGE_WIDTH / (high - low) as usize).clamp(1, GAUGE_WIDTH) as u8,
     }
-}
-
-fn bar<const N: usize>(time: &[u64; N]) -> Bar<N> {
-    let total: u64 = time.iter().sum();
-    if total == 0 {
-        return None;
-    }
-    let mut so_far = 0;
-    Some(core::array::from_fn(|zone| {
-        so_far += time[zone];
-        (so_far * BAR_WIDTH as u64 / total) as usize
-    }))
 }
 
 #[cfg(test)]
@@ -112,12 +87,5 @@ mod tests {
         assert_eq!(fill, Some(GAUGE_WIDTH / 2), "Z4 half full, not Z7's 500 W");
         view.graphics.power_3s = None;
         assert!(marks(&view).power.is_none());
-    }
-
-    #[test]
-    fn bars_split_by_time_and_are_empty_without_any() {
-        assert!(bar(&[0u64; 5]).is_none());
-        let ends = bar(&[0, 1000, 0, 3000, 0]).unwrap();
-        assert_eq!(ends, [0, 37, 37, BAR_WIDTH, BAR_WIDTH]);
     }
 }

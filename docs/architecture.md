@@ -241,9 +241,7 @@ scan, gets one file named for the behavior beside its owner.
   [`Navigation`](../apps/vana/src/app/navigation.rs) keeps the page and its
   sidecar fields private, and `go(To)` is the only code that writes them. Each
   `To` variant is one kind of page move with everything it moves, so a reader
-  finds every page change by searching for `To::`. `go` also ends a Settings
-  edit on every move off Settings, which makes the `EditingOffSettings` rule
-  hold by construction.
+  finds every page change by searching for `To::`.
 
 ## The frame writes in tiers and draws read-only
 

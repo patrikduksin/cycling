@@ -7,7 +7,7 @@ use crate::ride::course::turns::tests::{
 use crate::ride::course::{Course, key};
 use crate::ride::geo::{east_per_e7, metres};
 use crate::testing::Rng;
-use crate::workout::library::tests::{Region, formatted, put};
+use crate::workout::today::tests::{Region, formatted, put};
 use device_api::bulk::ReadWrite;
 use device_api::bulk::{Error as MediaError, OwnedInfo};
 use firmware_services::{files, volume};

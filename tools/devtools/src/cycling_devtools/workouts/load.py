@@ -23,16 +23,16 @@ high] %, `cadence` [low, high] rpm or `ramp` {start, step, every}; none is a
 free ride. `test` may be `twenty` or `ramp`. The encoding is the workout codec
 (`apps/vana/src/workout/codec.rs`).
 
-The workout goes onto the MMC's FILES volume as `workouts/<name>.vw` through
-the volume transfer session, which checks the file's CRC on commit and reads
-it back. VANA lists `workouts/` when its picker opens; this tool also asks it
-to list again (`WORKOUT LIST`). Run `cycling files format --confirm` once
-on a device whose FILES volume is not formatted yet.
+The workout becomes today's workout: it goes onto the MMC's FILES volume as
+`workouts/today.vw`, in place of the one before, through the volume transfer
+session, which checks the file's CRC on commit and reads it back. VANA then
+reads it (`WORKOUT LOAD`), and Home's WORKOUT starts a ride that plays it.
+Run `cycling files format --confirm` once on a device whose FILES volume is
+not formatted yet.
 """
 
 import argparse
 import json
-import re
 import struct
 import time
 import zlib
@@ -48,10 +48,7 @@ VERSION = 2
 NAME_BYTES = 20
 MAX_STEPS = 12
 MAX_BLOCKS = 8
-FOLDER = 'workouts/'
-SUFFIX = '.vw'
-# FILES names: 1 to 40 bytes of A-Z a-z 0-9 . _ - /.
-NAME_MAX = 40
+FILE = volumes.TODAY_WORKOUT
 MIN_DISTANCE_M = 100
 
 INTENSITIES = ('warmup', 'work', 'recovery', 'cooldown', 'test')
@@ -68,6 +65,27 @@ def text(value, what):
     if len(encoded) > NAME_BYTES or any(not 0x20 <= byte <= 0x7E for byte in encoded):
         raise ValueError(f'{what} must be at most {NAME_BYTES} printable ASCII characters: {value!r}')
     return encoded
+
+
+def kept_name(name):
+    """The workout name as VANA keeps and replies it, from the name bytes
+    sent: without trailing spaces, a space as `_`. VANA also cuts a name
+    wider than WARMUP TEMPO WORKOUT in its caption face, which the host
+    cannot measure, so the name it replies may be a shorter prefix."""
+    return name.decode('ascii').rstrip(' ').replace(' ', '_')
+
+
+def read_back(sent, reply):
+    """Whether `reply` to WORKOUT LOAD names the workout whose name bytes
+    were `sent`: VANA kept the whole name, or cut it on a character to fit
+    its screens and dropped the space the cut left at the end."""
+    if not reply.startswith('workout='):
+        return False
+    full = kept_name(sent)
+    kept = reply.removeprefix('workout=').split(' ', 1)[0]
+    if kept == full:
+        return True
+    return bool(kept) and kept != 'none' and full.startswith(kept) and not kept.endswith('_')
 
 
 def whole(value, what, low, high):
@@ -182,49 +200,39 @@ def encode(workout):
     return bytes(body) + struct.pack('<I', zlib.crc32(body))
 
 
-def file_name(stem):
-    """The FILES name of a workout called `stem`: `workouts/<stem>.vw`."""
-    safe = re.sub(r'[^A-Za-z0-9._-]+', '-', stem).strip('-.')
-    safe = safe[: NAME_MAX - len(FOLDER) - len(SUFFIX)]
-    if not safe:
-        raise ValueError(f'no usable file name in {stem!r}')
-    return f'{FOLDER}{safe}{SUFFIX}'
-
-
-def upload(connection, name, data, scratch):
-    """Put `data` on FILES as `name`, then have VANA list its workouts again."""
-    path = scratch / name.replace('/', '__')
+def upload(connection, data, scratch):
+    """Put `data` on FILES as today's workout, then have VANA read it."""
+    path = scratch / 'workout-today.vw'
     path.write_bytes(data)
     transfer = volumes.open_session(connection)
     try:
-        entry = volumes.files_put(transfer, name, path)
+        entry = volumes.files_put(transfer, FILE, path)
     finally:
         transfer.call('end')
-    reply = connection.terminal_command('WORKOUT LIST')
+    reply = connection.terminal_command('WORKOUT LOAD')
     if reply['status'] != 'OK':
-        raise RuntimeError(f'WORKOUT LIST: {reply["status"]} {reply["data"]}'.rstrip())
-    if f'{name}:' not in reply['data']:
-        raise RuntimeError(f'VANA did not list {name}: {reply["data"]}')
-    return {**entry, 'list': reply['data']}
+        raise RuntimeError(f'WORKOUT LOAD: {reply["status"]} {reply["data"]}'.rstrip())
+    sent = data[5 : 5 + data[4]]
+    if not read_back(sent, reply['data']):
+        raise RuntimeError(f'VANA did not read {kept_name(sent)}: {reply["data"]}')
+    return {**entry, 'today': reply['data']}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('workout', type=Path, help='workout JSON file')
-    parser.add_argument('--name', help='file name stem (default: the JSON file name)')
     parser.add_argument('--dry-run', action='store_true', help='print the file it would put, without a device')
     add_port_argument(parser)
     args = parser.parse_args()
     data = encode(json.loads(args.workout.read_text()))
-    name = file_name(args.name or args.workout.stem)
     if args.dry_run:
-        print(json.dumps({'name': name, 'length': len(data), 'crc32': f'{zlib.crc32(data):08x}'}))
+        print(json.dumps({'name': FILE, 'length': len(data), 'crc32': f'{zlib.crc32(data):08x}'}))
         return
     port = selected_port(parser, args.port)
     scratch = ROOT / '.local/tests'
     scratch.mkdir(parents=True, exist_ok=True)
     with UsbConnection(port, scratch / f'workout-load-{time.time_ns()}.log') as connection:
-        print(json.dumps(upload(connection, name, data, scratch)))
+        print(json.dumps(upload(connection, data, scratch)))
 
 
 if __name__ == '__main__':

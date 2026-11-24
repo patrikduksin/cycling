@@ -1,8 +1,7 @@
 //! The main ride page: its tree is the built-in `RideMain`
 //! (`compose::builtin`), solved in the runtime's composition. Here are the
 //! flags it shows under and the boxes other pages read from it.
-use super::slots::Slots;
-use crate::compose::builtin::{Choices, Laid, ScreenId};
+use crate::compose::builtin::{Laid, ScreenId};
 use crate::compose::node::Flags;
 use crate::compose::registry::{CHIP, STATUS};
 use crate::screens::Device;
@@ -39,13 +38,9 @@ pub fn flags_of(view: &View) -> Flags {
     flags(view.course, view.radar_paired, workout, arrived)
 }
 
-/// The main page on `device` for the lower line `slots` and `flags`.
-pub fn laid(device: &Device, slots: Slots, flags: Flags) -> Laid {
-    let choices = Choices {
-        main_slots: slots,
-        ..Choices::default()
-    };
-    Laid::new(ScreenId::RideMain, device, choices, flags, None).expect("the main page has a tree")
+/// The main page on `device` for `flags`.
+pub fn laid(device: &Device, flags: Flags) -> Laid {
+    Laid::new(ScreenId::RideMain, device, flags, None).expect("the main page has a tree")
 }
 
 pub fn status_bar(main: &Laid) -> Option<Rect> {

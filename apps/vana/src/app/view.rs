@@ -1,12 +1,12 @@
 //! VANA's frame: four tiers that write `Runtime`, around one read-only draw.
 //! `Runtime::frame` calls three tiers, the draw, then the fourth tier:
 //!
-//! 1. `every_pass` follows the daylight, announces the ride state and sets the
-//!    light curve, even while the screen is blank.
+//! 1. `announce_ride` says what the ride's status became, even while the
+//!    screen is blank.
 //! 2. `unless_blank` stops on a blank or turning-off screen. It then latches the
 //!    numbers and takes the motion. It stops again unless a frame is due.
 //! 3. `when_due` sets the base pace, then makes every other write the frame
-//!    makes: the lists, the chart, the power sheet's animation, the page moves
+//!    makes: the power sheet's animation, the page moves
 //!    and toasts, the map, the sensor menu and the shell's activity. Under a
 //!    power sheet it stops after the sheet's animation. It also reads the
 //!    position and the radar channel for the view, at their place in that
@@ -27,17 +27,15 @@
 use super::Runtime;
 use super::navigation::To;
 use super::presentation::{
-    ANIMATED_FRAME_MS, BATTERY_TOAST_MS, BRAND_MS, Display, MOTION_FRAME_MS, SCROLL_FRAME_MS,
-    STATIC_FRAME_MS, arrived_sample, radar_reports,
+    ANIMATED_FRAME_MS, BATTERY_TOAST_MS, BRAND_MS, Display, MOTION_FRAME_MS, STATIC_FRAME_MS,
+    arrived_sample, radar_reports,
 };
 use crate::compose::builtin::ScreenId;
-use crate::compose::registry::{MAP, PROFILE};
-use crate::ride::elevation::Trace;
+use crate::compose::registry::MAP;
 use crate::ride::log::{Sample, Status};
-use crate::screens::chrome::{Rect, Toast, Tone};
+use crate::screens::chrome::{Toast, Tone};
 use crate::screens::power::Sheet as PowerSheet;
-use crate::screens::ride::summary;
-use crate::screens::ride::{ElevationChart, Pixels, RidePage, map};
+use crate::screens::ride::{Pixels, RidePage, map};
 use crate::screens::workout::{Page, Text};
 use crate::sensors::ant::device_type;
 use core::fmt::Write;
@@ -57,7 +55,6 @@ struct Frame {
 
 #[derive(Clone, Copy)]
 struct Due {
-    moving: bool,
     shows: Shows,
 }
 
@@ -82,27 +79,6 @@ pub(super) enum Presented {
     },
 }
 
-#[derive(Default)]
-pub(super) struct Chart {
-    chart: ElevationChart,
-    charted: Option<u32>,
-}
-
-state!(Chart { charted });
-
-impl Chart {
-    pub(super) fn chart(&self) -> &ElevationChart {
-        &self.chart
-    }
-
-    fn refresh(&mut self, trace: &Trace, rect: Rect) {
-        if self.charted != Some(trace.generation()) || self.chart.rect() != Some(rect) {
-            self.charted = Some(trace.generation());
-            self.chart.refresh(trace, rect);
-        }
-    }
-}
-
 impl Runtime {
     /// Draw a frame when one is due. Call once per pass.
     pub fn frame<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
@@ -112,7 +88,7 @@ impl Runtime {
         ant: &impl Ant,
         position: &impl Positioning,
     ) {
-        self.every_pass(system, now, position);
+        self.announce_ride(now);
         let Some(frame) = self.unless_blank(system, now) else {
             return;
         };
@@ -121,7 +97,6 @@ impl Runtime {
             Shows::Page { radar_paired, .. } => {
                 self.compose(radar_paired, now);
                 self.refresh_map(radar_paired, now);
-                self.refresh_chart();
                 self.refresh_done();
             }
             Shows::Sheet(sheet) => self.composition.show(
@@ -131,7 +106,7 @@ impl Runtime {
             ),
         }
         let presented = self.present(system, due.shows, now);
-        self.after_view(presented, frame, due.moving, now);
+        self.after_view(presented, frame, now);
     }
 
     /// Fill the map again where the map page's tree placed it, while it
@@ -154,23 +129,6 @@ impl Runtime {
             map::ground(&self.device.scaled, shown),
             light,
             self.micros_clock,
-        );
-    }
-
-    #[inline(never)]
-    fn every_pass<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
-        &mut self,
-        system: &mut Shell<D, I, P, B>,
-        now: u64,
-        position: &impl Positioning,
-    ) {
-        self.follow_daylight(now, position);
-        self.announce_ride(now);
-        system.set_curve(
-            self.preferences
-                .options
-                .auto_brightness
-                .then_some(self.policy().light_curve),
         );
     }
 
@@ -249,10 +207,8 @@ impl Runtime {
         let page = self.navigation.page();
         let motion = matches!(sheet, Some(PowerSheet::TurningOff { .. }))
             || (sheet.is_none() && page == Page::Boot);
-        let animated = matches!(
-            page,
-            Page::Ride | Page::EndRide | Page::DiscardRide | Page::Summary
-        ) || sheet.is_some_and(PowerSheet::animated)
+        let animated = matches!(page, Page::Ride | Page::EndRide)
+            || sheet.is_some_and(PowerSheet::animated)
             || self.readings.battery.charging();
         let pace_ms = if motion {
             MOTION_FRAME_MS
@@ -272,13 +228,9 @@ impl Runtime {
         self.display = Display::Active {
             next_frame_ms: now.saturating_add(pace_ms),
         };
-        // A card under a resting finger lights up once the delay passes.
-        self.navigation.touches_mut().tick(now);
-        let moving = self.list_frame(now);
         self.power.animate(now);
         if let Some(sheet) = self.power.view() {
             return Due {
-                moving,
                 shows: Shows::Sheet(sheet),
             };
         }
@@ -310,11 +262,6 @@ impl Runtime {
             self.navigation
                 .show(Toast::new(text.as_str(), Tone::Good), BATTERY_TOAST_MS, now);
         }
-        // Over the ride's own news: its workout could not be read.
-        if core::mem::take(&mut self.training.missing) {
-            why!("frame.workout_missing");
-            self.navigation.toast("WORKOUT MISSING", Tone::Warn, now);
-        }
         // A page the rider turned off, or the workout page once its workout
         // is gone, gives way to the main page.
         if !self.ride_pages().contains(self.navigation.ride_page()) {
@@ -335,26 +282,12 @@ impl Runtime {
             _ => {}
         }
         Due {
-            moving,
             shows: Shows::Page { gps, radar_paired },
         }
     }
 
-    /// Chart the ride's trace again when it changed, as the summary page that
-    /// shows it opens.
-    fn refresh_chart(&mut self) {
-        let laids = self.composition.laids();
-        let profile = laids
-            .get(ScreenId::SummaryElevation)
-            .and_then(|laid| laid.box_of(PROFILE));
-        if let Some(profile) = profile {
-            self.chart
-                .refresh(self.ride.trace(), summary::chart_rect(profile));
-        }
-    }
-
     #[inline(never)]
-    fn after_view(&mut self, presented: Presented, frame: Frame, moving: bool, now: u64) {
+    fn after_view(&mut self, presented: Presented, frame: Frame, now: u64) {
         match presented {
             Presented::Sheet { ok } => {
                 self.power_drawn(ok);
@@ -379,14 +312,6 @@ impl Runtime {
                     }
                     self.timing.frame(drawn);
                 }
-            }
-        }
-        if let Display::Active { next_frame_ms } = &mut self.display {
-            if moving {
-                *next_frame_ms = (*next_frame_ms).min(now + SCROLL_FRAME_MS);
-            }
-            if let Some(due) = self.navigation.touches().due() {
-                *next_frame_ms = (*next_frame_ms).min(due);
             }
         }
         let due = self.motion_due(&frame.shown, now);

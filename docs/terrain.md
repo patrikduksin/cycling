@@ -372,7 +372,7 @@ measure the frame time, the extraction and the fill on the device:
    restart.
 3. Within the hold, `RIDE START` and page to the map.
 4. Read STATUS (`display_frame_*`, `map_fill_max_us`,
-   `map_extract_max_us`, `map_cuts`), discard the ride, and pull the trace: its health
+   `map_extract_max_us`, `map_cuts`), end the ride, and pull the trace: its health
    windows hold the frame mean and max, and its `vana.present.map_fill`
    and `look_ahead.map_extract` stages the map's work.
 5. Delete the course files and flash the rider's firmware back.

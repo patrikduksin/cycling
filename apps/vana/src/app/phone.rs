@@ -16,8 +16,8 @@
 //! the course beside the breadcrumb and then stored on FILES. A workout, `PUT
 //! /api/workouts`, is one codec file (`workout::codec`): at most
 //! `ENCODED_MAX` bytes gathered in `Work`, then decoded, validated and stored
-//! under `workouts/` by `Library::store`, the library the picker lists. `GET`
-//! lists the uploads and `DELETE ?file=` removes one. On a volatile internal
+//! as today's workout by `workout::today`, in place of the one before. `GET`
+//! reports today's workout and `DELETE` removes it. On a volatile internal
 //! journal, a FIT file of a ride `app::sync` protects carries an `X-Receipt`;
 //! `POST /api/synced` quotes it with the file's CRC to confirm the ride, and
 //! `DELETE /api/activities` clears the journal. `PUT /api/time?unix_ms=` sets
@@ -41,7 +41,7 @@ use crate::ride::medium::Medium;
 use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
 use crate::workout::codec::{DecodeError, ENCODED_MAX};
-use crate::workout::library::{self, Library, LoadError, StoreError};
+use crate::workout::today::{self, LoadError, StoreError};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::connectivity::Text;
@@ -67,8 +67,7 @@ const READS_PER_STEP: usize = 48;
 /// Pieces of an upload's body read per service step.
 const UPLOAD_READS: usize = 8;
 const UPLOAD_PIECE: usize = 512;
-/// Room for a response: a head, and the workouts list of 8 whose names
-/// need the most escapes.
+/// Room for a response: a head and its body, or a workout upload.
 const TEXT: usize = 1280;
 /// Room kept for a response's head before its body is written.
 const HEAD_GAP: usize = 160;
@@ -1240,65 +1239,39 @@ impl Runtime {
         }
     }
 
-    /// The uploaded workouts, listed from FILES now, and the files in the
-    /// folder the device does not list.
+    /// Today's workout, read from FILES now.
     fn workouts_reply(&mut self, id: u32, bulk: &mut impl ReadWrite) {
-        self.training.list(bulk);
-        let (library, error) = (&self.training.library, self.training.list_error);
+        self.training.read_today(bulk);
+        let (today, error) = (self.training.today, self.training.read_error);
         let work = self.phone.w();
         let text = &mut work.text;
         text.clear();
         let _ = text.resize(HEAD_GAP, 0);
         let _ = write!(
             text,
-            r#"{{"store":"{}","max":{},"skipped":{},"uploads":["#,
-            error.map_or("ok", LoadError::name),
-            library::UPLOADS,
-            library.skipped
+            r#"{{"store":"{}","workout":"#,
+            error.map_or("ok", LoadError::name)
         );
-        for (index, upload) in library.uploads().iter().enumerate() {
-            // The most one entry takes, and the rest of the response.
-            if text.capacity() - text.len() < 170 {
-                break;
-            }
-            let file = upload
-                .file
-                .as_str()
-                .strip_prefix(library::FOLDER)
-                .unwrap_or("");
-            let _ = write!(
-                text,
-                r#"{}{{"file":"{file}","name":""#,
-                if index == 0 { "" } else { "," }
-            );
-            for byte in upload.name.as_bytes() {
-                if matches!(byte, b'"' | b'\\') {
-                    let _ = text.push(b'\\');
+        match today {
+            Some(workout) => {
+                let _ = text.extend_from_slice(br#"{"name":""#);
+                for byte in workout.name.as_bytes() {
+                    if matches!(byte, b'"' | b'\\') {
+                        let _ = text.push(b'\\');
+                    }
+                    let _ = text.push(*byte);
                 }
-                let _ = text.push(*byte);
+                let _ = write!(
+                    text,
+                    r#"","minutes":{},"steps":{}}}}}"#,
+                    workout.planned_secs().div_ceil(60),
+                    workout.played_len()
+                );
             }
-            let _ = write!(
-                text,
-                r#"","minutes":{},"steps":{}}}"#,
-                upload.outline.planned_secs.div_ceil(60),
-                upload.outline.played
-            );
+            None => {
+                let _ = text.extend_from_slice(b"null}");
+            }
         }
-        let _ = text.extend_from_slice(br#"],"unlisted":["#);
-        let mut first = true;
-        let _ = library.unlisted(bulk, |name| {
-            if text.capacity() - text.len() < 60 {
-                return;
-            }
-            let file = name.as_str().strip_prefix(library::FOLDER).unwrap_or("");
-            let _ = write!(
-                text,
-                r#"{}{{"file":"{file}"}}"#,
-                if first { "" } else { "," }
-            );
-            first = false;
-        });
-        let _ = text.extend_from_slice(b"]}");
         let body = text.len() - HEAD_GAP;
         let head = Head::new(200)
             .header("Content-Type", "application/json")
@@ -1352,12 +1325,11 @@ impl Runtime {
         if body as usize > ENCODED_MAX {
             return self.reply(id, 413, Some(r#"{"error":"too_large"}"#));
         }
-        let stored = Library::store(bulk, &self.phone.w().text);
-        self.training.list(bulk);
+        let stored = today::store(bulk, &self.phone.w().text);
         self.display.redraw();
         match stored {
-            Ok(file) => {
-                log::info!(target: "phone", "VANA_PHONE workout_saved file={}", file.as_str());
+            Ok(_) => {
+                log::info!(target: "phone", "VANA_PHONE workout_saved");
                 self.workouts_reply(id, bulk);
             }
             Err(error) => {
@@ -1375,7 +1347,6 @@ impl Runtime {
                         422,
                         r#"{"error":"invalid","detail":"the workout is not one VANA can ride"}"#,
                     ),
-                    StoreError::Full => (409, r#"{"error":"full"}"#),
                     StoreError::Load(LoadError::Files(files::Error::Full)) => {
                         (507, r#"{"error":"nospace"}"#)
                     }
@@ -1427,26 +1398,12 @@ impl Runtime {
         if self.recorder_busy() {
             return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
         }
-        let mut path = heapless::String::<{ files::NAME }>::new();
-        let wanted = query_value(&request.query, "file")
-            .filter(|_| path.push_str(library::FOLDER).is_ok())
-            .filter(|file| path.push_str(file).is_ok())
-            .and_then(|_| files::Name::new(&path).ok());
-        let Some(name) = wanted else {
-            return self.reply(id, 404, Some(r#"{"error":"workout"}"#));
-        };
-        self.training.list(bulk);
-        let result = match self.training.library.find(&name) {
-            Some(library::Id::Uploaded(index)) => {
-                self.delete_upload(usize::from(index), bulk).map(|()| true)
-            }
-            _ => self.training.library.remove_unlisted(bulk, &name),
-        };
-        match result {
+        let cleared = today::clear(bulk);
+        self.training.read_today(bulk);
+        self.display.redraw();
+        match cleared {
             Ok(true) => {
                 log::info!(target: "phone", "VANA_PHONE workout_deleted");
-                self.training.list(bulk);
-                self.display.redraw();
                 self.reply(id, 204, None);
             }
             Ok(false) => self.reply(id, 404, Some(r#"{"error":"workout"}"#)),

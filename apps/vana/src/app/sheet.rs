@@ -54,7 +54,6 @@ impl Runtime {
         });
         Hit {
             control,
-            list: None,
             swipes: false,
             pull: Some(Pull::Up),
         }
@@ -70,9 +69,9 @@ impl Runtime {
             SheetAct::DayNight => {
                 let mut options = self.preferences.options;
                 options.theme = if self.light() {
-                    Theme::Dark
+                    Theme::Night
                 } else {
-                    Theme::Light
+                    Theme::Day
                 };
                 self.set_options(options, now);
             }
@@ -93,11 +92,6 @@ impl Runtime {
 
     fn set_level(&mut self, level: u8, now: u64) {
         let level = level.clamp(LOWEST, HIGHEST);
-        if self.preferences.options.auto_brightness {
-            let mut options = self.preferences.options;
-            options.auto_brightness = false;
-            self.set_options(options, now);
-        }
         if self.preferences.display.brightness != level {
             let mut display = self.preferences.display;
             display.brightness = level;

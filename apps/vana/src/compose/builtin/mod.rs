@@ -6,19 +6,16 @@ use super::input::{self, Buttons, Controls, Focus, Stop};
 use super::node::{Flags, MAX_NODES, Node, What};
 use super::parse::{Screen, Screens};
 use super::registry;
-use super::solve::{MAX_LEAVES, Placed, Rect16, Scroll, Solved};
+use super::solve::{MAX_LEAVES, Placed, Rect16, Solved};
 use crate::screens::Device;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
 use crate::screens::cue::Keys;
 use crate::screens::ride::RidePage;
-use crate::screens::ride::slots::Slots;
-use crate::screens::ride::summary::Shown;
 use crate::screens::workout::Page;
 
 mod brand;
 mod control_sheet;
-mod discard;
 mod format;
 mod home;
 mod lose_rides;
@@ -32,17 +29,8 @@ mod ride_map;
 mod ride_paused;
 mod ride_workout;
 mod sensors;
-mod settings;
-mod sheets;
-mod summary_best;
-mod summary_effort;
-mod summary_elevation;
-mod summary_message;
-mod summary_offer;
-mod summary_overview;
 #[cfg(test)]
 mod tests;
-mod workouts;
 
 pub use ride_main::{GLIDES, tree as main_tree};
 
@@ -54,23 +42,12 @@ pub enum ScreenId {
     RideMap,
     RidePaused,
     RideEnd,
-    SummaryMessage,
-    SummaryOverview,
-    SummaryEffort,
-    SummaryElevation,
-    SummaryBest,
-    SummaryOffer,
     Home,
-    Sheets,
     Brand,
     Format,
     LoseRides,
-    Discard,
-    Workouts,
-    Settings,
     Sensors,
     FormatWait,
-    Discarding,
     TurnOff,
     SyncFirst,
     AutoOff,
@@ -82,11 +59,14 @@ pub enum ScreenId {
     ForgetSensor,
     ControlSheet,
     RideDone,
+    /// Home with a workout planned for today.
+    HomeToday,
 }
 
 /// Which of its screens a page shows where it has more than one: its own,
-/// the question it asks over itself, a note in place of what it lists, or
-/// its owner's work under way, when its buttons rest.
+/// the question it asks over itself, a note in place of what it lists, its
+/// owner's work under way, when its buttons rest, or the plan it offers
+/// first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Asks {
     #[default]
@@ -94,6 +74,8 @@ pub enum Asks {
     Question,
     Note,
     Wait,
+    /// Home's workout for today, over a free ride.
+    Plan,
 }
 
 impl ScreenId {
@@ -105,23 +87,12 @@ impl ScreenId {
         Self::RideMap,
         Self::RidePaused,
         Self::RideEnd,
-        Self::SummaryMessage,
-        Self::SummaryOverview,
-        Self::SummaryEffort,
-        Self::SummaryElevation,
-        Self::SummaryBest,
-        Self::SummaryOffer,
         Self::Home,
-        Self::Sheets,
         Self::Brand,
         Self::Format,
         Self::LoseRides,
-        Self::Discard,
-        Self::Workouts,
-        Self::Settings,
         Self::Sensors,
         Self::FormatWait,
-        Self::Discarding,
         Self::TurnOff,
         Self::SyncFirst,
         Self::AutoOff,
@@ -133,23 +104,15 @@ impl ScreenId {
         Self::ForgetSensor,
         Self::ControlSheet,
         Self::RideDone,
+        Self::HomeToday,
     ];
 
-    pub const fn of(
-        page: Page,
-        ride: RidePage,
-        paused: bool,
-        sheet: bool,
-        asks: Asks,
-        summary: Shown,
-    ) -> Self {
-        if sheet {
-            return Self::Sheets;
-        }
+    pub const fn of(page: Page, ride: RidePage, paused: bool, asks: Asks) -> Self {
         match page {
             Page::Boot => Self::Brand,
             Page::Format if matches!(asks, Asks::Wait) => Self::FormatWait,
             Page::Format => Self::Format,
+            Page::Home if matches!(asks, Asks::Plan) => Self::HomeToday,
             Page::Home => Self::Home,
             Page::Sensors => Self::Sensors,
             Page::Ride if paused => Self::RidePaused,
@@ -161,18 +124,6 @@ impl ScreenId {
             },
             Page::EndRide => Self::RideEnd,
             Page::Done => Self::RideDone,
-            Page::DiscardRide if matches!(asks, Asks::Wait) => Self::Discarding,
-            Page::DiscardRide => Self::Discard,
-            Page::Summary => match summary {
-                Shown::Message => Self::SummaryMessage,
-                Shown::Overview => Self::SummaryOverview,
-                Shown::Effort => Self::SummaryEffort,
-                Shown::Elevation => Self::SummaryElevation,
-                Shown::Best => Self::SummaryBest,
-                Shown::Offer => Self::SummaryOffer,
-            },
-            Page::Settings => Self::Settings,
-            Page::Workouts => Self::Workouts,
             Page::LoseRides => Self::LoseRides,
         }
     }
@@ -213,6 +164,7 @@ impl ScreenId {
                 | Self::RideEnd
                 | Self::RideDone
                 | Self::Home
+                | Self::HomeToday
         )
     }
 
@@ -220,16 +172,7 @@ impl ScreenId {
     pub const fn deck(self) -> bool {
         matches!(
             self,
-            Self::RideMain
-                | Self::RideClimb
-                | Self::RideWorkout
-                | Self::RideMap
-                | Self::SummaryMessage
-                | Self::SummaryOverview
-                | Self::SummaryEffort
-                | Self::SummaryElevation
-                | Self::SummaryBest
-                | Self::SummaryOffer
+            Self::RideMain | Self::RideClimb | Self::RideWorkout | Self::RideMap
         )
     }
 
@@ -247,21 +190,7 @@ impl ScreenId {
 
             Self::RideEnd => ride_end::BUILTIN,
 
-            Self::SummaryMessage => summary_message::BUILTIN,
-
-            Self::SummaryOverview => summary_overview::BUILTIN,
-
-            Self::SummaryEffort => summary_effort::BUILTIN,
-
-            Self::SummaryElevation => summary_elevation::BUILTIN,
-
-            Self::SummaryBest => summary_best::BUILTIN,
-
-            Self::SummaryOffer => summary_offer::BUILTIN,
-
             Self::Home => home::BUILTIN,
-
-            Self::Sheets => sheets::BUILTIN,
 
             Self::Brand => brand::BUILTIN,
 
@@ -269,17 +198,9 @@ impl ScreenId {
 
             Self::LoseRides => lose_rides::BUILTIN,
 
-            Self::Discard => discard::BUILTIN,
-
-            Self::Workouts => workouts::BUILTIN,
-
-            Self::Settings => settings::BUILTIN,
-
             Self::Sensors => sensors::BUILTIN,
 
             Self::FormatWait => format::WAIT,
-
-            Self::Discarding => discard::SAVING,
 
             Self::TurnOff => power::TURN_OFF,
 
@@ -301,6 +222,7 @@ impl ScreenId {
             Self::ControlSheet => control_sheet::BUILTIN,
 
             Self::RideDone => ride_done::BUILTIN,
+            Self::HomeToday => home::TODAY,
         }
     }
 }
@@ -313,39 +235,25 @@ const BAR_UNITS: u8 = 24;
 /// A screen's nodes, preorder.
 pub type Nodes = heapless::Vec<Node, MAX_NODES>;
 
-/// What the rider chose that shapes a built-in's tree.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Choices {
-    pub main_slots: Slots,
-    /// Settings edits a number: its tree is the editor's.
-    pub editing: bool,
-    /// A workout is planned for today: Home shows its card.
-    pub today: bool,
-}
-
-/// A shipped screen: its tree for the rider's choices, and what its
-/// buttons do. A test accepts every one on every panel under every flag
-/// combination it mentions; a tree that reads `Choices` tests each choice.
+/// A shipped screen: its tree, and what its buttons do. A test accepts
+/// every one on every panel under every flag combination it mentions.
 pub struct Builtin {
-    pub tree: fn(&Choices) -> Nodes,
+    pub tree: fn() -> Nodes,
     pub buttons: Buttons,
 }
 
-/// One screen solved on one device for the rider's choices and what the
-/// ride shows: where each tile goes. Its tree is the rider's when they
+/// One screen solved on one device for what the ride shows: where each tile
+/// goes. Its tree is the rider's when they
 /// changed the screen, else the built-in's. A frame draws from it; input
 /// solves it again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Laid {
     id: ScreenId,
     screen: Screen,
-    /// `screen` is the rider's, not the built-in's for `choices`.
+    /// `screen` is the rider's, not the built-in's.
     changed: bool,
-    choices: Choices,
     flags: Flags,
     leaves: heapless::Vec<Placed, MAX_LEAVES>,
-    /// The scroll shown, and the page of cards it scrolls.
-    list: Option<(Scroll, crate::screens::scroll::Layout)>,
     focus: Focus,
 }
 
@@ -356,7 +264,6 @@ impl Laid {
     pub fn new(
         id: ScreenId,
         device: &Device,
-        choices: Choices,
         flags: Flags,
         changed: Option<&Screen>,
     ) -> Option<Self> {
@@ -365,33 +272,28 @@ impl Laid {
             Some(screen) => screen.clone(),
             None => {
                 let controls = Controls::new(builtin.buttons, device.keys);
-                Screen::builtin(id.key(), &(builtin.tree)(&choices), device.scaled, controls)
+                Screen::builtin(id.key(), &(builtin.tree)(), device.scaled, controls)
             }
         };
         let mut laid = Self {
             id,
             screen,
             changed: changed.is_some(),
-            choices,
             flags,
             leaves: heapless::Vec::new(),
-            list: None,
             focus: Focus::default(),
         };
         laid.solve();
         Some(laid)
     }
 
-    /// Solve again for `choices`, `flags` and the rider's `changed` tree;
-    /// false when they are what it was solved for.
+    /// Solve again for `flags` and the rider's `changed` tree; false when
+    /// they are what it was solved for.
     #[inline(never)]
-    pub fn update(&mut self, choices: Choices, flags: Flags, changed: Option<&Screen>) -> bool {
+    pub fn update(&mut self, flags: Flags, changed: Option<&Screen>) -> bool {
         let stale = self.changed != changed.is_some()
-            || match changed {
-                Some(screen) => self.screen != *screen,
-                None => choices != self.choices,
-            };
-        if !stale && (choices, flags) == (self.choices, self.flags) {
+            || changed.is_some_and(|screen| self.screen != *screen);
+        if !stale && flags == self.flags {
             return false;
         }
         if stale {
@@ -401,13 +303,12 @@ impl Laid {
                     let builtin = self.id.builtin();
                     let controls = self.screen.controls().clone();
                     let at = *self.screen.tree().at();
-                    Screen::builtin(self.id.key(), &(builtin.tree)(&choices), at, controls)
+                    Screen::builtin(self.id.key(), &(builtin.tree)(), at, controls)
                 }
             };
             self.changed = changed.is_some();
             self.focus = Focus::default();
         }
-        self.choices = choices;
         self.flags = flags;
         self.solve();
         true
@@ -418,8 +319,6 @@ impl Laid {
         let mut solved = Solved::EMPTY;
         self.screen.solve(self.flags, &mut solved);
         self.leaves = solved.leaves().iter().copied().collect();
-        let at = self.screen.tree().at();
-        self.list = solved.scroll().map(|(scroll, _)| (scroll, scroll.page(at)));
     }
 
     pub fn solved(&self) -> Solved<'_> {
@@ -430,10 +329,6 @@ impl Laid {
 
     pub const fn id(&self) -> ScreenId {
         self.id
-    }
-
-    pub const fn choices(&self) -> Choices {
-        self.choices
     }
 
     pub const fn flags(&self) -> Flags {
@@ -464,37 +359,22 @@ impl Laid {
         &mut self.focus
     }
 
-    /// The scroll shown, if the screen has one.
-    pub fn scroll(&self) -> Option<&Scroll> {
-        self.list.as_ref().map(|(scroll, _)| scroll)
-    }
-
-    /// The page of cards the scroll shown scrolls.
-    pub fn page(&self) -> Option<&crate::screens::scroll::Layout> {
-        self.list.as_ref().map(|(_, page)| page)
-    }
-
-    /// The tiles placed once each, leaving out a scroll's template, which
-    /// draws once a card.
+    /// The tiles placed, each with its component and arg.
     pub fn tiles(&self) -> impl Iterator<Item = (u8, u8, &Placed)> {
         let nodes = self.screen.tree().nodes();
-        let template = self.scroll().map_or(0..0, Scroll::tiles);
-        let leaves = self.leaves.iter().enumerate();
-        leaves
-            .filter(move |(index, _)| !template.contains(index))
-            .filter_map(
-                move |(_, placed)| match nodes[usize::from(placed.node)].what()? {
-                    What::Leaf { component, arg } => Some((component, arg, placed)),
-                    _ => None,
-                },
-            )
+        self.leaves.iter().filter_map(move |placed| {
+            match nodes[usize::from(placed.node)].what()? {
+                What::Leaf { component, arg } => Some((component, arg, placed)),
+                _ => None,
+            }
+        })
     }
 
     /// Draw every tile onto `out`, the focused one by its focused look.
     pub fn prepare(&self, data: &dyn Data, out: &mut Canvas) {
         let tree = self.screen.tree();
         let focused = self.focused();
-        super::solve::prepare(tree, &self.leaves, self.scroll(), focused, data, out);
+        super::solve::prepare(tree, &self.leaves, focused, data, out);
     }
 
     /// The node of the tile ACT runs, if the focus is on a tile.
@@ -502,7 +382,7 @@ impl Laid {
     fn focused(&self) -> Option<u8> {
         match input::focused(self.buttons(), &self.solved(), self.focus)? {
             Stop::Tile(placed) => Some(placed.node),
-            Stop::Screen(_) | Stop::List(_) => None,
+            Stop::Screen(_) => None,
         }
     }
 
@@ -545,10 +425,10 @@ pub struct Laids {
 
 impl Laids {
     #[inline(never)]
-    pub fn new(device: &Device, choices: Choices, flags: Flags, changed: &Screens) -> Self {
+    pub fn new(device: &Device, flags: Flags, changed: &Screens) -> Self {
         let main = ScreenId::RideMain;
         Self {
-            main: Laid::new(main, device, choices, flags, changed.screen(main.key()))
+            main: Laid::new(main, device, flags, changed.screen(main.key()))
                 .expect("the main page has a tree"),
             shown: None,
             sheet: None,
@@ -566,10 +446,8 @@ impl Laids {
             id: ScreenId::RideMain,
             screen,
             changed: true,
-            choices: Choices::default(),
             flags,
             leaves: heapless::Vec::new(),
-            list: None,
             focus: Focus::default(),
         };
         main.solve();
@@ -609,8 +487,7 @@ impl Laids {
 
     pub fn open_sheet(&mut self, device: &Device) {
         if self.sheet.is_none() {
-            let (choices, flags) = (self.main.choices, self.main.flags);
-            self.sheet = Laid::new(ScreenId::ControlSheet, device, choices, flags, None);
+            self.sheet = Laid::new(ScreenId::ControlSheet, device, self.main.flags, None);
         }
     }
 
@@ -626,15 +503,15 @@ impl Laids {
         self.facts = facts;
     }
 
-    /// Solve the main page and the screen shown again if the choices, the
-    /// flags or the screens the rider `changed` did; true when any did.
-    pub fn update(&mut self, choices: Choices, flags: Flags, changed: &Screens) -> bool {
+    /// Solve the main page and the screen shown again if the flags or the
+    /// screens the rider `changed` did; true when any did.
+    pub fn update(&mut self, flags: Flags, changed: &Screens) -> bool {
         let tree = |id: ScreenId| changed.screen(id.key());
-        let main = self.main.update(choices, flags, tree(ScreenId::RideMain));
+        let main = self.main.update(flags, tree(ScreenId::RideMain));
         let shown = self
             .shown
             .as_mut()
-            .is_some_and(|laid| laid.update(choices, flags, tree(laid.id)));
+            .is_some_and(|laid| laid.update(flags, tree(laid.id)));
         main || shown
     }
 
@@ -655,7 +532,7 @@ impl Laids {
             ScreenId::RideMain => None,
             _ => {
                 let screen = changed.screen(id.key());
-                Laid::new(id, device, self.main.choices, self.main.flags, screen)
+                Laid::new(id, device, self.main.flags, screen)
             }
         };
         if let Some(laid) = self

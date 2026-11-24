@@ -41,35 +41,24 @@ fn every_built_in_is_accepted_on_every_panel_for_every_button_arrangement() {
     let mut refused = Vec::new();
     let mut accepted = 0;
     for &id in ScreenId::ALL {
-        let c606_only = id == ScreenId::Sheets;
         let builtin = id.builtin();
         if id.deck() {
             let next = builtin.buttons.move_.map(|button| button.action);
             assert_eq!(next, Some(Action::Go(Go::Next)), "{id:?} is a deck page");
         }
-        let today = Choices {
-            today: true,
-            ..Choices::default()
-        };
-        for choices in [Choices::default(), today] {
-            let bytes: Vec<u8> = (builtin.tree)(&choices)
-                .iter()
-                .flat_map(|node| node.bytes())
-                .collect();
-            for device in ALL {
-                let c606 = crate::screens::C606.keys;
-                for &keys in arrangements
-                    .iter()
-                    .filter(|&&keys| !c606_only || keys == c606)
-                {
-                    let controls = Controls::new(builtin.buttons, keys);
-                    match Screen::parse(id.key(), &bytes, &device.scaled, controls) {
-                        Ok(_) => accepted += 1,
-                        Err(reject) => refused.push(std::format!(
-                            "{id:?} on {:?}, {keys:?}, {choices:?}: {reject}",
-                            device.scaled.panel
-                        )),
-                    }
+        let bytes: Vec<u8> = (builtin.tree)()
+            .iter()
+            .flat_map(|node| node.bytes())
+            .collect();
+        for device in ALL {
+            for &keys in &arrangements {
+                let controls = Controls::new(builtin.buttons, keys);
+                match Screen::parse(id.key(), &bytes, &device.scaled, controls) {
+                    Ok(_) => accepted += 1,
+                    Err(reject) => refused.push(std::format!(
+                        "{id:?} on {:?}, {keys:?}: {reject}",
+                        device.scaled.panel
+                    )),
                 }
             }
         }

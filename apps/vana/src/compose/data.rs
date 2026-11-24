@@ -10,34 +10,6 @@ pub trait Data {
     fn metric(&self, metric: Metric) -> Option<i32>;
     /// The zone, from 1, that the effort sits in.
     fn zone(&self, effort: Effort) -> Option<u8>;
-    fn list(&self, list: ListKind) -> u16;
-    /// How the list shows now: its scroll, its focus and the item under a
-    /// finger.
-    fn listed(&self, _: ListKind) -> Listed {
-        Listed::REST
-    }
-    /// Item `index` of the list, while it is in view.
-    fn entry(&self, _: ListKind, _: u16) -> Option<Entry<'_>> {
-        None
-    }
-    /// The item a list's template draws, as the list hands it to its tiles.
-    fn row(&self) -> Option<Row> {
-        None
-    }
-    /// What the list's heading says: its name, or the section a list of
-    /// sections shows.
-    fn heading(&self, list: ListKind) -> &str {
-        list.name()
-    }
-    /// Whether what the rider changed is saved, and whether that is fine;
-    /// none while a toast covers the foot.
-    fn saving(&self) -> Option<(&str, bool)> {
-        None
-    }
-    /// The number being edited.
-    fn edited(&self) -> Option<Edited<'_>> {
-        None
-    }
     /// The sensor pages, while one shows.
     fn sensors(&self) -> Option<&crate::screens::sensors::Menu> {
         None
@@ -81,10 +53,6 @@ pub trait Data {
     }
     /// The map as last filled, on the map page.
     fn map(&self) -> Option<&ride::MapFrame> {
-        None
-    }
-    /// What the summary shown adds up, on a summary page.
-    fn summary(&self) -> Option<ride::summary::Facts<'_>> {
         None
     }
     /// What a static page shows besides numbers.
@@ -134,9 +102,6 @@ pub enum Count {
     Unsaved,
     /// What formatting takes, as its place in `format::Goes::ALL`.
     Goes,
-    /// The FTP the sheet offers, and the one in force.
-    FtpNew,
-    FtpOld,
     /// Seconds left before the idle warning turns VANA off.
     Seconds,
     /// Thousandths of the way through the farewell.
@@ -146,56 +111,6 @@ pub enum Count {
     Charge,
     ChargeFill,
     Charging,
-}
-
-/// A list's state as a frame shows it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Listed {
-    /// How far the page is scrolled, in pixels; negative past its top.
-    pub offset: i32,
-    /// The item the buttons act on.
-    pub focus: Option<u16>,
-    /// The item under a resting finger.
-    pub pressed: Option<u16>,
-}
-
-impl Listed {
-    pub const REST: Self = Self {
-        offset: 0,
-        focus: None,
-        pressed: None,
-    };
-}
-
-/// What an item of a list says: its name, a line under it, a note at the
-/// right of its name in the note's colour, and whether it is the one chosen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Entry<'a> {
-    pub title: &'a str,
-    pub detail: &'a str,
-    pub note: &'a str,
-    pub note_color: u16,
-    /// The note keeps its room before the title takes the rest.
-    pub note_first: bool,
-    pub chosen: bool,
-}
-
-/// A number being edited: what it is, its value, a note on it and the
-/// step a pad moves it by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Edited<'a> {
-    pub label: &'a str,
-    pub value: &'a str,
-    pub note: &'a str,
-    pub step: u16,
-}
-
-/// The item a template's tiles draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Row {
-    pub list: ListKind,
-    pub index: u16,
-    pub focused: bool,
 }
 
 /// A point on an effort's zone gauge: the zone it falls in, from 1, and
@@ -225,10 +140,6 @@ impl Data for Nothing {
 
     fn zone(&self, _: Effort) -> Option<u8> {
         None
-    }
-
-    fn list(&self, _: ListKind) -> u16 {
-        0
     }
 }
 
@@ -313,20 +224,6 @@ impl Metric {
         Self::UpToGo,
     ];
 
-    /// The readings the lower line offers, in the order Settings steps
-    /// through them.
-    pub const LOWER: [Self; 9] = [
-        Self::Cadence,
-        Self::Distance,
-        Self::NormalizedPower,
-        Self::AvgPower,
-        Self::AvgHeart,
-        Self::AvgSpeed,
-        Self::Kcal,
-        Self::Work,
-        Self::Ascent,
-    ];
-
     pub const fn from_id(id: u8) -> Option<Self> {
         if (id as usize) < Self::ALL.len() {
             Some(Self::ALL[id as usize])
@@ -339,13 +236,7 @@ impl Metric {
         self as u8
     }
 
-    /// The lower-line reading after this one, wrapping.
-    pub fn next(self) -> Self {
-        let at = Self::LOWER.iter().position(|&m| m == self).unwrap_or(0);
-        Self::LOWER[(at + 1) % Self::LOWER.len()]
-    }
-
-    /// What Settings calls it.
+    /// What a caption calls it.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Cadence => "CADENCE",
@@ -610,62 +501,6 @@ impl Effort {
         match self {
             Self::Power => POWER,
             Self::Heart => HEART,
-        }
-    }
-}
-
-const SECTION_TITLES: [&str; crate::screens::settings::SECTIONS.len()] = {
-    let sections = &crate::screens::settings::SECTIONS;
-    let mut titles = [""; crate::screens::settings::SECTIONS.len()];
-    let mut at = 0;
-    while at < titles.len() {
-        titles[at] = sections[at].0;
-        at += 1;
-    }
-    titles
-};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ListKind {
-    Workouts,
-    Settings,
-}
-
-impl ListKind {
-    /// What its heading calls it.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Workouts => "WORKOUTS",
-            Self::Settings => "SETTINGS",
-        }
-    }
-
-    /// Every heading the list may show, for its widest.
-    pub const fn headings(self) -> &'static [&'static str] {
-        match self {
-            Self::Workouts => &["WORKOUTS"],
-            Self::Settings => &SECTION_TITLES,
-        }
-    }
-
-    /// Whether the heading says where the focus is among the items.
-    pub const fn placed(self) -> bool {
-        !matches!(self, Self::Settings)
-    }
-
-    /// Cards a frame keeps of this list: accept refuses a scroll that
-    /// shows more at once.
-    pub const fn most_in_view(self) -> usize {
-        match self {
-            Self::Workouts | Self::Settings => super::list::MOST_IN_VIEW,
-        }
-    }
-
-    pub const fn from_id(id: u8) -> Option<Self> {
-        match id {
-            0 => Some(Self::Workouts),
-            1 => Some(Self::Settings),
-            _ => None,
         }
     }
 }

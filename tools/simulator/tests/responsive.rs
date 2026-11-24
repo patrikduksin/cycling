@@ -63,6 +63,15 @@ impl Twin {
     fn advance(&mut self, ms: u64) {
         self.both(|sim| sim.advance(ms));
     }
+
+    /// Today's workout on both, started from Home's card on the guide.
+    fn start_workout(&mut self, workout: &vana::workout::model::Workout) {
+        self.both(|sim| sim.load_workout(workout));
+        self.guide(|sim| {
+            sim.press_home_start();
+            sim.wait_for("RECORDING", seconds(2)).unwrap();
+        });
+    }
 }
 
 fn origin() -> Point {
@@ -269,6 +278,7 @@ fn the_paused_end_and_done_screens_draw_on_both_test_panels() {
         });
         shows(&twin.sim, &["End ride?", "km", "BACK", "END"]);
         twin.sim.checkpoint(&format!("end ride on {}", model.name));
+        twin.both(|sim| sim.ride_at(0.0, 0.0, 72.0, 0.0));
         twin.guide(|sim| {
             sim.press(Role::Act);
             sim.wait_for("Ride saved", seconds(5)).unwrap();
@@ -283,8 +293,7 @@ fn the_paused_end_and_done_screens_draw_on_both_test_panels() {
 fn the_workout_page_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let mut twin = Twin::paired(model, world, &KINDS);
-        twin.both(|sim| sim.choose_workout("VO2 MAX 5X3"));
-        twin.guide(|sim| sim.start_ride());
+        twin.start_workout(&vana::workout::fixtures::VO2_MAX);
         twin.both(|sim| sim.ride_at(30.0, 120.0, 142.0, 90.0));
         twin.advance(seconds(20));
         assert_eq!(twin.guide.ride_page_name().as_deref(), Some("ride/workout"));
@@ -366,14 +375,8 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
         assert_eq!(twin.sim.device.sdk.page(), Page::Home);
         shows(&twin.sim, &["Ride"]);
         twin.sim.checkpoint(&format!("home on {name}"));
-        let laid = Laid::new(
-            ScreenId::Home,
-            model.device,
-            Default::default(),
-            Flags::NONE,
-            None,
-        )
-        .expect("Home has a tree");
+        let laid =
+            Laid::new(ScreenId::Home, model.device, Flags::NONE, None).expect("Home has a tree");
         let solved = laid.solved();
         let middle = |card: vana::compose::Rect16| {
             (card.left + card.width() / 2, card.top + card.height() / 2)
@@ -397,30 +400,6 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
             Page::Ride,
             "{name}: Ride starts it"
         );
-    }
-}
-
-#[test]
-fn the_ftp_sheet_draws_on_both_test_panels() {
-    for model in [WIDE, SMALL] {
-        let mut twin = Twin::paired(model, world, &KINDS);
-        twin.both(|sim| sim.choose_workout("FTP TEST 20 MIN"));
-        twin.guide(|sim| sim.start_ride());
-        twin.both(|sim| sim.ride_at(30.0, 150.0, 142.0, 90.0));
-        twin.advance(seconds(30));
-        twin.guide(|sim| {
-            for _ in 0..10 {
-                sim.press(Role::Back);
-                sim.advance(seconds(3));
-            }
-            assert_eq!(sim.workout()["step"], "11/12", "twenty minutes all out");
-        });
-        twin.both(|sim| sim.ride_at(30.0, 260.0, 142.0, 90.0));
-        twin.guide(|sim| {
-            sim.wait_for("NEW FTP", seconds(25 * 60)).unwrap();
-        });
-        shows(&twin.sim, &["NEW FTP", "247", "SAVE?"]);
-        twin.sim.checkpoint(&format!("ftp sheet on {}", model.name));
     }
 }
 

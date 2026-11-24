@@ -146,14 +146,7 @@ fn media(observation: &Observation) -> [(&'static str, &[Ride]); 2] {
     ]
 }
 
-const REMOVING_PAGES: [&str; 1] = ["discard_ride"];
-
 fn samples_survive(moment: &Moment) -> Verdict {
-    if matches!(moment.step, Some(Step::Press(_) | Step::Hold(..)))
-        && REMOVING_PAGES.contains(&moment.before.page)
-    {
-        return Verdict::Skip("a press on a page that removes rides");
-    }
     for ((medium, before), (_, after)) in media(moment.before).into_iter().zip(media(moment.after))
     {
         for ride in before {

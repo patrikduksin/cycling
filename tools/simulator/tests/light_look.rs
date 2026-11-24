@@ -18,8 +18,8 @@ fn reach(name: &str) -> Sim {
 fn reads_home_and_a_ride_page_in_the_light_look() {
     let mut sim = reach("home light");
     assert_eq!(sim.screen().text(), "Wednesday 14 Oct\n7:00\nRide");
-    sim.ride_at(28.0, 230.0, 142.0, 88.0);
     sim.start_ride();
+    sim.ride_at(28.0, 230.0, 142.0, 88.0);
     sim.advance(seconds(20));
     assert_eq!(
         sim.screen().text(),

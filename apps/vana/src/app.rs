@@ -10,7 +10,6 @@ use device_api::{
 };
 
 mod calibration;
-mod climb_page;
 pub use crate::ride::course::stored::Finder as CourseFinder;
 pub use crate::ride::course::turns::{TURNS as COURSE_TURNS, Turn};
 pub use crate::ride::course::{Course, POINTS as COURSE_POINTS};
@@ -24,14 +23,11 @@ mod input;
 pub(crate) mod intent;
 #[cfg(any(test, feature = "invariants"))]
 mod invariants;
-mod lists;
 mod lookahead;
 mod mark;
 mod mode;
 mod motion;
 mod navigation;
-mod night;
-mod offer;
 mod option;
 mod overrides;
 pub use overrides::Overrides;
@@ -110,8 +106,6 @@ pub struct Runtime {
     ride: crate::ride::current::Ride,
     sync: sync::Sync,
     notices: ride_control::Notices,
-    /// The summary's heart-rate recovery, measured after the finish.
-    recovery: crate::ride::recovery::Recovery,
     preferences: preferences::Preferences,
     format: format::Format,
     card_probe: Option<storage::StorageHealth>,
@@ -120,12 +114,10 @@ pub struct Runtime {
     training: training::Training,
     cues: cues::Cues,
     marks: mark::Marks,
-    night: night::Night,
     /// The look-ahead's state lives in the block composition gives it.
     lookahead: Option<&'static mut lookahead::Terrain>,
     motion: motion::Motion,
     shown: presentation::Shown,
-    chart: view::Chart,
     /// What Ride done shows, from the finish until the next one.
     done: crate::screens::done::Done,
     alerts: crate::ride::alerts::Alerts,
@@ -169,7 +161,6 @@ impl firmware_services::why::State for Runtime {
         out.owner("ride", &self.ride);
         out.owner("sync", &self.sync);
         out.owner("notices", &self.notices);
-        out.owner("recovery", &self.recovery);
         out.owner("preferences", &self.preferences);
         out.owner("format", &self.format);
         out.owner("power", &self.power);
@@ -177,13 +168,11 @@ impl firmware_services::why::State for Runtime {
         out.owner("training", &self.training);
         out.owner("cues", &self.cues);
         out.owner("marks", &self.marks);
-        out.owner("night", &self.night);
         if let Some(lookahead) = &self.lookahead {
             out.owner("lookahead", &**lookahead);
         }
         out.owner("motion", &self.motion);
         out.owner("shown", &self.shown);
-        out.owner("chart", &self.chart);
         out.owner("alerts", &self.alerts);
         if let Some(track) = &self.track {
             out.owner("track", &**track);
@@ -215,7 +204,6 @@ impl Runtime {
             ride: crate::ride::current::Ride::default(),
             sync: sync::Sync::default(),
             notices: ride_control::Notices::default(),
-            recovery: crate::ride::recovery::Recovery::default(),
             preferences: preferences::Preferences::default(),
             format: format::Format::default(),
             card_probe: None,
@@ -224,11 +212,9 @@ impl Runtime {
             training: training::Training::default(),
             cues: cues::Cues::default(),
             marks: mark::Marks::default(),
-            night: night::Night::default(),
             lookahead: None,
             motion: motion::Motion::default(),
             shown: presentation::Shown::default(),
-            chart: view::Chart::default(),
             done: crate::screens::done::Done::default(),
             alerts: crate::ride::alerts::Alerts::default(),
             track: None,
@@ -282,14 +268,14 @@ impl Runtime {
     }
 
     /// Take the light look or the dark one from the next pass, as the THEME
-    /// setting does, and save it once edits settle.
+    /// option does, and save it once edits settle.
     #[cfg(any(test, feature = "testing"))]
     pub fn set_light(&mut self, light: bool, now: u64) {
         let mut options = self.preferences.options;
         options.theme = if light {
-            preferences::Theme::Light
+            preferences::Theme::Day
         } else {
-            preferences::Theme::Dark
+            preferences::Theme::Night
         };
         self.set_options(options, now);
         self.display.redraw();
@@ -400,9 +386,6 @@ impl Runtime {
         self.receive_ble(ble);
         let sample = self.sample(now, ant, &observations);
         self.auto_control(now);
-        let recording = self.ride.active().status() == crate::ride::log::Status::Recording;
-        let heart = self.live_heart_bpm(now);
-        self.recovery.track(now, recording, heart);
         let power_status = observations
             .input
             .snapshot(now)
@@ -457,10 +440,9 @@ impl Runtime {
             return;
         }
         self.record(store, bulk, now, sample);
-        self.service_workouts(bulk);
+        self.service_workouts(bulk, now);
         self.service_course(bulk, now);
         self.observe_track(store, bulk, now);
-        self.follow_road();
         self.storage_worked = store.touched || bulk.touched;
     }
 }

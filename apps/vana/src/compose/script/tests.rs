@@ -5,7 +5,7 @@ use super::guests::{
 };
 use super::host::{Call, Job};
 use super::{Fault, LIMIT, Refused, STACK, Trap, install};
-use crate::compose::data::{Data, Effort, ListKind, Metric};
+use crate::compose::data::{Data, Effort, Metric};
 use crate::compose::input::Controls;
 use crate::compose::node::{Flags, Node, Size};
 use crate::compose::parse::{self, Screens, VERSION};
@@ -76,9 +76,6 @@ impl Data for Ride {
     }
     fn zone(&self, _: Effort) -> Option<u8> {
         None
-    }
-    fn list(&self, _: ListKind) -> u16 {
-        0
     }
     fn sample(&self, metric: Metric, ago: u16) -> Option<i32> {
         let back = self.power.len().checked_sub(1 + usize::from(ago))?;

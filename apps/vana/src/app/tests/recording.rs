@@ -2,7 +2,7 @@ use super::*;
 use crate::app::navigation::To;
 use crate::ride::log::Status;
 use crate::screens::done::Kept;
-use crate::screens::ride::{Deck, RidePage};
+use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, POWER, SPEED};
 use std::{format, string::String};
@@ -419,10 +419,13 @@ fn a_host_finish_while_asking_opens_ride_done_before_the_next_frame() {
 
 #[test]
 fn ending_a_workout_ride_consumes_the_workout_so_the_next_ride_is_free() {
+    use crate::workout::model::{Intensity, Length, Step, Target, Workout};
+    const STEPS: [Step; 1] = [Step::new(Intensity::Work, Length::Open, Target::Free)];
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.training.selected = runtime.training.library.ids().next();
+    runtime.training.today = Some(Workout::new("D", &STEPS, &[], None));
+    runtime.training.chosen = true;
     ask_to_end(&mut runtime, &mut journal, &mut radio);
     assert!(runtime.training.player.is_some(), "the workout runs");
     runtime.input_received(press(Role::Act), 2800, 2800, &mut radio);
@@ -433,8 +436,83 @@ fn ending_a_workout_ride_consumes_the_workout_so_the_next_ride_is_free() {
     );
     settle(&mut runtime, &mut journal, &mut radio, 2800);
     assert_eq!(runtime.ride.internal().status(), Status::Saved);
-    assert!(runtime.training.selected.is_none());
+    assert!(!runtime.training.chosen);
     assert!(runtime.training.player.is_none());
+}
+
+#[test]
+fn todays_workout_a_failed_read_missed_is_read_once_the_card_answers() {
+    use crate::workout::fixtures::THRESHOLD;
+    use crate::workout::{codec, today};
+    use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
+    /// A card that fails every read until it recovers.
+    struct Card(today::tests::Region, bool);
+    impl ReadWrite for Card {
+        fn entropy(&mut self) -> u64 {
+            0
+        }
+        fn owned_info(&mut self) -> Result<OwnedInfo, Error> {
+            self.0.owned_info()
+        }
+        fn owned_read(&mut self, index: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), Error> {
+            if self.1 {
+                return Err(Error::Unsupported);
+            }
+            self.0.owned_read(index, out)
+        }
+        fn owned_write(&mut self, index: u64, input: &[u8; SECTOR_SIZE]) -> Result<(), Error> {
+            self.0.owned_write(index, input)
+        }
+    }
+    let mut region = today::tests::formatted();
+    today::tests::put(&mut region, today::FILE, &codec::encode(&THRESHOLD));
+    let mut card = Card(region, true);
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.service_workouts(&mut card, 1_000);
+    assert!(runtime.training.read_error.is_some());
+    assert_eq!(runtime.training.today, None);
+    card.1 = false;
+    runtime.service_workouts(&mut card, 2_000);
+    assert_eq!(runtime.training.today, None, "not before the retry is due");
+    runtime.service_workouts(&mut card, 6_000);
+    assert_eq!(runtime.training.today, Some(THRESHOLD));
+    assert_eq!(runtime.training.read_error, None);
+    // Read for good: a card that fails now changes nothing.
+    card.1 = true;
+    runtime.service_workouts(&mut card, 20_000);
+    assert_eq!(runtime.training.today, Some(THRESHOLD));
+}
+
+#[test]
+fn a_workout_ride_saved_while_another_page_shows_is_still_consumed() {
+    use crate::workout::model::{Intensity, Length, Step, Target, Workout};
+    const STEPS: [Step; 1] = [Step::new(Intensity::Work, Length::Open, Target::Free)];
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.training.today = Some(Workout::new("D", &STEPS, &[], None));
+    runtime.training.chosen = true;
+    ask_to_end(&mut runtime, &mut journal, &mut radio);
+    // The host ends the ride, and Sensors opens before the save lands.
+    assert_eq!(
+        host(&mut runtime, &mut journal, 2500, "RIDE FINISH").0,
+        "ACCEPTED"
+    );
+    runtime.navigation.go(To::Page(Page::Sensors));
+    settle(&mut runtime, &mut journal, &mut radio, 2600);
+    assert_eq!(runtime.ride.internal().status(), Status::Saved);
+    assert!(runtime.navigation.page() == Page::Sensors);
+    assert!(runtime.training.player.is_none());
+    assert!(!runtime.training.chosen);
+
+    // RIDE from Home then rides free.
+    runtime.navigation.go(To::Home);
+    runtime.input_received(press(Role::Act), 4000, 4000, &mut radio);
+    tick(&mut runtime, &mut journal, &mut radio, 4000);
+    assert_eq!(runtime.ride.internal().status(), Status::Recording);
+    assert!(runtime.training.player.is_none(), "a free ride");
 }
 
 #[test]
@@ -758,147 +836,6 @@ fn arming_end_ride_replaces_a_showing_lap_toast() {
     assert_eq!(runtime.notices.lap_toast(5800), None);
 }
 
-/// Ride `metres` on the barometer's climbs at 5 m/s along `altitude_dm(m)`,
-/// from where the last stretch ended, and let the page follow the road.
-fn ride_barometer(runtime: &mut Runtime, metres: u32, altitude_dm: impl Fn(u32) -> i32) {
-    for m in (5..=metres).step_by(5) {
-        runtime
-            .ride
-            .climbs_mut()
-            .add(1000, 5000, Some(altitude_dm(m)));
-        runtime.follow_road();
-    }
-}
-
-/// Up 400 m at 8% (32 m), confirmed by the barometer.
-fn barometer_climb(runtime: &mut Runtime) {
-    ride_barometer(runtime, 400, |m| m as i32 * 8 / 10);
-    assert!(runtime.ride.climbs().climbing().is_some());
-}
-
-/// Level after the climb, until the barometer ends it.
-fn barometer_top(runtime: &mut Runtime) {
-    ride_barometer(runtime, 400, |_| 320);
-    assert!(runtime.ride.climbs().climbing().is_none());
-}
-
-#[test]
-fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    runtime.input_received(press(Role::Move), 1000, 1000, &mut radio);
-    runtime.input_received(press(Role::Move), 1400, 1400, &mut radio);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
-
-    barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
-
-    // Paging during a climb keeps the rider's choice when it ends, and the
-    // climb does not take them back.
-    barometer_climb(&mut runtime);
-    runtime.input_received(press(Role::Move), 2000, 2000, &mut radio);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
-    ride_barometer(&mut runtime, 200, |m| 320 + m as i32 * 8 / 10);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
-    barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
-
-    // Already on the climb page: it stays there after the climb.
-    for at in [2600, 3000] {
-        runtime.input_received(press(Role::Move), at, at, &mut radio);
-    }
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    barometer_climb(&mut runtime);
-    barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-
-    // Away from the ride screen climbs change nothing.
-    runtime.navigation.go(To::Page(Page::Home));
-    runtime.navigation.go(To::RidePage(RidePage::Main));
-    barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-}
-
-fn hide(runtime: &mut Runtime, pages: &[RidePage]) {
-    let choice = pages
-        .iter()
-        .fold(Deck::default(), |choice, page| choice.toggled(*page));
-    runtime.preferences.options.deck = choice;
-}
-
-#[test]
-fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
-    let mut journal = Journal::erased();
-    let mut radio = Radio::new();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    hide(&mut runtime, &[RidePage::Map]);
-    on_ride_page(&mut runtime);
-    let mut seen = std::vec::Vec::new();
-    for at in [1000, 1400, 1800, 2200] {
-        runtime.input_received(press(Role::Move), at, at, &mut radio);
-        seen.push(runtime.navigation.ride_page());
-    }
-    assert_eq!(
-        seen,
-        [
-            RidePage::Climb,
-            RidePage::Main,
-            RidePage::Climb,
-            RidePage::Main
-        ]
-    );
-    runtime.previous_ride_page();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    runtime.previous_ride_page();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-}
-
-#[test]
-fn a_page_turned_off_under_the_rider_gives_way_to_main() {
-    let mut journal = Journal::erased();
-    let mut radio = Radio::new();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    runtime.navigation.go(To::RidePage(RidePage::Climb));
-    hide(&mut runtime, &[RidePage::Climb]);
-    assert!(!runtime.ride_pages().contains(RidePage::Climb));
-    assert_eq!(runtime.ride_pages().first(), RidePage::Main);
-    assert_eq!(
-        runtime.ride_pages().following(RidePage::Main),
-        RidePage::Map
-    );
-}
-
-#[test]
-fn a_climb_does_not_bring_up_a_climb_page_the_rider_turned_off() {
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    hide(&mut runtime, &[RidePage::Climb]);
-    on_ride_page(&mut runtime);
-    barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-    assert!(
-        runtime.navigation.toast_shown().is_none(),
-        "silent, no toast"
-    );
-    barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-
-    climb_on_the_map(&mut runtime, 0.0);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-    assert!(runtime.navigation.toast_shown().is_none());
-
-    hide(&mut runtime, &[]);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb, "back on");
-}
-
 /// A runtime with a look-ahead whose forecast has a 5% climb starting
 /// `foot` metres ahead, pinned to the ride.
 fn climb_on_the_map(runtime: &mut Runtime, foot: f64) {
@@ -915,88 +852,6 @@ fn map_says(runtime: &mut Runtime, generation: u32, road: impl Fn(f64) -> f64) {
         .forecast_mut()
         .update(&crate::ride::climb_ahead::tests::ahead(generation, 5, road));
     runtime.pin_for_test(true);
-}
-
-/// Ride `metres` on the odometer, at 5 m/s, following the road each second.
-fn ride_on(runtime: &mut Runtime, metres: u64) {
-    for _ in 0..metres / 5 {
-        let sample = runtime.readings.live;
-        runtime.ride.totals_mut().add(1000, 5000, &sample, None);
-        // The look-ahead steps each pass, with or without a new forecast.
-        runtime.pin_for_test(false);
-        runtime.follow_road();
-    }
-}
-
-#[test]
-fn the_map_brings_the_page_up_before_the_foot_and_takes_it_away_past_the_top() {
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    climb_on_the_map(&mut runtime, 300.0);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    // Up the 1 km climb: the barometer saying nothing keeps it, as does a
-    // map that loses the climb in its last metres.
-    ride_on(&mut runtime, 1200);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    map_says(&mut runtime, 2, |m| -m * 0.02);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    // At 100 m past the top it stays; beyond, it lets go.
-    ride_on(&mut runtime, 200);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    ride_on(&mut runtime, 10);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-}
-
-#[test]
-fn the_barometer_ending_a_climb_leaves_the_page_while_the_map_climbs_on() {
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    climb_on_the_map(&mut runtime, 0.0);
-    barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    // The map shows the rider turned off the climb: the road is clear.
-    map_says(&mut runtime, 2, |_| 0.0);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-}
-
-#[test]
-fn a_climb_the_map_saw_before_the_ride_screen_comes_up_on_it() {
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    climb_on_the_map(&mut runtime, 300.0);
-    runtime.navigation.go(To::Page(Page::Home));
-    runtime.follow_road();
-    on_ride_page(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-}
-
-#[test]
-fn a_climb_close_after_another_comes_up_too() {
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    climb_on_the_map(&mut runtime, 0.0);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
-    runtime.navigation.go(To::RidePage(RidePage::Main));
-    // Over the top: 300 m level, then the next climb.
-    ride_on(&mut runtime, 1150);
-    map_says(&mut runtime, 2, |m| (m - 300.0).clamp(0.0, 800.0) * 0.06);
-    runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
 }
 
 #[test]

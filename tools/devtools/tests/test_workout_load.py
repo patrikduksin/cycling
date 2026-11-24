@@ -93,24 +93,26 @@ def fake_volumes(monkeypatch, transfer, put):
     monkeypatch.setattr(load.volumes, 'files_put', put)
 
 
-def test_upload_puts_the_file_on_files_and_has_vana_list_it(monkeypatch, tmp_path):
-    data = bytes(range(100))
+WORKOUT = load.encode({'name': 'Over unders', 'steps': [{'intensity': 'work', 'minutes': 1}]})
+
+
+def test_upload_puts_todays_workout_on_files_and_has_vana_read_it(monkeypatch, tmp_path):
     transfer, put = FakeTransfer(), []
 
     def files_put(session, name, path):
         put.append((session, name, path.read_bytes()))
-        return {'name': name, 'length': len(data), 'crc32': f'{zlib.crc32(data):08x}'}
+        return {'name': name, 'length': len(WORKOUT), 'crc32': f'{zlib.crc32(WORKOUT):08x}'}
 
     fake_volumes(monkeypatch, transfer, files_put)
-    connection = FakeConnection('rows=9 upload0=workouts/x.vw:X')
-    entry = load.upload(connection, 'workouts/x.vw', data, tmp_path)
-    assert put == [(transfer, 'workouts/x.vw', data)]
+    connection = FakeConnection('workout=OVER_UNDERS minutes=1 steps=1 files=ok')
+    entry = load.upload(connection, WORKOUT, tmp_path)
+    assert put == [(transfer, 'workouts/today.vw', WORKOUT)]
     assert transfer.calls == ['end']
-    assert connection.sent == ['WORKOUT LIST']
-    assert entry['crc32'] == f'{zlib.crc32(data):08x}'
+    assert connection.sent == ['WORKOUT LOAD']
+    assert entry['crc32'] == f'{zlib.crc32(WORKOUT):08x}'
 
 
-def test_a_failed_put_still_ends_the_session_and_lists_nothing(monkeypatch, tmp_path):
+def test_a_failed_put_still_ends_the_session_and_reads_nothing(monkeypatch, tmp_path):
     transfer = FakeTransfer()
 
     def files_put(session, name, path):
@@ -119,22 +121,45 @@ def test_a_failed_put_still_ends_the_session_and_lists_nothing(monkeypatch, tmp_
     fake_volumes(monkeypatch, transfer, files_put)
     connection = FakeConnection('')
     with pytest.raises(RuntimeError, match='readback'):
-        load.upload(connection, 'workouts/x.vw', b'VW', tmp_path)
+        load.upload(connection, WORKOUT, tmp_path)
     assert transfer.calls == ['end']
     assert connection.sent == []
 
 
-def test_a_workout_vana_does_not_list_is_reported(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ('name', 'reply'),
+    [
+        # VANA drops a trailing space.
+        ('Tempo ', 'workout=TEMPO minutes=1 steps=1 files=ok'),
+        # VANA cuts a name wider than its screens hold, and the space the cut
+        # leaves at the end.
+        ('WWWWWWWWWWWW WWWWWWW', 'workout=WWWWWWWWWWWW minutes=1 steps=1 files=ok'),
+        ('MMMMMMMMMMMMMMMMMMMM', 'workout=MMMMMMMMMMMMMMMM minutes=1 steps=1 files=ok'),
+    ],
+)
+def test_a_name_vana_kept_as_it_keeps_names_reads_back(monkeypatch, tmp_path, name, reply):
+    data = load.encode({'name': name, 'steps': [{'intensity': 'work', 'minutes': 1}]})
+    fake_volumes(monkeypatch, FakeTransfer(), lambda session, file, path: {'name': file})
+    entry = load.upload(FakeConnection(reply), data, tmp_path)
+    assert entry['today'] == reply
+
+
+@pytest.mark.parametrize(
+    'reply',
+    [
+        'workout=SWEET_SPOT minutes=1 steps=1 files=ok',
+        'workout=TEMPO_ minutes=1 steps=1 files=ok',
+        'workout= minutes=1 steps=1 files=ok',
+    ],
+)
+def test_a_name_vana_did_not_keep_from_this_one_is_reported(monkeypatch, tmp_path, reply):
+    data = load.encode({'name': 'Tempo hard ', 'steps': [{'intensity': 'work', 'minutes': 1}]})
+    fake_volumes(monkeypatch, FakeTransfer(), lambda session, file, path: {'name': file})
+    with pytest.raises(RuntimeError, match='did not read TEMPO_HARD'):
+        load.upload(FakeConnection(reply), data, tmp_path)
+
+
+def test_a_workout_vana_does_not_read_is_reported(monkeypatch, tmp_path):
     fake_volumes(monkeypatch, FakeTransfer(), lambda session, name, path: {'name': name})
-    with pytest.raises(RuntimeError, match='did not list'):
-        load.upload(FakeConnection('rows=8 uploads=0 skipped=1'), 'workouts/x.vw', b'VW', tmp_path)
-
-
-def test_file_names_are_files_safe_and_bounded():
-    assert load.file_name('over-unders') == 'workouts/over-unders.vw'
-    assert load.file_name('Sweet spot 2x20!') == 'workouts/Sweet-spot-2x20.vw'
-    name = load.file_name('x' * 80)
-    assert len(name) == load.NAME_MAX
-    assert name.endswith('.vw')
-    with pytest.raises(ValueError):
-        load.file_name('///')
+    with pytest.raises(RuntimeError, match='did not read'):
+        load.upload(FakeConnection('workout=none files=decode'), WORKOUT, tmp_path)

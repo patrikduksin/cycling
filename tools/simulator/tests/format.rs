@@ -164,6 +164,8 @@ fn back_declines_and_nothing_is_written_until_the_next_boot_asks_again() {
     sim.advance(seconds(5));
     assert_eq!(field(&health(&mut sim), "state"), "declined");
 
+    let (_, options) = sim.command("OPTION");
+    assert!(options.contains("persistence=locked"), "{options}");
     sim.advance(seconds(1));
     assert_eq!(flash(&mut sim), before, "nothing written");
 

@@ -33,6 +33,8 @@ SECTOR = 512
 MAX_PAYLOAD = 4096
 VERIFY_SECTORS = 256
 TIMEOUT = 15
+# The FILES name VANA reads today's workout from (`workout::today::FILE`).
+TODAY_WORKOUT = 'workouts/today.vw'
 
 OP = {
     'hello': 1,
@@ -568,38 +570,55 @@ def run(args, port):
             return trace_media.pull(connection, args.name)
         transfer = open_session(connection)
         try:
-            if args.action == 'inspect':
-                return inspect(transfer)
-            if args.action == 'terrain-write':
-                return terrain_write(transfer, args.file, args.tag, not args.restart, args.verify, args.force, digest)
-            if args.action == 'terrain-verify':
-                return terrain_verify(transfer, args.file, digest)
-            if args.action == 'files':
-                if args.verb == 'list':
-                    return files_list(transfer)
-                if args.verb == 'put':
-                    return files_put(transfer, args.name, args.path)
-                if args.verb == 'get':
-                    return files_get(transfer, args.name, args.path)
-                if args.verb == 'delete':
-                    transfer.call('files_delete', payload=args.name.encode())
-                    return {'deleted': args.name}
-                if args.verb == 'format':
-                    if not args.confirm:
-                        raise ValueError('files format erases every file; pass --confirm')
-                    transfer.call('files_format', int.from_bytes(os.urandom(8), 'little'))
-                    return {'formatted': True}
-            if args.action == 'store':
-                if args.verb == 'list':
-                    return store_list(transfer, args.directory)
-                if args.verb == 'get':
-                    return store_get(transfer, args.name, args.path)
-                if args.verb == 'delete':
-                    transfer.call('store_delete', payload=args.name.encode())
-                    return {'deleted': args.name}
-            raise AssertionError(args.action)
+            result = in_session(args, transfer, digest)
         finally:
             transfer.call('end')
+        if changes_today(args):
+            # VANA reads today's workout once; one the host changed under it
+            # is read again now, as `cycling workout-load` has it read.
+            reply = connection.terminal_command('WORKOUT LOAD')
+            result['today'] = f'{reply["status"]} {reply["data"]}'.rstrip()
+        return result
+
+
+def changes_today(args):
+    """Whether this FILES action can change today's workout."""
+    if args.action != 'files':
+        return False
+    return args.verb == 'format' or (args.verb in ('put', 'delete') and args.name == TODAY_WORKOUT)
+
+
+def in_session(args, transfer, digest):
+    if args.action == 'inspect':
+        return inspect(transfer)
+    if args.action == 'terrain-write':
+        return terrain_write(transfer, args.file, args.tag, not args.restart, args.verify, args.force, digest)
+    if args.action == 'terrain-verify':
+        return terrain_verify(transfer, args.file, digest)
+    if args.action == 'files':
+        if args.verb == 'list':
+            return files_list(transfer)
+        if args.verb == 'put':
+            return files_put(transfer, args.name, args.path)
+        if args.verb == 'get':
+            return files_get(transfer, args.name, args.path)
+        if args.verb == 'delete':
+            transfer.call('files_delete', payload=args.name.encode())
+            return {'deleted': args.name}
+        if args.verb == 'format':
+            if not args.confirm:
+                raise ValueError('files format erases every file; pass --confirm')
+            transfer.call('files_format', int.from_bytes(os.urandom(8), 'little'))
+            return {'formatted': True}
+    if args.action == 'store':
+        if args.verb == 'list':
+            return store_list(transfer, args.directory)
+        if args.verb == 'get':
+            return store_get(transfer, args.name, args.path)
+        if args.verb == 'delete':
+            transfer.call('store_delete', payload=args.name.encode())
+            return {'deleted': args.name}
+    raise AssertionError(args.action)
 
 
 def main():

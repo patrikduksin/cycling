@@ -35,7 +35,6 @@ SHOTS = [
     ('climb.png', 'climb_page_measures_a_six_percent_climb_over_the_top', '02-climb-page-mid-climb.png'),
     ('radar.png', 'radar_tracks_a_group_of_six_vehicles_until_they_pass', '01-six-vehicles-behind.png'),
     ('workout.png', 'a_structured_workout_runs_its_steps_with_targets_beeps_and_laps', '05-interval-on-target.png'),
-    ('summary.png', 'ascent_counts_the_climbs_of_a_hilly_loop', '04-summary-overview-after-the-hilly-lap.png'),
     (
         'light.png',
         'the_light_theme_turns_every_screen_white_and_keeps_its_colours',

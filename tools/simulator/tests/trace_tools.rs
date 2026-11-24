@@ -38,7 +38,9 @@ fn power_dropout_after_descent(sim: &mut Sim) {
     sim.advance(1_200);
     sim.start_ride();
     ride_to(sim, 200.0, 32.0, 220.0, 88.0);
+    sim.ride_page("ride/climb");
     ride_to(sim, 800.0, 20.0, 300.0, 78.0);
+    sim.ride_page("ride/main");
     ride_to(sim, 1200.0, 45.0, 0.0, 0.0);
     sim.ride_at(30.0, 200.0, 0.0, 86.0);
     sim.set_present(device_type::POWER, POWER, false);
@@ -207,8 +209,14 @@ fn the_dropout_shows_as_a_stretch_of_dashed_power_after_the_descent() {
         .entries
         .iter()
         .filter(|e| e.kind == Kind::Shown)
-        .find(|e| e.text.contains("speed=44.9"))
-        .expect("the descent shows 44.9 km/h");
+        .find(|e| {
+            e.text
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix("speed="))
+                .and_then(|kmh| kmh.parse::<f32>().ok())
+                .is_some_and(|kmh| kmh >= 44.0)
+        })
+        .expect("the descent shows about 45 km/h");
     assert!(from.session_ms > descent_end.at.session_ms);
 }
 
@@ -358,7 +366,7 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     assert!(
         climb
             .attributes
-            .contains(&("cause".into(), "by itself".into())),
+            .contains(&("cause".into(), "after button 1 code 1".into())),
         "{climb}"
     );
 }
@@ -509,7 +517,7 @@ fn power_shows_dashes_while_the_meter_is_out() {
         Some("recording")
     );
     let shown = seen.shown.map(|(_, shown)| shown).unwrap_or_default();
-    assert_eq!(field(&shown, "speed"), Some("29.9"));
+    assert_eq!(field(&shown, "speed"), Some("30.0"));
     assert_eq!(field(&shown, "power"), Some("--"));
     assert_eq!(
         sim.screen().field("PWR 3S W").as_deref(),
@@ -1513,7 +1521,7 @@ fn trace_why_prints_the_windows_decisions_and_those_in_force_at_the_moment() {
         "the default window is 10s before and 1s after: {why}"
     );
     assert!(
-        window.contains("\n00:59.660 ride 00:40  toast.lap  lap=1 time_ms=40100\n"),
+        window.contains("\n00:59.810 ride 00:40  toast.lap  lap=1 time_ms=39900\n"),
         "{why}"
     );
     assert!(
@@ -1521,7 +1529,7 @@ fn trace_why_prints_the_windows_decisions_and_those_in_force_at_the_moment() {
         "before the window: {why}"
     );
     assert!(
-        in_force.contains("  00:19.260 ride 00:00  page  from=Home to=Ride\n"),
+        in_force.contains("  00:19.410 ride 00:00  page  from=Home to=Ride\n"),
         "a decision made long before is still in force: {in_force}"
     );
     let toasts: Vec<&str> = in_force
@@ -1552,10 +1560,10 @@ fn trace_why_prints_the_windows_decisions_and_those_in_force_at_the_moment() {
     assert_eq!(
         doc["entries"],
         serde_json::json!([{
-            "at": {"session_ms": 59_660, "ride_ms": 40_400},
+            "at": {"session_ms": 59_810, "ride_ms": 40_400},
             "kind": "decision",
             "tag": "toast.lap",
-            "operands": {"lap": "1", "time_ms": "40100"},
+            "operands": {"lap": "1", "time_ms": "39900"},
         }]),
         "--owner toast leaves out the cue's decisions"
     );
@@ -1605,15 +1613,15 @@ fn a_window_of_one_pass_shows_what_that_pass_changed() {
         "why",
         path_of(&laps),
         "--at",
-        "19.260s",
+        "19.410s",
         "--before",
         "0s",
         "--after",
         "0s",
     ]);
     for delta in [
-        "\n00:19.260 ride 00:00  Δ navigation.page  Home -> Ride\n",
-        "\n00:19.260 ride 00:00  Δ recorder_internal.lifecycle  Ready -> Running { ",
+        "\n00:19.410 ride 00:00  Δ navigation.page  Home -> Ride\n",
+        "\n00:19.410 ride 00:00  Δ recorder_internal.lifecycle  Ready -> Running { ",
     ] {
         assert!(why.contains(delta), "{delta:?} missing: {why}");
     }
@@ -1622,9 +1630,9 @@ fn a_window_of_one_pass_shows_what_that_pass_changed() {
 #[test]
 fn decisions_in_force_from_one_pass_keep_the_order_the_owner_made_them() {
     let laps = fixture("laps-and-a-menu");
-    let why = trace_text(&["why", path_of(&laps), "--at", "19.260s"]);
+    let why = trace_text(&["why", path_of(&laps), "--at", "19.410s"]);
     let (_, in_force) = why
-        .split_once("in force at 00:19.260:\n")
+        .split_once("in force at 00:19.410:\n")
         .unwrap_or_else(|| panic!("an in-force section: {why}"));
     let ride: Vec<&str> = in_force
         .lines()
@@ -1641,13 +1649,13 @@ fn decisions_in_force_from_one_pass_keep_the_order_the_owner_made_them() {
 #[test]
 fn each_recorder_decides_under_its_own_owner_and_stays_in_force_beside_the_other() {
     let laps = fixture("laps-and-a-menu");
-    let why = trace_text(&["why", path_of(&laps), "--at", "19.260s"]);
+    let why = trace_text(&["why", path_of(&laps), "--at", "19.410s"]);
     let (_, in_force) = why
-        .split_once("in force at 00:19.260:\n")
+        .split_once("in force at 00:19.410:\n")
         .unwrap_or_else(|| panic!("an in-force section: {why}"));
     for decided in [
         "  00:00.010 ride --:--  recorder_bulk.status  from=Scanning to=Unsupported ",
-        "  00:19.260 ride 00:00  recorder_internal.status  from=Ready to=Recording ",
+        "  00:19.410 ride 00:00  recorder_internal.status  from=Ready to=Recording ",
     ] {
         assert!(
             in_force.contains(decided),
@@ -1658,7 +1666,7 @@ fn each_recorder_decides_under_its_own_owner_and_stays_in_force_beside_the_other
         "why",
         path_of(&laps),
         "--at",
-        "19.260s",
+        "19.410s",
         "--owner",
         "recorder_bulk",
     ]);

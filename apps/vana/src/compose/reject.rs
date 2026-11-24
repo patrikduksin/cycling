@@ -72,22 +72,6 @@ pub enum Why {
     Heavy {
         node: u8,
     },
-    Scroll {
-        node: u8,
-    },
-    /// A scroll laid across; lists scroll down.
-    Across {
-        node: u8,
-    },
-    /// A scroll's item template of more tiles than a card draws.
-    Template {
-        node: u8,
-    },
-    /// A scroll's viewport shows more items than a frame keeps.
-    InView {
-        node: u8,
-        items: u8,
-    },
     Formless {
         node: u8,
     },
@@ -106,11 +90,6 @@ pub enum Why {
     /// A tile acts on a screen that keeps MOVE, and no button of the screen
     /// does what it does.
     NoButtonPath {
-        node: u8,
-    },
-    /// A tile of the list's item template acts, and no button of the screen
-    /// does what it does: focus steps past the template.
-    ItemAction {
         node: u8,
     },
     /// The record names more scripts than can run at once.
@@ -172,23 +151,8 @@ impl fmt::Display for Why {
             Self::NoButtonPath { node } => {
                 write!(f, "node {node} acts where no button of its screen reaches")
             }
-            Self::ItemAction { node } => {
-                write!(
-                    f,
-                    "node {node} is a list item that acts where no button reaches"
-                )
-            }
             Self::Hero { node } => write!(f, "node {node} cannot be the hero"),
             Self::Heavy { node } => write!(f, "node {node} is a second map, chart or code"),
-            Self::Scroll { node } => write!(f, "node {node} is a second scroll"),
-            Self::Across { node } => write!(f, "node {node} scrolls across; lists scroll down"),
-            Self::Template { node } => write!(f, "node {node}'s item holds too many tiles"),
-            Self::InView { node, items } => {
-                write!(
-                    f,
-                    "node {node} shows {items} items at once, more than a frame keeps"
-                )
-            }
             Self::Formless { node } => write!(f, "node {node} has no look"),
             Self::Push => f.write_str("only a top or bottom band can push the tiles"),
             Self::Header(byte) => write!(f, "layer byte {byte} names nothing"),
@@ -256,7 +220,6 @@ fn name(node: Node, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match node.what() {
         Some(What::Row { .. }) => f.write_str("row"),
         Some(What::Col { .. }) => f.write_str("col"),
-        Some(What::Scroll { .. }) => f.write_str("scroll"),
         Some(What::Stack { .. }) => f.write_str("stack"),
         Some(What::Leaf { component, arg }) => {
             let tile = registry::tile(component);

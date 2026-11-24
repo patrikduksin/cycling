@@ -1,6 +1,5 @@
 //! A screen's config tree: four bytes a node, in preorder, a container's
 //! children following it.
-use super::data::ListKind;
 use super::registry;
 use core::num::NonZeroU8;
 
@@ -150,11 +149,6 @@ pub enum What {
     Col {
         children: u8,
     },
-    /// A viewport on its parent's axis. Its one child is the item template,
-    /// repeated per item of `list`.
-    Scroll {
-        list: ListKind,
-    },
     /// Children sharing one box; the first one present shows.
     Stack {
         children: u8,
@@ -181,7 +175,6 @@ impl Node {
     const HERO: u8 = 0x80;
     const ROW: u8 = 0;
     const COL: u8 = 1;
-    const SCROLL: u8 = 2;
     const STACK: u8 = 3;
     const LEAF: u8 = 4;
 
@@ -191,10 +184,6 @@ impl Node {
 
     pub const fn col(children: u8, size: Size) -> Self {
         Self::of(Self::COL, children, size)
-    }
-
-    pub const fn scroll(list: ListKind, size: Size) -> Self {
-        Self::of(Self::SCROLL, list as u8, size)
     }
 
     pub const fn stack(children: u8, size: Size) -> Self {
@@ -255,12 +244,9 @@ impl Node {
         Some(match self.kind & !Self::HERO {
             Self::ROW => What::Row { children: arg },
             Self::COL => What::Col { children: arg },
-            Self::SCROLL => What::Scroll {
-                list: ListKind::from_id(arg)?,
-            },
             Self::STACK => What::Stack { children: arg },
             kind => {
-                let component = kind - Self::LEAF;
+                let component = kind.checked_sub(Self::LEAF)?;
                 registry::get(component)?;
                 What::Leaf { component, arg }
             }
@@ -277,7 +263,6 @@ impl Node {
     pub(super) fn children(self) -> u8 {
         match self.known() {
             What::Row { children } | What::Col { children } | What::Stack { children } => children,
-            What::Scroll { .. } => 1,
             What::Leaf { .. } => 0,
         }
     }

@@ -1,11 +1,11 @@
 //! Ordinary shell operations shared by firmware terminal and virtual stream.
-use crate::protocol::{Brightness, Command};
+use crate::protocol::Command;
 use core::fmt::Write;
 use device_api::display::Display;
 use device_api::input::InputSource;
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
-use firmware_shell::shell::{BrightnessChoice, Shell};
+use firmware_shell::shell::Shell;
 pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
     command: Command,
     system: &mut Shell<D, I, P, B>,
@@ -19,9 +19,8 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
             let s = system.settings;
             let _ = write!(
                 out,
-                "brightness={} auto={} dim_timeout={} dim_brightness={} timezone={} effective={} dimmed={} source={} persistence_error={}",
+                "brightness={} dim_timeout={} dim_brightness={} timezone={} effective={} dimmed={} source={} persistence_error={}",
                 s.brightness,
-                system.auto(),
                 s.dim_timeout_secs,
                 s.dim_brightness,
                 s.timezone_minutes,
@@ -31,18 +30,13 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
                 system.settings_error
             );
         }
-        Command::SetBrightness(Brightness::Percent(v)) => {
+        Command::SetBrightness(v) => {
             if let Some(s) = system.settings.with_brightness(v) {
                 system.settings = s;
-                system.offer_brightness_choice(BrightnessChoice::Percent);
                 system.activity(now);
             } else {
                 status = "INVALID";
             }
-        }
-        Command::SetBrightness(Brightness::Auto) => {
-            system.offer_brightness_choice(BrightnessChoice::Auto);
-            system.activity(now);
         }
         Command::SetTimezone(v) => {
             if let Some(s) = system.settings.with_timezone(v) {

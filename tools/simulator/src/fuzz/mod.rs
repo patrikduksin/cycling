@@ -152,18 +152,7 @@ impl Coverage {
 }
 
 /// Every page a press can meet; "off" is a device that is off.
-pub const PAGES: [&str; 10] = [
-    "boot",
-    "home",
-    "sensors",
-    "ride",
-    "end_ride",
-    "discard_ride",
-    "summary",
-    "settings",
-    "workouts",
-    "off",
-];
+pub const PAGES: [&str; 6] = ["boot", "home", "sensors", "ride", "end_ride", "off"];
 
 /// Play `plan`, judging every step. With `verbose`, print each step and the
 /// page after it.

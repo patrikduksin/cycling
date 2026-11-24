@@ -57,14 +57,9 @@ impl Panel {
     /// The whole frame is `sheet`, pixel for pixel.
     pub(super) fn shows_sheet(&self, sheet: crate::screens::power::Sheet) -> bool {
         let device = &crate::screens::C606;
-        let laid = crate::compose::builtin::Laid::new(
-            sheet.screen(),
-            device,
-            Default::default(),
-            Default::default(),
-            None,
-        )
-        .expect("every sheet has a tree");
+        let laid =
+            crate::compose::builtin::Laid::new(sheet.screen(), device, Default::default(), None)
+                .expect("every sheet has a tree");
         let (canvas, cues) = (
             sheet.canvas(&laid),
             crate::screens::power::Sheet::cues(&laid),
@@ -202,7 +197,7 @@ fn start_from_home_planned(stop: usize) -> Runtime {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.training.selected = Some(crate::workout::library::Id::BuiltIn(0));
+    runtime.training.today = Some(crate::workout::fixtures::THRESHOLD);
     runtime.navigation.go(To::Page(Page::Home));
     runtime.focus_stop(stop);
     runtime.input_received(press(Role::Act), 2000, 2000, &mut radio);
@@ -217,7 +212,7 @@ fn home_opens_on_today_s_workout_whose_card_starts_it() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.training.selected = Some(crate::workout::library::Id::BuiltIn(0));
+    runtime.training.today = Some(crate::workout::fixtures::THRESHOLD);
     runtime.navigation.go(To::Page(Page::Home));
     runtime.compose_shown();
     assert_eq!(runtime.focus_index(), 1, "the card, under the widget");
@@ -233,7 +228,7 @@ fn just_ride_rides_free_and_keeps_today_s_workout_planned() {
     assert!(!runtime.workout_pages(), "no workout page in the deck");
     runtime.leave_workout();
     assert!(
-        runtime.chosen_name().is_some(),
+        runtime.training.today.is_some(),
         "still planned once it ends"
     );
 }
@@ -242,7 +237,7 @@ fn just_ride_rides_free_and_keeps_today_s_workout_planned() {
 fn a_ridden_workout_is_no_longer_planned_once_its_ride_ends() {
     let mut runtime = start_from_home_planned(1);
     runtime.leave_workout();
-    assert!(runtime.chosen_name().is_none());
+    assert!(runtime.training.today.is_none());
 }
 
 #[test]
@@ -323,43 +318,6 @@ fn radar_beeps_sound_only_on_the_ride_page() {
 }
 
 #[test]
-fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
-    let mut runtime = booted(Profile::HeartRate);
-    let mut radio = Radio::new();
-    let touch = |x, y| Input::Touch(device_api::input::Point { x, y });
-    runtime.navigation.go(To::Page(Page::Settings));
-    // A tap on FTP edits it. A finger on the minus pad lowers it once and
-    // stays down while TopLeft finishes and TopLeft leaves Settings; it
-    // lifts on Home.
-    runtime.input_received(touch(120, 86), 1000, 1000, &mut radio);
-    runtime.input_received(Input::Release, 1050, 1050, &mut radio);
-    assert!(runtime.navigation.editing());
-    runtime.compose_shown();
-    let lower = runtime
-        .composition
-        .laids()
-        .get(crate::compose::builtin::ScreenId::Settings)
-        .and_then(|laid| laid.box_of(crate::compose::registry::PAD))
-        .expect("the editor's minus pad");
-    let (x, y) = (
-        lower.center_x() as u16,
-        (lower.top + lower.bottom) as u16 / 2,
-    );
-    runtime.input_received(touch(x, y), 1500, 1500, &mut radio);
-    assert_eq!(runtime.preferences.profile.ftp_watts, 210);
-    runtime.input_received(press(Role::Back), 2000, 2000, &mut radio);
-    runtime.input_received(press(Role::Back), 3000, 3000, &mut radio);
-    assert!(runtime.navigation.page() == Page::Home);
-    runtime.input_received(Input::Release, 3500, 3500, &mut radio);
-    // Back in Settings, the first tap counts.
-    runtime.navigation.go(To::Page(Page::Settings));
-    runtime.input_received(touch(120, 140), 4000, 4000, &mut radio);
-    runtime.input_received(Input::Release, 4050, 4050, &mut radio);
-    assert_eq!(runtime.navigation.settings_field(), 1);
-    assert!(runtime.navigation.editing());
-}
-
-#[test]
 fn an_ant_sensor_stands_for_the_ble_role_in_the_order_the_ride_prefers() {
     use super::super::presentation::ant_stands_for as stands;
     use crate::screens::sensors::Glance;
@@ -384,24 +342,4 @@ fn an_ant_sensor_stands_for_the_ble_role_in_the_order_the_ride_prefers() {
     assert!(!stands(CADENCE, false, true, &[]));
     assert!(stands(HEART_RATE, true, false, &[ant(HEART_RATE, true)]));
     assert!(!stands(HEART_RATE, false, true, &[ant(CADENCE, true)]));
-}
-
-#[test]
-fn a_brightness_choice_from_the_terminal_holds_a_percent_or_follows_the_light() {
-    use firmware_shell::shell::BrightnessChoice;
-    let mut screen = Screen::new();
-    let mut runtime = booted(Profile::HeartRate);
-    let radio = Radio::new();
-    screen.present(&mut runtime, &radio, 3000);
-    assert!(screen.shell.auto(), "a new rider starts on AUTO");
-    for (choice, auto) in [
-        (BrightnessChoice::Percent, false),
-        (BrightnessChoice::Auto, true),
-    ] {
-        screen.shell.offer_brightness_choice(choice);
-        runtime.save_preferences(&mut screen.shell, 3100);
-        screen.present(&mut runtime, &radio, 3100);
-        assert_eq!(runtime.preferences.options.auto_brightness, auto);
-        assert_eq!(screen.shell.auto(), auto);
-    }
 }

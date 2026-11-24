@@ -14,7 +14,7 @@ use crate::screens::cue::Icon;
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_| {
+    tree: || {
         phone(
             Mark::Stopping,
             Say::EndRide,

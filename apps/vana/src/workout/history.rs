@@ -24,9 +24,9 @@
 //! replaced and rotated out like a record. Ride ids restart when a journal
 //! is cleared or initialized, and `forget` then deletes that journal's
 //! records. Only the newest [`KEEP`] records stay.
-use super::library::LoadError;
 use super::model::{NAME_BYTES, Name, Test};
 use super::player::Summary;
+use super::today::LoadError;
 use crate::ride::{Contents, another_version};
 use core::fmt::Write;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
@@ -309,7 +309,7 @@ pub fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workout::library::tests::{Region, formatted, put};
+    use crate::workout::today::tests::{Region, formatted, put};
 
     fn record(ride_id: u32) -> Record {
         Record {

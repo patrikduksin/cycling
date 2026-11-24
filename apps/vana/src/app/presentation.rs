@@ -3,28 +3,22 @@ use super::Runtime;
 use super::cues::Cue;
 use super::ride_control::RideMessage;
 use super::view::{Presented, Shows};
-use crate::clock::Zone;
 use crate::compose::builtin::ScreenId;
-use crate::compose::input::{Action, ListAct};
 use crate::compose::registry::{CHART, TODAY};
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::current::Request;
-use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::medium::Medium;
-use crate::ride::turn_back::Turn;
 use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Row, Toast, Tone};
 use crate::screens::home::{self, Home, Strip, Today};
 use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
-use crate::screens::ride::summary::{After, Saving};
 use crate::screens::ride::{self, RidePage};
 use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
-use crate::screens::settings;
-use crate::screens::touch::{Control, List};
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
 use crate::sensors::ant::device_type;
 use crate::sensors::radar::Beep;
+use crate::workout::shape::Shape;
 use core::fmt::Write;
 use device_api::display::Display as Panel;
 use device_api::gps::FixState;
@@ -45,8 +39,6 @@ pub(super) const ANIMATED_FRAME_MS: u64 = 500;
 /// takes about 25 ms on the C606, so this leaves the loop free between them.
 pub(super) const MOTION_FRAME_MS: u64 = 40;
 pub(super) const STATIC_FRAME_MS: u64 = 1000;
-/// A list following the finger or coasting draws at up to 60 frames a second.
-pub(super) const SCROLL_FRAME_MS: u64 = 16;
 /// How long a confirmation or hint stays over the content.
 pub(super) const TOAST_MS: u64 = 2000;
 /// Battery news stays a little longer than a confirmation.
@@ -129,32 +121,6 @@ impl Runtime {
             &self.readings.live,
             radar,
         );
-        let sunset = self.alerts.sunset(
-            now,
-            self.preferences.options.sunset_alert,
-            self.ride.active().status(),
-            self.navigation.page() == Page::Ride,
-            self.night.sun(now),
-        );
-        let sun = self.night.sun(now);
-        let leg = self.track.as_deref().and_then(|track| {
-            super::course::way_home(
-                track,
-                self.ride.totals().avg_speed_mm_s(),
-                self.ride.totals().moving_ms(),
-            )
-        });
-        let turn = sun
-            .zip(leg)
-            .and_then(|((sun, unix), leg)| Turn::new(sun, unix, leg));
-        let turn_back = self.alerts.turn_back(
-            now,
-            self.preferences.options.sunset_alert,
-            self.ride.active().status(),
-            self.navigation.page() == Page::Ride,
-            turn,
-            self.preferences.options.zone,
-        );
         if self.navigation.page() == Page::Ride {
             if let Some(beep) = self.readings.radar_warning.update(radar, now) {
                 self.cue(
@@ -186,7 +152,7 @@ impl Runtime {
                     after_news,
                 )
             });
-            if let Some(alert) = alert.or(sunset).or(turn_back) {
+            if let Some(alert) = alert {
                 self.ride_alert(alert, now);
             }
         } else {
@@ -202,7 +168,6 @@ impl Runtime {
         let tone = match alert {
             Alert::Fuel => Tone::Info,
             Alert::RadarClear => Tone::Good,
-            Alert::SunsetSoon | Alert::SunsetNow => Tone::Warn,
             _ => Tone::Warn,
         };
         self.navigation
@@ -211,7 +176,6 @@ impl Runtime {
             Some(AlertSound::Band) => Cue::BandAlert,
             Some(AlertSound::Fuel) => Cue::Fuel,
             Some(AlertSound::RadarClear) => Cue::RadarClear,
-            Some(AlertSound::Sunset) => Cue::BandAlert,
             Some(AlertSound::Battery) => Cue::LowBattery,
             None => return,
         };
@@ -276,18 +240,7 @@ impl Runtime {
             }
             Shows::Page { gps, radar_paired } => (gps, radar_paired),
         };
-        let (deck, course) = (self.deck_with_course_map(), self.course().is_some());
-        let ftp_offer = self.ftp_sheet();
-        let picker_offset = self.list_offset(List::Workouts, now);
-        let picker = (self.navigation.page() == Page::Workouts).then(|| {
-            let pressed = match self.navigation.touches().pressed() {
-                Some(Control::Composed(Action::List(ListAct::Tap(index)), _)) => {
-                    Some(usize::from(index))
-                }
-                _ => None,
-            };
-            self.picker(self.list_offset(List::Workouts, now), pressed)
-        });
+        let course = self.course().is_some();
         let light = self.light();
         let navigation = &self.navigation;
         let page = navigation.page();
@@ -304,10 +257,8 @@ impl Runtime {
         view.radar_paired = radar_paired;
         view.auto_paused = self.ride.auto().paused();
         view.ride_page = navigation.ride_page();
-        view.deck = deck;
         view.nav = super::course::sign_of(&self.track, now);
         view.course = course;
-        view.main_slots = self.preferences.options.main_slots;
         view.laids = Some(self.composition.laids());
         let readout = self.shown.readout();
         let (climbing, paused_secs) = (readout.climbing, readout.paused_secs);
@@ -332,13 +283,6 @@ impl Runtime {
                     _ => Default::default(),
                 });
             }
-        }
-        // The sheet shows wherever it takes the buttons, as after a test
-        // started from the terminal while Home is open.
-        view.ftp_offer = ftp_offer;
-        if let Some(picker) = picker {
-            view.scroll = picker_offset;
-            view.show_picker(picker);
         }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
@@ -370,22 +314,9 @@ impl Runtime {
                 let shown = now.saturating_sub(first_frame).min(BRAND_MS);
                 view.reveal = (shown * u64::from(crate::screens::brand::DONE) / BRAND_MS) as u16;
             }
-            Page::Summary => {
-                view.show_summary(self.after(now));
-                self.show_elevation(&mut view);
-            }
             Page::Format => view.format = self.format.shows(),
             Page::LoseRides => view.unsaved = self.sync.count() as u8,
-            Page::EndRide | Page::DiscardRide => {
-                view.discard = if self.ride.discard() != crate::ride::current::Discard::Idle {
-                    crate::screens::workout::Discard::Answered
-                } else if self.can_discard() {
-                    crate::screens::workout::Discard::Offered
-                } else {
-                    crate::screens::workout::Discard::Unavailable
-                };
-            }
-            Page::Ride => {}
+            Page::Ride | Page::EndRide => {}
             Page::Done => view.show_done(&self.done),
             Page::Home => {
                 view.set_home(self.home(local, now));
@@ -393,15 +324,6 @@ impl Runtime {
             Page::Sensors => {
                 view.show_sensors(&self.menu);
             }
-            Page::Settings => {
-                view.scroll = self.list_offset(List::Settings, now);
-                self.settings_lines(&mut view);
-                view.press_setting(match self.navigation.touches().pressed() {
-                    Some(Control::Composed(Action::List(ListAct::Tap(index)), _)) => Some(index),
-                    _ => None,
-                });
-            }
-            Page::Workouts => {}
         }
         if page == Page::Ride && view.ride_page == RidePage::Climb {
             // Borrowed from the ride and the look-ahead's own block, not copied.
@@ -462,13 +384,13 @@ impl Runtime {
 
     #[inline(never)]
     fn home(&self, local: Option<crate::clock::Local>, now: u64) -> Home {
-        let today = self.today();
-        let card = self.composition.laids().get(ScreenId::Home);
+        let today = self.training.today.as_ref();
+        let card = self.composition.laids().get(ScreenId::HomeToday);
         let card = card.and_then(|laid| laid.box_of(TODAY));
         let strip = match (today, card) {
-            (Some((_, outline)), Some(card)) => {
+            (Some(workout), Some(card)) => {
                 let rect = crate::compose::tiles::home::strip(card, &self.device.scaled);
-                Strip::lay(outline.shape.pieces(), rect)
+                Strip::lay(Shape::of(workout).pieces(), rect)
             }
             _ => Strip::default(),
         };
@@ -480,9 +402,9 @@ impl Runtime {
                 .take(home::SENSORS)
                 .copied()
                 .collect(),
-            today: today.map(|(name, outline)| Today {
-                name,
-                planned_secs: outline.planned_secs,
+            today: today.map(|workout| Today {
+                name: workout.name,
+                planned_secs: workout.planned_secs(),
             }),
             strip,
         }
@@ -609,292 +531,6 @@ impl Runtime {
             _ => return None,
         };
         Some(Toast::new(text, Tone::Info))
-    }
-
-    /// The elevation chart, lent to the view while the summary page that shows
-    /// it is open.
-    #[inline(never)]
-    pub(super) fn show_elevation<'a>(&'a self, view: &mut View<'a>) {
-        if crate::screens::ride::summary::shows_elevation(view) {
-            view.set_elevation_chart(self.chart.chart());
-        }
-    }
-
-    /// The summary has an elevation page: the ride, live or read back, charted
-    /// altitude.
-    pub(super) fn has_elevation(&self) -> bool {
-        self.ride.trace().len() >= 2
-    }
-
-    /// Where the ride just finished stands.
-    pub(super) fn saving(&self) -> Saving {
-        match self.ride.active().status() {
-            _ if self.ride.pending() => Saving::Writing,
-            Status::Recording | Status::Paused => Saving::Writing,
-            Status::Error => Saving::Failed,
-            _ if self.shown_ride_unsynced() => Saving::Unsynced,
-            _ => Saving::Saved,
-        }
-    }
-
-    /// What the summary shows beyond the totals.
-    pub(super) fn after(&self, now: u64) -> After {
-        After {
-            page: self.navigation.summary_page(),
-            saving: self.saving(),
-            best: self.ride.efforts().best(),
-            climbs: Some(self.ride.climbs_done()),
-            // The open lap counts: a ride without a lap press is one lap.
-            laps: Some(self.ride.laps().count().saturating_add(1)),
-            elevation: self.has_elevation(),
-            offer: self.summary_offer(),
-            recovery: self.recovery.reading(now),
-        }
-    }
-
-    fn settings_lines(&self, view: &mut View) {
-        use super::preferences::Persistence;
-        use crate::screens::settings::{Kind, NOTES, Row, STATUS, VALUES};
-        let cursor = view.cursor;
-        let row = view.sections.row(cursor);
-        let editor = [row];
-        let editing = view.editing && row.kind() == Kind::Number;
-        let shown: &[Row] = if editing {
-            &editor
-        } else {
-            view.sections.rows(cursor).0
-        };
-        let lines = view.show_settings();
-        let (values, notes) = lines[VALUES..].split_at_mut(NOTES - VALUES);
-        for ((row, value), note) in shown.iter().zip(values).zip(notes) {
-            self.setting_line(*row, value, note);
-        }
-        let _ = lines[STATUS].push_str(match self.preferences.persistence() {
-            Persistence::Saved => "SAVED",
-            Persistence::Pending => "SAVING",
-            Persistence::Failed => "SAVE FAILED, RETRYING",
-            Persistence::Locked => "NOT SAVED: DATA KEPT",
-        });
-    }
-
-    /// A Settings row's value and the note beside it.
-    fn setting_line(&self, row: settings::Row, value: &mut Text<38>, note: &mut Text<38>) {
-        use crate::ride::rider::Sex;
-        use crate::screens::settings::Row;
-        let options = self.preferences.options;
-        let profile = self.preferences.profile;
-        let display = self.preferences.display;
-        let on = |on: bool| if on { "ON" } else { "OFF" };
-        let _ = match row {
-            Row::Ftp => {
-                // Threshold zones: where FTP and LTHR put the rider's limit.
-                // With the weight set the note also gives W/kg; a card too
-                // narrow for both keeps the last part.
-                let (low, high) = profile.power_range(4);
-                let per_kg = options.rider.watts_per_kg_tenths(profile.ftp_watts.into());
-                let _ = write!(note, "Z4 {}-{} W", low, high - 1);
-                if let Some(tenths) = per_kg {
-                    let _ = write!(note, ", {}.{} W/KG", tenths / 10, tenths % 10);
-                }
-                write!(value, "{}", profile.ftp_watts)
-            }
-            Row::Weight => match options.rider.weight_kg() {
-                Some(kg) => write!(value, "{kg} KG"),
-                None => {
-                    let _ = write!(note, "ADD FOR W/KG");
-                    write!(value, "NOT SET")
-                }
-            },
-            Row::Age => match options.rider.age_years() {
-                Some(years) => write!(value, "{years} YEARS"),
-                None => {
-                    let _ = write!(note, "ADD FOR CALORIES");
-                    write!(value, "NOT SET")
-                }
-            },
-            Row::Sex => match options.rider.sex() {
-                Some(Sex::Male) => write!(value, "MALE"),
-                Some(Sex::Female) => write!(value, "FEMALE"),
-                None => {
-                    let _ = write!(note, "ADD FOR CALORIES");
-                    write!(value, "NOT SET")
-                }
-            },
-            Row::Threshold => {
-                let (low, _) = profile.heart_range(5);
-                let _ = write!(note, "Z5 FROM {} BPM", low);
-                write!(value, "{}", profile.lthr_bpm)
-            }
-            Row::Brightness => {
-                if options.auto_brightness {
-                    write!(value, "AUTO")
-                } else {
-                    write!(value, "{}%", display.brightness)
-                }
-            }
-            Row::Daylight => {
-                use super::preferences::Daylight;
-                if options.daylight == Daylight::Auto {
-                    let now = if self.night.is_night() {
-                        "NIGHT"
-                    } else {
-                        "DAY"
-                    };
-                    let _ = write!(note, "{now} NOW");
-                }
-                write!(
-                    value,
-                    "{}",
-                    match options.daylight {
-                        Daylight::Auto => "AUTO",
-                        Daylight::Day => "DAY",
-                        Daylight::Night => "NIGHT",
-                    }
-                )
-            }
-            Row::Theme => {
-                use super::preferences::Theme;
-                if options.theme == Theme::Auto {
-                    let now = if self.night.is_night() {
-                        "DARK"
-                    } else {
-                        "LIGHT"
-                    };
-                    let _ = write!(note, "{now} NOW");
-                }
-                write!(
-                    value,
-                    "{}",
-                    match options.theme {
-                        Theme::Dark => "DARK",
-                        Theme::Light => "LIGHT",
-                        Theme::Auto => "AUTO",
-                    }
-                )
-            }
-            Row::Mode => {
-                let policy = options.mode.policy();
-                let _ = write!(note, "{}", policy.note);
-                write!(value, "{}", policy.name)
-            }
-            Row::TimeZone => match options.zone {
-                Zone::Chile => {
-                    if let Some(ms) = self.readings.live.utc_ms {
-                        let offset = options.zone.offset_s((ms / 1000) as i64);
-                        let _ = utc_offset(note, offset);
-                        let _ = write!(note, " NOW");
-                    }
-                    write!(value, "CHILE")
-                }
-                Zone::Fixed(_) => {
-                    let _ = write!(note, "ALL YEAR");
-                    utc_offset(value, options.zone.offset_s(0))
-                }
-            },
-            Row::AutoDim => match display.dim_secs {
-                0 => write!(value, "NEVER"),
-                secs @ ..60 => write!(value, "{secs} S"),
-                secs => write!(value, "{} MIN", secs / 60),
-            },
-            Row::AutoPause => {
-                let _ = write!(note, "WHEN STOPPED");
-                write!(value, "{}", on(options.auto_pause))
-            }
-            Row::AutoLap => match options.auto_lap {
-                AutoLap::Off => write!(value, "OFF"),
-                AutoLap::Every(km) => write!(value, "EVERY {km} KM"),
-                AutoLap::AtStart => write!(value, "AT START"),
-            },
-            Row::Wheel => {
-                let in_force = self.readings.speed_wheel_mm();
-                let mode = if options.wheel.manual {
-                    "MANUAL"
-                } else {
-                    "AUTO"
-                };
-                if in_force != u32::from(options.wheel.size_mm()) {
-                    let _ = write!(note, "FROM NEXT RIDE");
-                } else {
-                    let _ = write!(note, "{mode}");
-                }
-                write!(value, "{} MM", options.wheel.size_mm())
-            }
-            Row::WheelMode => {
-                let _ = write!(
-                    note,
-                    "{}",
-                    if options.wheel.manual {
-                        "YOUR SIZE"
-                    } else {
-                        "FROM GPS"
-                    }
-                );
-                write!(
-                    value,
-                    "{}",
-                    if options.wheel.manual {
-                        "MANUAL"
-                    } else {
-                        "AUTO"
-                    }
-                )
-            }
-            Row::MainLeft => write!(value, "{}", options.main_slots.left.name()),
-            Row::MainRight => write!(value, "{}", options.main_slots.right.name()),
-            Row::PageClimb | Row::PageMap => {
-                let shown = row.ride_page().is_none_or(|page| options.deck.shows(page));
-                if row == Row::PageClimb && !shown {
-                    let _ = write!(note, "NO CLIMB POP-UP");
-                }
-                write!(value, "{}", on(shown))
-            }
-            Row::Sounds => {
-                if !options.sounds {
-                    let _ = write!(note, "RADAR STAYS ON");
-                }
-                write!(value, "{}", on(options.sounds))
-            }
-            Row::RadarAlerts => {
-                let _ = write!(note, "RADAR BEEPS STAY ON");
-                write!(value, "{}", on(self.alert_settings().radar))
-            }
-            Row::SunsetAlert => {
-                let _ = write!(note, "30 MIN BEFORE AND AT");
-                write!(value, "{}", on(options.sunset_alert))
-            }
-            Row::FuelAlert => match self.alert_settings().fuel_every_min {
-                0 => write!(value, "OFF"),
-                min => write!(value, "EVERY {min} MIN"),
-            },
-            Row::CadenceLow => limit(value, self.alert_settings().cadence_low_rpm.into(), "RPM"),
-            Row::HeartHigh => limit(value, self.alert_settings().heart_high_bpm.into(), "BPM"),
-            Row::HeartLow => limit(value, self.alert_settings().heart_low_bpm.into(), "BPM"),
-            Row::PowerHigh => limit(value, self.alert_settings().power_high_w, "W"),
-            Row::PowerLow => limit(value, self.alert_settings().power_low_w, "W"),
-            Row::Sensors => match self.preferences.sensors.peers().count() {
-                0 => write!(value, "NONE SAVED"),
-                count => write!(value, "{count} SAVED"),
-            },
-            Row::Storage => {
-                if self.ride.bulk().status() != Status::Unsupported {
-                    let _ = write!(note, "{}", self.ride.medium().label());
-                }
-                let recorder = self.ride.recorder(self.ride.medium());
-                match recorder.status() {
-                    Status::Ready | Status::Saved | Status::Recovered => {
-                        let secs = recorder.remaining_secs();
-                        let hours = secs / 3600;
-                        if hours >= 100 {
-                            write!(value, "{hours}H LEFT")
-                        } else {
-                            write!(value, "{hours}:{:02} LEFT", secs / 60 % 60)
-                        }
-                    }
-                    status => write!(value, "{}", status.name()),
-                }
-            }
-            Row::Firmware => write!(value, "VANA {}", env!("CARGO_PKG_VERSION")),
-        };
     }
 }
 
@@ -1059,25 +695,6 @@ pub(super) fn radar_reports(
 
 fn shown(toast: &Toast) -> &str {
     core::str::from_utf8(toast.text()).unwrap_or("?")
-}
-
-/// An alert limit's value: "OFF", or the limit in its unit.
-fn limit(value: &mut Text<38>, limit: u16, unit: &str) -> core::fmt::Result {
-    match limit {
-        0 => write!(value, "OFF"),
-        limit => write!(value, "{limit} {unit}"),
-    }
-}
-
-/// "UTC-3", "UTC+5:30" or "UTC", from seconds east of UTC.
-fn utc_offset(text: &mut Text<38>, offset_s: i64) -> core::fmt::Result {
-    let sign = if offset_s < 0 { '-' } else { '+' };
-    let minutes = offset_s.unsigned_abs() / 60;
-    match (minutes / 60, minutes % 60) {
-        (0, 0) => write!(text, "UTC"),
-        (hours, 0) => write!(text, "UTC{sign}{hours}"),
-        (hours, minutes) => write!(text, "UTC{sign}{hours}:{minutes:02}"),
-    }
 }
 
 /// A live saved ANT sensor serves the role of the BLE sensor of `kind`: heart

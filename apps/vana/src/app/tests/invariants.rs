@@ -100,7 +100,6 @@ fn violating(rule: Rule) -> Runtime {
             };
             runtime.navigation.go(To::Page(Page::Home));
         }
-        Rule::EditingOffSettings => runtime.navigation.edit_off_settings(),
         Rule::TwoRidingRides => {
             *runtime.ride.internal_mut() = riding();
             *runtime.ride.bulk_mut() = riding();

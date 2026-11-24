@@ -90,21 +90,10 @@ fn field(sim: &Sim, label: &str) -> f64 {
 }
 
 #[test]
-fn a_rider_who_waits_at_the_foot_still_gets_the_climb_page() {
-    let mut sim = rider();
-    // After the wait the first sure forecast comes a few metres up the
-    // first rise, with less than the 20 m that confirms a climb left ahead.
-    sim.advance(seconds(5));
-    sim.start_ride();
-    sim.ride_at(14.0, 240.0, 0.0, 80.0);
-    ride_until_shown(&mut sim, "DIST TO TOP KM", 100.0);
-    assert_eq!(sim.ride_page_name().as_deref(), Some("ride/climb"));
-}
-
-#[test]
 fn the_map_shows_the_climbs_up_g21_before_and_while_riding_them() {
     let mut sim = rider();
     sim.start_ride();
+    sim.ride_page("ride/climb");
     sim.ride_at(14.0, 240.0, 0.0, 80.0);
     // G-21 starts on a short rise to about 410 m: the map has the rider on
     // a climb from the first fixes, and brings up the climb page.

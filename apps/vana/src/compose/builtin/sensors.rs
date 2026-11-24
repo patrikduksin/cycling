@@ -32,17 +32,17 @@ const fn list(act: Icon) -> Buttons {
 }
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_| glance(List::Sensors),
+    tree: || glance(List::Sensors),
     buttons: list(Icon::Open),
 };
 
 pub const NEARBY: &Builtin = &Builtin {
-    tree: |_| glance(List::Nearby),
+    tree: || glance(List::Nearby),
     buttons: list(Icon::Check),
 };
 
 pub const DETAIL: &Builtin = &Builtin {
-    tree: |_| page(Part::Detail, [Some(Item::Forget), None]),
+    tree: || page(Part::Detail, [Some(Item::Forget), None]),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Page(OnPage::Forget),
@@ -55,7 +55,7 @@ pub const DETAIL: &Builtin = &Builtin {
 };
 
 pub const POWER_METER: &Builtin = &Builtin {
-    tree: |_| page(Part::Detail, [Some(Item::Forget), Some(Item::Zero)]),
+    tree: || page(Part::Detail, [Some(Item::Forget), Some(Item::Zero)]),
     buttons: Buttons {
         act: button(Action::Page(OnPage::Calibrate), Icon::Calibrate),
         back: Some(BACK),
@@ -65,7 +65,7 @@ pub const POWER_METER: &Builtin = &Builtin {
 };
 
 pub const FORGET: &Builtin = &Builtin {
-    tree: |_| page(Part::Forget, [Some(Item::Keep), Some(Item::ForgetNow)]),
+    tree: || page(Part::Forget, [Some(Item::Keep), Some(Item::ForgetNow)]),
     buttons: Buttons {
         act: button(Action::Page(OnPage::Answer(true)), Icon::Trash),
         back: Some(BACK),

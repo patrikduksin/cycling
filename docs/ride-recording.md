@@ -204,14 +204,14 @@ in ignored `.local/`.
 ## What a ride records
 
 [UX flows](ux-flows.md#the-ride) owns the ride's screens and buttons, with
-[Sensors](ux-flows.md#sensors), and [UI](ui.md) owns how they look, from
-[Settings](ui.md#settings) to the [power-on brand](ui.md#motion). This
+[Sensors](ux-flows.md#sensors), and [UI](ui.md) owns how they look, down to
+the [power-on brand](ui.md#motion). This
 section keeps what decides the recorded data.
 
 Laps:
 
 - A lap press closes the current lap; another within three seconds is ignored.
-  Settings AUTO LAP starts at EVERY 5 KM; its choices are in
+  `OPTION AUTO_LAP` starts at every 5 km; its choices are in
   [UX flows](ux-flows.md#recording). A lap press restarts the distance count
   of an automatic lap. During a
   workout each step closes a lap instead, and neither automatic lap runs. All
@@ -269,7 +269,7 @@ Speed and distance:
 - `POSITION` on the terminal reports `hdop_tenths` and `speed_mm_s`, so an
   outdoor check shows whether the receiver sends Doppler.
 
-Auto-pause and auto-start (Settings AUTO PAUSE, on by default; constants in
+Auto-pause and auto-start (`OPTION AUTO_PAUSE`, on by default; constants in
 `ride/auto.rs`):
 
 - Only a measured speed pauses, resumes or starts a ride. Without a wheel or
@@ -395,7 +395,7 @@ Lap marks:
 
 Clock:
 
-- Settings TIME ZONE sets the displayed clock, Chile's summer time rule by
+- `OPTION ZONE` sets the displayed clock, Chile's summer time rule by
   default (`clock::Zone`); recorded UTC is unmodified.
 - The clock comes from Wi-Fi SNTP since boot, else the GNSS receiver's dated
   fixes (carried on through a lost fix); GNSS time of day is a display
@@ -421,10 +421,6 @@ Training profile:
   when the meter goes quiet. [UI](ui.md#charts) draws the zone gauges and the
   time-in-zone bars. Time in zone is kept in memory with the other ride
   totals; it is not part of the ride record.
-- The stats page also shows live intensity factor (`IF`, normalized power over
-  FTP) and training stress score (`TSS`: seconds with power × NP² / (FTP² ×
-  36), so an hour at FTP is 100). Both wait for normalized power's first 30 s
-  and use the FTP of the profile.
 - `PROFILE`, `PROFILE FTP watts` and `PROFILE LTHR bpm`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record
@@ -444,16 +440,9 @@ While a radar is paired, the ride pages keep a strip on their left edge for it:
 
 ## Structured training
 
-The TRAIN card on Home opens the workout picker: FREE RIDE, the built-ins,
-then uploads. MOVE focuses the next workout (held, the next page of four), ACT starts its ride,
-and BACK returns Home. Ready names the chosen workout under its headline, and
-a tap on that line opens the picker again to change it. A chosen workout plays
-on the next ride; BACK from Ready drops it.
-
-Built-ins ship in flash, by rising intensity: RECOVERY SPIN 30, ENDURANCE Z2 60
-and 90, TEMPO 2X20, SWEET SPOT 3X12 and 2X20, THRESHOLD 4X8, OVER UNDER 2X20,
-VO2 MAX 5X3, 6X4 and 30-30S, ANAEROBIC 6X1, SPRINTS 10X10S, OPENERS, FTP TEST
-20 MIN and FTP RAMP TEST. A workout is a list
+VANA holds one workout, today's, and ships none of its own. Home's WORKOUT
+card starts a ride that plays it, as RIDE starts a free one; with none loaded
+it shows NO WORKOUT LOADED. A workout is a list
 of steps (warm up, work, recovery, cool down or test), each lasting a time, a
 distance or until MARK, with a target: % FTP, watts, heart zone, % LTHR,
 cadence, a ramp or none. Repeat blocks play a run of steps several times.
@@ -553,9 +542,8 @@ after the end of the last stored one.
 
 A file of another version or shape reads as one that does not decode.
 
-FTP tests end on a NEW FTP sheet while the ride keeps recording: ACT saves the
-new FTP to the profile, BACK keeps the old one. The ride is then on the main
-page.
+FTP tests measure an FTP, which `WORKOUT STATUS` reports and the workout's
+record keeps; the profile's FTP changes only when the rider sets it.
 
 - 20 minutes: FTP is 95% of the test step's average power. Skipping the test
   step gives no result.
@@ -566,45 +554,35 @@ page.
   the step's watts, and the target band, drawn on the gauge, is 95% to 110% of
   them. FTP is 75% of the best full minute.
 
-Load a workout from JSON with `cycling workout-load <file> [--name stem]`;
+Load today's workout from JSON with `cycling workout-load <file>`;
 `--dry-run` prints the file it would put. Examples are in
 `tools/devtools/workouts/` and the format is described in
 `cycling_devtools.workouts.load`. The host writes codec version 2
 (`apps/vana/src/workout/codec.rs`) to the MMC's FILES volume as
-`workouts/<stem>.vw` through the volume transfer session. That session checks
-the CRC on commit and reads the file back. `cycling files put
-workouts/NAME.vw PATH` works too. Format FILES once first if `FILES STATUS`
-says it is not formatted.
+`workouts/today.vw` through the volume transfer session, in place of the one
+before. That session checks the CRC on commit and reads the file back; the
+tool then sends `WORKOUT LOAD`. `cycling files put workouts/today.vw PATH`
+works too, followed by `WORKOUT LOAD`. Format FILES once first if `FILES
+STATUS` says it is not formatted.
 
-The phone page adds workouts too (`PUT /api/workouts`, the same codec file as
+The phone page sets today's workout too (`PUT /api/workouts`, the same codec file as
 the body, at most `ENCODED_MAX` (475) bytes; the page builds it from the JSON
 in the browser, byte for byte as `workout-load` does). The file is gathered in
 the phone server's PSRAM, then VANA decodes and validates it before
 anything is written, so a damaged, cut-off or unridable file changes
-nothing. It is stored as `workouts/<name in lower case, at most 17 characters>-<CRC32 of
-the name>.vw`, so the same name replaces its file (one atomic commit; a cut
-leaves the old file) and two names never share one. The picker lists only 8,
-so a ninth is refused (409 `full`) instead of evicting one. Every file under
-`workouts/` takes a place, readable or not, so the list also names the files the
-device does not list (`unlisted`: unreadable, or past the eighth) and `DELETE`
-removes those too. The USB path does not check the bound, and its extra files
-stay unlisted (`skipped`). Loading the same workout by USB and from the phone
-lists it twice: the USB file is named by the host (`<stem>.vw`), the phone's by
-the workout's name, so neither replaces the other; delete either with
-`WORKOUT DELETE` or from the page. Answers: 200 with the
-list, 400 `empty`, 409 `ride` or `full`, 413 `too_large`, 422 `format`,
-`damaged` or `invalid`, 503 `unavailable` or `storage`, 507 `nospace`. `GET
-/api/workouts` lists the uploads (read from FILES again) and `DELETE
-/api/workouts?file=<file>` removes one that is listed. The phone session ends
-when a ride starts and these routes also refuse while one records.
+nothing. It is stored as `workouts/today.vw` in one atomic commit, so a cut
+leaves the old file. Answers: 200 with today's workout, 400 `empty`, 409
+`ride`, 413 `too_large`, 422 `format`, `damaged` or `invalid`, 503
+`unavailable` or `storage`, 507 `nospace`. `GET /api/workouts` reports today's
+workout, read from FILES again, as `{"store":"ok","workout":{"name",
+"minutes","steps"}}` (`workout` is `null` without one, and `store` names why a
+file could not be read). `DELETE /api/workouts` removes it. The phone session
+ends when a ride starts and these routes also refuse while one records.
 
-VANA lists `workouts/` at boot, each time the picker opens and on
-`WORKOUT LIST`. It keeps only each upload's file, name and outline: the first
-8 by file name, in name order after the built-ins. Files that do not decode
-are counted as `skipped`. A ride reads its workout's steps from FILES when it
-starts. If the file is gone by then, the ride runs free and shows WORKOUT
-MISSING. `WORKOUT SELECT row` chooses a picker row for the next ride.
-`WORKOUT DELETE n` deletes upload `n`'s file.
+VANA reads today's workout, steps and all, at boot, on `WORKOUT LOAD` and
+after the phone changes it. `WORKOUT LOAD` answers `workout=NAME minutes=M
+steps=S files=ok`, or `workout=none files=<why>`. `WORKOUT STATUS` reports
+the player during a ride and today's workout before one.
 
 When a ride with a workout is saved, VANA writes how the workout went beside
 it as `rides/<i|b><ride id>.workout` on FILES. The record holds the name,

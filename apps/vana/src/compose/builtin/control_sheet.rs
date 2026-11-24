@@ -1,11 +1,11 @@
-use super::{Builtin, Choices, Nodes};
+use super::{Builtin, Nodes};
 use crate::compose::input::{Action, Button, Buttons, SheetAct};
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::{DAY_NIGHT, LEVEL, SHEET_SENSORS, SPACE};
 use crate::screens::cue::Icon;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| TREE.into_iter().collect::<Nodes>(),
+    tree: || TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Sheet(SheetAct::Brighter),

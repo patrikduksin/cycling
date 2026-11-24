@@ -32,7 +32,6 @@ annoys you about your current computer, report a bug, or just say hi.
   <tr>
     <td align="center"><img src="docs/screenshots/radar.png" width="180" alt="Ride page with the radar track on the left edge showing six vehicles behind"><br>Radar</td>
     <td align="center"><img src="docs/screenshots/workout.png" width="180" alt="Workout interval on target at 243 watts, 2:40 left, next step a 3 minute recovery"><br>Workout</td>
-    <td align="center"><img src="docs/screenshots/summary.png" width="180" alt="Ride saved summary with time, distance, speed, ascent and power"><br>Ride saved</td>
     <td align="center"><img src="docs/screenshots/light.png" width="180" alt="The ride page in the light theme"><br>Light theme</td>
   </tr>
 </table>
@@ -64,13 +63,12 @@ On the Magene C606 today:
 - **Radar.** Rear radar alerts that beep faster and higher as a car gets closer.
 - **Maps and courses.** Your track on a map, GPX courses loaded from your phone,
   turn warnings ahead, and a climb page that follows the road.
-- **Workouts.** 16 built-in workouts, and your own added from your phone.
-- **Training.** Zones, and an FTP suggestion after a strong 20 minutes.
+- **Workouts.** Today's workout, set from your phone or a host, starts from Home.
+- **Training.** Power and heart rate zones.
 - **Ride recording.** Laps (including an automatic lap each time you pass your
   start), barometric altitude, calories, and FIT and GPX export for Strava and
   everything else. Rides survive a crash or a dead battery.
-- **Little things.** A sunset warning, a "turn back by" time so you're home
-  before dark, and an honest estimate of battery time left.
+- **Little things.** An honest estimate of battery time left.
 
 **Missing something you want?** That's exactly what I want to hear.
 [Request a feature](https://github.com/patrikduksin/cycling/issues/new?template=feature.yml),

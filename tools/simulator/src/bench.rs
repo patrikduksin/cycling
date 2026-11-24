@@ -348,7 +348,7 @@ pub(crate) mod scenes {
 
     pub(crate) fn workout_page() -> Sim {
         let mut sim = rider(false);
-        sim.start_workout("VO2 MAX 5X3");
+        sim.start_workout(&vana::workout::fixtures::VO2_MAX);
         sim.ride_at(30.0, 120.0, 142.0, 90.0);
         sim.advance(seconds(20));
         assert_eq!(sim.ride_page_name().as_deref(), Some("ride/workout"));
@@ -532,7 +532,7 @@ pub(crate) mod scenes {
 
     fn home_light() -> Sim {
         let mut sim = rider(false);
-        sim.option("THEME", "LIGHT");
+        sim.option("THEME", "DAY");
         sim.advance(seconds(1));
         assert!(sim.on_home(), "{}", sim.screen().text());
         sim

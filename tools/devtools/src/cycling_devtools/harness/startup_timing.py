@@ -53,8 +53,6 @@ SENSOR_NAMES = {
     40: 'ANT radar',
 }
 BUTTON = {'top-left': 0, 'bottom-left': 1, 'bottom-right': 2}
-# Home cards in bottom-left order; RIDE is 0.
-HOME_CHOICES = 4
 IDLE_STATES = ('ready', 'saved', 'recovered')
 MUTATION_STATUSES = ('ACCEPTED', 'BUSY', 'STATE')
 # VANA ignores a press sooner than 350 ms after the previous one.
@@ -262,12 +260,17 @@ def ride(runner):
             runner.inject({'op': 'input', 'gesture': 'button', 'button': BUTTON[name]})
             runner.delay(settle)
 
-        # Bottom-left on Home only moves the selection: walk it to RIDE.
-        for _ in range((HOME_CHOICES - int(status['home_cursor'])) % HOME_CHOICES):
+        # Bottom-left on Home only moves the selection, through the stops
+        # VANA counts, to the one VANA names as the free ride: Ride, or
+        # "Just ride" under a planned workout, which stays planned.
+        if status.get('home_ride', '-') == '-':
+            raise RuntimeError('Home shows no free ride start; stopped pressing')
+        stops, ride = int(status['home_stops']), status['home_ride']
+        for _ in range((int(ride) - int(status['home_cursor'])) % stops):
             press('bottom-left')
-        if expect(runner, 'home', idle).get('home_cursor') != '0':
-            raise RuntimeError('Home did not select RIDE; stopped pressing')
-        press('bottom-right')  # RIDE starts the ride
+        if expect(runner, 'home', idle).get('home_cursor') != ride:
+            raise RuntimeError('Home did not select the free ride; stopped pressing')
+        press('bottom-right')  # a free ride starts
         started = True
         expect(runner, 'ride', 'recording')
         for state in ('paused', 'recording', 'paused'):
@@ -275,11 +278,11 @@ def ride(runner):
             expect(runner, 'ride', state)
         press('top-left')  # "End ride?"
         expect(runner, 'end_ride', 'paused')
-        press('bottom-right')  # yes: save, then the summary
-        saved = expect(runner, 'summary', 'saved')
+        press('bottom-right')  # yes: save, and Ride done shows the saved ride
+        saved = expect(runner, 'ride_done', 'saved')
         if int(saved['rides']) != rides + 1:
             raise RuntimeError(f'expected {rides + 1} saved rides, the device reports {saved["rides"]}')
-        press('bottom-right')  # Done
+        press('bottom-right')  # any key leaves Ride done for Home
         expect(runner, 'home', 'saved')
     finally:
         if runner.session:

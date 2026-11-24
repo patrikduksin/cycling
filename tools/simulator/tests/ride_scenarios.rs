@@ -479,7 +479,7 @@ fn the_light_theme_turns_every_screen_white_and_keeps_its_colours() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     assert_eq!(corner(&sim), 0, "dark by default");
-    sim.option("THEME", "LIGHT");
+    sim.option("THEME", "DAY");
     sim.next_frame();
     assert_eq!(corner(&sim), WHITE, "Home turns white at once");
     let theme = vana::screens::theme::LIGHT;
@@ -749,7 +749,7 @@ fn done_stat(sim: &Sim, caption: &str) -> Option<String> {
 }
 
 #[test]
-fn stats_page_totals_a_steady_ten_minutes() {
+fn a_steady_ten_minutes_reads_on_the_main_page_and_totals_on_the_summary() {
     let mut sim = rider();
     sim.need(Need::Barometer);
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
@@ -1053,7 +1053,7 @@ fn expect_chip(sim: &mut Sim, right: bool, zone: &str, colour: u16) {
     sim.note(NoteKind::Check, format!("{zone} chip in {colour:#06x}"));
 }
 
-/// TopLeft until Home: past the last ride page, or out of Settings.
+/// TopLeft until Home, past the last ride page.
 #[track_caller]
 fn go_home(sim: &mut Sim) {
     for _ in 0..4 {
@@ -1107,30 +1107,14 @@ fn raising_ftp_moves_the_same_watts_down_a_zone() {
     sim.checkpoint("250 W at FTP 215");
     sim.stop_ride();
     go_home(&mut sim);
-
     sim.set_profile(250, 185);
 
+    sim.ride_at(30.0, 250.0, 0.0, 90.0);
     sim.start_ride();
     sim.advance(seconds(10));
     sim.expect_field("PWR 3S W", "250");
     expect_chip(&mut sim, false, "Z4", ZONE_YELLOW);
     sim.checkpoint("250 W at FTP 250");
-}
-
-#[test]
-fn the_body_set_in_settings_survives_power_loss() {
-    let mut sim = rider();
-    sim.profile("WEIGHT", "75");
-    sim.profile("AGE", "30");
-    sim.profile("SEX", "M");
-    sim.advance(seconds(5));
-
-    sim.power_loss();
-    let (_, profile) = sim.command("PROFILE");
-    assert!(
-        profile.contains("weight=75 age=30 sex=m stored=current"),
-        "{profile}"
-    );
 }
 
 #[test]
@@ -1198,7 +1182,7 @@ fn training_profile_survives_power_loss() {
 #[test]
 fn options_set_from_the_terminal_apply_at_once_and_survive_power_loss() {
     let mut sim = rider();
-    let defaults = "auto_pause=on sounds=on auto_lap=5 wheel=2136 wheel_mode=auto hr_low=0 hr_high=0 power_low=0 power_high=0 cadence_low=0 fuel=0 radar=on sunset=on theme=dark daylight=auto display=normal brightness=auto zone=chile";
+    let defaults = "auto_pause=on sounds=on auto_lap=5 wheel=2136 wheel_mode=auto hr_low=0 hr_high=0 power_low=0 power_high=0 cadence_low=0 fuel=0 radar=on theme=night display=normal brightness=100 zone=chile";
     let (status, before) = sim.command("OPTION");
     assert_eq!(status, "OK");
     assert!(before.starts_with(defaults), "{before}");
@@ -1214,9 +1198,7 @@ fn options_set_from_the_terminal_apply_at_once_and_survive_power_loss() {
         ("CADENCE_LOW", "70"),
         ("FUEL", "20"),
         ("RADAR", "OFF"),
-        ("SUNSET", "OFF"),
-        ("THEME", "LIGHT"),
-        ("DAYLIGHT", "NIGHT"),
+        ("THEME", "DAY"),
         ("DISPLAY", "SAVER"),
         ("BRIGHTNESS", "60"),
         ("ZONE", "UTC-4"),
@@ -1224,7 +1206,7 @@ fn options_set_from_the_terminal_apply_at_once_and_survive_power_loss() {
         let (status, reply) = sim.command(&format!("OPTION {name} {value}"));
         assert_eq!(status, "OK", "OPTION {name} {value}: {reply}");
     }
-    let set = "auto_pause=off sounds=off auto_lap=start wheel=2100 wheel_mode=manual hr_low=100 hr_high=170 power_low=150 power_high=300 cadence_low=70 fuel=20 radar=off sunset=off theme=light daylight=night display=saver brightness=60 zone=utc-4";
+    let set = "auto_pause=off sounds=off auto_lap=start wheel=2100 wheel_mode=manual hr_low=100 hr_high=170 power_low=150 power_high=300 cadence_low=70 fuel=20 radar=off theme=day display=saver brightness=60 zone=utc-4";
     assert_eq!(
         sim.command("OPTION").1,
         format!("{set} stored=missing persistence=pending"),
@@ -1232,13 +1214,15 @@ fn options_set_from_the_terminal_apply_at_once_and_survive_power_loss() {
     );
     sim.advance(100);
     let shell = sim.command("SETTINGS").1;
-    assert!(shell.contains("brightness=60 auto=false"), "{shell}");
+    assert!(shell.starts_with("brightness=60 "), "{shell}");
     for refused in [
         "OPTION AUTO_LAP 101",
         "OPTION WHEEL 90",
         "OPTION HR_LOW 180",
         "OPTION FUEL 25",
         "OPTION BRIGHTNESS 2",
+        "OPTION BRIGHTNESS 65",
+        "OPTION BRIGHTNESS AUTO",
         "OPTION ZONE UTC+20",
         "OPTION SOUNDS",
         "OPTION DECK MAP",
@@ -1251,13 +1235,9 @@ fn options_set_from_the_terminal_apply_at_once_and_survive_power_loss() {
         sim.command("OPTION").1,
         format!("{set} stored=current persistence=saved")
     );
-    assert_eq!(sim.command("OPTION BRIGHTNESS AUTO").0, "OK");
     assert_eq!(sim.command("OPTION WHEEL_MODE AUTO").0, "OK");
     let reply = sim.command("OPTION").1;
-    assert!(
-        reply.contains("wheel=2100 wheel_mode=auto") && reply.contains("brightness=auto"),
-        "{reply}"
-    );
+    assert!(reply.contains("wheel=2100 wheel_mode=auto"), "{reply}");
 }
 
 fn fit_laps(sim: &mut Sim) -> Vec<std::collections::BTreeMap<u8, u64>> {
@@ -1303,6 +1283,7 @@ fn manual_laps(sim: &mut Sim) {
     sim.ride_at(33.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(4));
     let toast = sim.lap(2);
+    assert!(toast.starts_with("LAP 2 04:0"), "{toast}");
     assert!(
         toast.starts_with("LAP 2 04:0") && (toast.ends_with(" 250W") || toast.ends_with(" 249W")),
         "{toast}"
@@ -1314,7 +1295,7 @@ fn manual_laps(sim: &mut Sim) {
     // The saved ride counts the three laps, the open one included.
     assert_eq!(saved_session(sim)[&26], 3, "FIT laps");
     let laps = fit_laps(sim);
-    assert_eq!(laps.len(), 3);
+    assert_eq!(laps.len(), 3, "the open lap included");
     for (lap, km, km_h, watts, bpm) in [(1, 2.2, 33.0, 250.0, 150.0), (2, 1.2, 24.0, 150.0, 130.0)]
     {
         let lap = &laps[lap];
@@ -1334,7 +1315,7 @@ fn auto_lap_closes_every_five_kilometres() {
     sim.advance(minutes(9) + seconds(50));
     sim.expect_no_text("LAP 1 ");
     // 5 km at 30 km/h is ten minutes, plus the seconds sensors take to report.
-    sim.wait_for("LAP 1 10:", seconds(30)).unwrap();
+    sim.wait_for("LAP 1 10:0", seconds(30)).unwrap();
     let toast = sim.screen().find("LAP 1 10:").remove(0).text;
     assert!(
         toast.starts_with("LAP 1 10:0") && toast.ends_with(" 220W"),
@@ -1355,7 +1336,7 @@ fn auto_lap_closes_every_five_kilometres() {
     }
 }
 
-/// A 2 km loop ridden at 30 km/h with AUTO LAP set to AT START; `jitter_m`
+/// A 2 km loop ridden at 30 km/h with AUTO LAP set to START; `jitter_m`
 /// is the receiver's error per axis. Ends riding on the main page.
 fn at_start_rider(jitter_m: f64) -> Sim {
     auto_lap_rider(jitter_m, "START")
@@ -1405,7 +1386,12 @@ fn auto_lap_at_start_closes_a_lap_each_time_round_a_loop() {
     );
     sim.checkpoint("lap toast at the start, second loop");
 
-    sim.wait_for("LAP 3 04:", seconds(300)).unwrap();
+    sim.wait_for("LAP 3 ", seconds(300)).unwrap();
+    let toast = sim.screen().find("LAP 3 ").remove(0).text;
+    assert!(
+        toast.starts_with("LAP 3 03:5") || toast.starts_with("LAP 3 04:0"),
+        "{toast}"
+    );
     sim.checkpoint("lap toast at the start, third loop");
     sim.advance(seconds(20));
     sim.stop_ride();
@@ -1629,23 +1615,6 @@ fn ride_until_shown(sim: &mut Sim, needle: &str, before_m: f64) -> f64 {
     at
 }
 
-/// Ride on until the trace sees the ride page `page`, returning where along the route.
-#[track_caller]
-fn ride_until_page(sim: &mut Sim, page: &str, before_m: f64) -> f64 {
-    while sim.ride_page_name().as_deref() != Some(page) {
-        assert!(
-            sim.world().distance_m < before_m,
-            "no page {page} by {before_m} m; screen:\n{}",
-            sim.screen().text()
-        );
-        sim.advance(seconds(1));
-    }
-    sim.next_frame();
-    let at = sim.world().distance_m;
-    sim.note(NoteKind::Check, format!("page {page} at {at:.0} m"));
-    at
-}
-
 /// The climb page's grade: its largest percentage.
 #[track_caller]
 fn expect_grade(sim: &mut Sim, expected: f64, tolerance: f64) {
@@ -1719,58 +1688,12 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
 }
 
 #[test]
-fn in_saver_the_climb_page_comes_up_already_climbing() {
-    let mut sim = hill_rider();
-    sim.option("DISPLAY", "SAVER");
-    sim.start_ride();
-    sim.ride_at(30.0, 180.0, 0.0, 85.0);
-    ride_to(&mut sim, 500.0);
-    sim.pause_ride();
-    sim.advance(WALL_AND_RIDE_SECONDS_APART_MS);
-    sim.resume_ride();
-    ride_to(&mut sim, 1000.0);
-    sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    while sim.ride_page_name().as_deref() != Some("ride/climb") {
-        assert!(
-            sim.world().distance_m < 1600.0,
-            "no climb page; screen:\n{}",
-            sim.screen().text()
-        );
-        sim.advance(50);
-    }
-    sim.next_frame();
-    sim.expect_text("CLIMB DIST KM");
-    sim.checkpoint("saver: climb page brought up by the climb");
-}
-
-#[test]
-fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
-    let mut sim = hill_rider();
-    sim.need(Need::Barometer);
-    sim.start_ride();
-    sim.ride_at(30.0, 180.0, 0.0, 85.0);
-    ride_to(&mut sim, 1000.0);
-    assert_eq!(sim.ride_page_name().as_deref(), Some("ride/main"));
-    sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    let shown = ride_until_page(&mut sim, "ride/climb", 1600.0);
-    assert!((1300.0..1450.0).contains(&shown), "at {shown:.0} m");
-    sim.expect_text("CLIMB DIST KM");
-    sim.checkpoint("climb page brought up by the climb");
-
-    ride_to(&mut sim, 2500.0);
-    sim.ride_at(40.0, 60.0, 0.0, 0.0);
-    let back = ride_until_page(&mut sim, "ride/main", 2800.0);
-    assert!(back > 2500.0, "back at {back:.0} m");
-    expect_near(&mut sim, "SPD KM/H", 40.0, 0.3);
-    sim.checkpoint("main page again over the top");
-}
-
-#[test]
 fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     let mut sim = hill_rider();
     sim.need(Need::Barometer);
     sim.start_ride();
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    ride_page(&mut sim, "ride/climb");
     ride_to(&mut sim, 1000.0);
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
     ride_until_shown(&mut sim, "CLIMB DIST KM", 1600.0);
@@ -3497,7 +3420,7 @@ fn next_step(sim: &mut Sim) {
 #[test]
 fn holding_move_on_the_workout_page_extends_the_step_without_a_mark() {
     let mut sim = training_rider();
-    sim.start_workout("VO2 MAX 5X3");
+    sim.start_workout(&vana::workout::fixtures::VO2_MAX);
     follow(&mut sim, 60, on_target);
     let left: u64 = sim.workout()["left_s"].parse().unwrap();
     sim.hold(Role::Move, 1_600);
@@ -3524,7 +3447,7 @@ fn holding_move_on_the_workout_page_extends_the_step_without_a_mark() {
 #[test]
 fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
     let mut sim = training_rider();
-    sim.start_workout("VO2 MAX 5X3");
+    sim.start_workout(&vana::workout::fixtures::VO2_MAX);
     // The workout page leads the ride pages.
     assert_eq!(sim.ride_page_name().as_deref(), Some("ride/workout"));
     sim.expect_text("LEFT");
@@ -3608,9 +3531,9 @@ fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
 }
 
 #[test]
-fn a_thirty_thirty_runs() {
+fn a_thirty_thirty_runs_its_forty_one_steps() {
     let mut sim = training_rider();
-    sim.start_workout("VO2 MAX 30-30S");
+    sim.start_workout(&vana::workout::fixtures::VO2_THIRTY);
     assert_eq!(sim.workout()["step"], "1/41");
     next_step(&mut sim);
     assert_eq!(sim.workout()["step"], "2/41");
@@ -3626,9 +3549,9 @@ fn a_thirty_thirty_runs() {
 }
 
 #[test]
-fn twenty_minute_ftp_test_offers_and_saves_the_new_ftp() {
+fn twenty_minute_ftp_test_measures_the_ftp() {
     let mut sim = training_rider();
-    sim.start_workout("FTP TEST 20 MIN");
+    sim.start_workout(&vana::workout::fixtures::FTP_TWENTY);
     // Skip to the twenty minutes with MARK.
     follow(&mut sim, 30, on_target);
     sim.world().power_w = 260.0;
@@ -3642,38 +3565,19 @@ fn twenty_minute_ftp_test_offers_and_saves_the_new_ftp() {
     sim.checkpoint("twenty minutes all out");
     let before = sim.now();
     ride_step(&mut sim, |_| 260.0);
-    // 95 % of 260 W.
-    sim.wait_for("NEW FTP", seconds(2)).unwrap();
-    sim.expect_text("247");
-    sim.expect_text("NOW 215 W");
-    sim.expect_text("SAVE?");
+    assert_eq!(sim.workout()["ftp"], "247");
     let beeps = beeps_since(&sim, before);
     assert!(beeps.contains(&10), "the step cue: {beeps:?}");
-    assert_eq!(
-        sim.ride_state(),
-        "recording",
-        "the ride goes on under the sheet"
-    );
-    sim.checkpoint("new FTP offered");
-    sim.press(Role::Act);
-    sim.expect_text("FTP 247 W SAVED");
-    sim.checkpoint("new FTP saved");
-    assert_eq!(
-        sim.ride_state(),
-        "recording",
-        "ACT on the sheet does not pause"
-    );
+    assert_eq!(sim.ride_state(), "recording");
     let (_, profile) = sim.command("PROFILE");
-    assert!(profile.starts_with("ftp=247 "), "{profile}");
-    // The cool down now targets the new FTP: 40-55 % of 247 W.
-    assert_eq!(sim.workout()["target"], "99-136");
+    assert!(profile.starts_with("ftp=215 "), "{profile}");
     sim.stop_ride();
 }
 
 #[test]
-fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
+fn ramp_test_ends_at_failure_and_measures_the_ftp() {
     let mut sim = training_rider();
-    sim.start_workout("FTP RAMP TEST");
+    sim.start_workout(&vana::workout::fixtures::FTP_RAMP);
     follow(&mut sim, 6 * 60, on_target);
     assert_eq!(
         sim.workout()["step"],
@@ -3701,19 +3605,11 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
     let before = sim.now();
     ride_step(&mut sim, effort);
     // 75 % of the best minute, 295 W.
-    sim.wait_for("NEW FTP", seconds(2)).unwrap();
-    sim.expect_text("221");
+    assert_eq!(sim.workout()["ftp"], "221");
     let beeps = beeps_since(&sim, before);
     assert!(beeps.contains(&10), "the step cue: {beeps:?}");
-    sim.checkpoint("ramp result offered");
     assert_eq!(sim.workout()["done"], "1", "the workout ends with the ramp");
-    sim.press(Role::Back);
-    sim.expect_text("FTP KEPT 215 W");
-    assert_eq!(
-        sim.ride_state(),
-        "recording",
-        "BACK on the sheet neither laps nor stops"
-    );
+    assert_eq!(sim.ride_state(), "recording");
     let (_, profile) = sim.command("PROFILE");
     assert!(profile.starts_with("ftp=215 "), "{profile}");
     assert_eq!(
@@ -3721,12 +3617,12 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
         Some("ride/main"),
         "the main ride page, not the workout page"
     );
-    sim.checkpoint("main ride page after keeping the old FTP");
+    sim.checkpoint("main ride page after the ramp");
     sim.stop_ride();
 }
 
 #[test]
-fn an_uploaded_workout_appears_in_the_picker_and_rides() {
+fn a_host_loaded_workout_is_todays_and_rides() {
     use vana::workout::codec::encode;
     use vana::workout::model::{Block, Intensity, Length, Step, Target, Workout};
     const STEPS: &[Step] = &[
@@ -3767,21 +3663,21 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
     let mut sim = equip(sim.boot());
     sim.init_bulk();
     sim.pair(&["POWER METER", "SPEED/CAD"]);
-    sim.ride_at(30.0, 120.0, 0.0, 90.0);
-    // A file damaged on the way is listed as skipped and never offered.
     let mut damaged = bytes.to_vec();
     damaged[10] ^= 1;
-    sim.put_file("workouts/broken.vw", &damaged);
-    let (_, list) = sim.command("WORKOUT LIST");
-    assert!(list.contains("files=ok uploads=0 skipped=1"), "{list}");
-    // The host puts the workout on FILES; listing the workouts finds it.
-    sim.put_file("workouts/over-unders.vw", &bytes);
-    let (_, list) = sim.command("WORKOUT LIST");
-    assert!(
-        list.contains("uploads=1 skipped=1 upload0=workouts/over-unders.vw:OVER_UNDERS"),
-        "{list}"
-    );
-    sim.start_workout("OVER UNDERS");
+    sim.put_file(vana::workout::today::FILE, &damaged);
+    let (_, today) = sim.command("WORKOUT LOAD");
+    assert_eq!(today, "workout=none files=decode");
+    assert!(sim.on_home());
+    sim.expect_no_text("Today's workout");
+    sim.advance(seconds(5));
+    let (_, today) = sim.command("WORKOUT STATUS");
+    assert_eq!(today, "workout=none");
+    sim.load_workout(&workout);
+    let (_, today) = sim.command("WORKOUT LOAD");
+    assert_eq!(today, "workout=OVER_UNDERS minutes=14 steps=8 files=ok");
+    sim.start_workout(&workout);
+    sim.ride_at(30.0, 120.0, 0.0, 90.0);
     follow(&mut sim, 5, on_target);
     next_step(&mut sim);
     follow(&mut sim, 10, on_target);
@@ -3808,20 +3704,17 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
     assert_eq!(
         sim.workout()["workout"],
         "none",
-        "the next ride is free again"
+        "a ridden workout leaves Home"
     );
-    // WORKOUT DELETE removes an upload's file.
-    sim.put_file("workouts/over-unders.vw", &bytes);
-    let (_, list) = sim.command("WORKOUT LIST");
-    assert!(list.contains("uploads=1"), "{list}");
-    let (status, out) = sim.command("WORKOUT DELETE 0");
-    assert_eq!(
-        (status, out.as_str()),
-        ("OK", "deleted=workouts/over-unders.vw")
-    );
-    assert_eq!(sim.file("workouts/over-unders.vw"), None);
+    sim.expect_no_text("Today's workout");
+    sim.home("RIDE");
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    assert_eq!(sim.workout()["workout"], "none", "a free ride");
 }
 
+/// The whole ride lifecycle as a rider meets it: the start from Home, a lap,
+/// pausing and paging, a change of mind at "End ride?", then saving it to
+/// Ride done and leaving that for Home.
 #[test]
 fn the_ride_lifecycle_walks_from_home_to_ride_done() {
     let mut sim = rider();
@@ -3899,6 +3792,33 @@ fn the_ride_lifecycle_walks_from_home_to_ride_done() {
     sim.checkpoint("home after the ride");
 }
 
+/// Riding on after a workout starts a new ride, free of the workout the
+/// last one played; a ride of nothing still saves.
+#[test]
+fn riding_on_after_a_workout_starts_a_new_free_ride() {
+    let mut sim = training_rider();
+    sim.start_workout(&vana::workout::fixtures::FTP_TWENTY);
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    assert_eq!(sim.vana_page(), "ride_done");
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.advance(seconds(10));
+    assert_eq!(sim.ride_state(), "recording");
+    assert_eq!(sim.vana_page(), "ride");
+    assert_eq!(sim.rides().len(), 2);
+    assert_ne!(
+        sim.ride_page_name().as_deref(),
+        Some("ride/workout"),
+        "a free ride"
+    );
+    sim.checkpoint("riding on starts a free ride");
+
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.stop_ride();
+    sim.expect_text("Ride saved");
+    assert_eq!(sim.rides().len(), 2);
+}
+
 #[test]
 fn rolling_off_from_home_starts_and_stopping_auto_pauses() {
     let mut sim = rider();
@@ -3953,7 +3873,6 @@ fn a_ride_started_remotely_from_ride_done_shows_its_controls() {
     assert_eq!(sim.rides().len(), 2);
     assert_eq!(sim.vana_page(), "ride_done");
 }
-
 /// The patterns played since the `from`th.
 fn played_since(sim: &Sim, from: usize) -> Vec<u8> {
     let played = &sim.device.sim().speaker.played;
@@ -4167,96 +4086,6 @@ fn an_auto_pause_during_a_mark_keeps_the_paused_screen() {
     assert_eq!(sim.seen().page.expect("a page").1, "ride/paused");
 }
 
-fn climbing() -> Sim {
-    let mut sim = hill_rider();
-    sim.start_ride();
-    sim.ride_page("ride/map");
-    sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    ride_to(&mut sim, 1200.0);
-    sim
-}
-
-#[test]
-fn the_climb_page_coming_up_during_a_mark_stays() {
-    let on_climb = |sim: &mut Sim| sim.ride_page_name().as_deref() == Some("ride/climb");
-    let shown = ms_until(climbing, on_climb);
-    let mut sim = climbing();
-    sim.advance(shown - 700);
-    assert!(!on_climb(&mut sim), "{:?}", sim.ride_page_name());
-    sim.hold(Role::Move, 1600);
-    sim.expect_text("MARK 1");
-    let pages = traced(&sim, Traced::Page);
-    let climb = pages.iter().rposition(|page| page == "ride/climb");
-    assert_eq!(
-        &pages[climb.expect("the climb page came up")..],
-        ["ride/climb"],
-        "nothing took the climb page away: {pages:?}"
-    );
-    ride_to(&mut sim, 4500.0);
-    assert_eq!(
-        sim.seen().page.expect("a page").1,
-        "ride/map",
-        "past the climb, the page from before the hold"
-    );
-}
-
-fn seen_page(sim: &Sim) -> String {
-    sim.seen().page.expect("a page").1
-}
-
-/// On the last ride page, the page after the climb page, when the climb
-/// page comes up by itself.
-fn on_the_climb_page() -> Sim {
-    let mut sim = hill_rider();
-    sim.need(Need::Barometer);
-    sim.start_ride();
-    sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    sim.advance(seconds(5));
-    sim.ride_page("ride/map");
-    while seen_page(&sim) != "ride/climb" {
-        assert!(sim.world().distance_m < 2500.0, "no climb page");
-        sim.advance(100);
-    }
-    sim
-}
-
-#[test]
-fn a_mark_on_the_climb_page_that_came_up_goes_back_after_the_top() {
-    let mut sim = on_the_climb_page();
-    sim.advance(seconds(5));
-    sim.hold(Role::Move, 1600);
-    sim.expect_text("MARK 1");
-    assert_eq!(seen_page(&sim), "ride/climb", "the page put back");
-    ride_to(&mut sim, 4500.0);
-    assert_eq!(
-        seen_page(&sim),
-        "ride/map",
-        "past the climb, the page from before it came up"
-    );
-}
-
-fn near_the_top() -> Sim {
-    let mut sim = on_the_climb_page();
-    ride_to(&mut sim, 2450.0);
-    sim
-}
-
-#[test]
-fn a_climb_that_ends_during_a_mark_leaves_its_page() {
-    let over = ms_until(near_the_top, |sim| seen_page(sim) != "ride/climb");
-    let mut sim = near_the_top();
-    sim.advance(over - 700);
-    assert_eq!(seen_page(&sim), "ride/climb");
-    sim.hold(Role::Move, 1600);
-    sim.expect_text("MARK 1");
-    sim.advance(seconds(10));
-    assert_eq!(
-        seen_page(&sim),
-        "ride/map",
-        "the rider's page, not the page of a climb that is over"
-    );
-}
-
 #[test]
 fn input_lost_during_a_hold_marks_nothing() {
     let mut sim = rider();
@@ -4327,10 +4156,10 @@ fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_t
 #[test]
 fn an_unsaved_brightness_change_is_reported_before_turning_off() {
     let mut sim = rider();
-    sim.option("BRIGHTNESS", "25");
+    sim.option("BRIGHTNESS", "30");
     sim.advance(seconds(5));
     sim.fail_storage(0, 0);
-    sim.option("BRIGHTNESS", "75");
+    sim.option("BRIGHTNESS", "70");
     sim.press(Role::Back);
     sim.press(Role::Act);
     sim.advance(seconds(1));
@@ -4340,7 +4169,7 @@ fn an_unsaved_brightness_change_is_reported_before_turning_off() {
     // The background retry stores it, and it survives a power loss.
     sim.advance(seconds(10));
     sim.power_loss();
-    assert_eq!(sim.device.shell.settings.brightness, 75);
+    assert_eq!(sim.device.shell.settings.brightness, 70);
 }
 
 fn fit_lap_triggers(bytes: &[u8]) -> Vec<u8> {
@@ -4511,57 +4340,6 @@ fn a_lap_pressed_just_before_the_start_keeps_both_laps() {
         marks[1].0 + 1,
         "the two laps begin on consecutive samples"
     );
-}
-
-#[test]
-fn riding_through_sunset_turns_the_day_night_decision_and_leaves_the_backlight_alone() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    // Santiago on 14 October 2026: the sun sets at 22:51 UTC (19:51 local)
-    // and the sky is dim (4 degrees down) by about 23:12.
-    sim.set_gps_clock(22 * 3600 + 40 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    assert_eq!(sim.device.shell.effective(), 50, "day");
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    sim.checkpoint("riding before sunset");
-    sim.advance(minutes(40));
-    assert_eq!(
-        sim.device.shell.effective(),
-        50,
-        "no light reading, no change"
-    );
-    assert!(recording(&mut sim));
-    sim.checkpoint("riding after dark");
-    sim.stop_ride();
-    go_home(&mut sim);
-
-    sim.option("DAYLIGHT", "DAY");
-    assert_eq!(sim.device.shell.effective(), 50);
-    sim.checkpoint("held at day");
-}
-
-/// Losing the fix before dusk stops the receiver's clock; night still comes
-/// on time from the last fix's time carried on.
-#[test]
-fn night_comes_on_time_after_the_gps_fix_is_lost() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.set_gps_clock(22 * 3600 + 40 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    // The automatic theme is light by day and dark by night.
-    sim.option("THEME", "AUTO");
-    sim.next_frame();
-    assert_eq!(corner(&sim), WHITE, "day");
-    // A ride keeps the screen awake.
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    sim.set_gps_fix(false);
-    sim.advance(minutes(38));
-    sim.stop_ride();
-    go_home(&mut sim);
-    assert_eq!(corner(&sim), 0, "night");
-    sim.checkpoint("night without a fix");
 }
 
 /// Receiver UTC in ms at simulated time `t_ms`, for a receiver left on its
@@ -4782,11 +4560,10 @@ fn a_course_loaded_from_the_phone_is_kept_across_a_restart() {
 }
 
 /// A workout added from the phone page is stored beside the files already
-/// on the card, found in the TRAIN picker, ridden, and deleted from the page.
-/// A second phone upload of the same name replaces it; a damaged one changes
-/// nothing.
+/// on the card as today's workout, ridden from Home's WORKOUT, and deleted
+/// from the page. A damaged upload changes nothing.
 #[test]
-fn a_workout_added_from_the_phone_is_found_in_the_picker_and_ridden() {
+fn a_workout_added_from_the_phone_is_todays_and_ridden() {
     use device_api::server::Method;
     use vana::workout::codec::encode;
     use vana::workout::model::{Block, Intensity, Length, Step, Target, Workout};
@@ -4826,10 +4603,9 @@ fn a_workout_added_from_the_phone_is_found_in_the_picker_and_ridden() {
     sim.put_file("workouts/keep.vw", b"not a workout, left as it was");
     sim.connect_phone();
     let (status, body) = sim.phone_request(Method::Get, "/api/workouts", b"");
-    assert_eq!(status, 200, "{body}");
-    assert!(
-        body.contains(r#""uploads":[]"#) && body.contains(r#""skipped":1"#),
-        "{body}"
+    assert_eq!(
+        (status, body.as_str()),
+        (200, r#"{"store":"ok","workout":null}"#)
     );
 
     // A damaged upload changes nothing.
@@ -4844,10 +4620,7 @@ fn a_workout_added_from_the_phone_is_found_in_the_picker_and_ridden() {
         "{body}"
     );
     let stored = sim
-        .file(&format!(
-            "workouts/from-the-phone-{:08x}.vw",
-            firmware_services::checksum::crc32(b"FROM THE PHONE")
-        ))
+        .file(vana::workout::today::FILE)
         .expect("the workout file on FILES");
     assert_eq!(stored, &bytes[..]);
     assert_eq!(
@@ -4856,8 +4629,8 @@ fn a_workout_added_from_the_phone_is_found_in_the_picker_and_ridden() {
     );
     go_home(&mut sim);
 
-    // The library lists it; choosing it and starting a ride plays it.
-    sim.start_workout("FROM THE PHONE");
+    sim.press_home_start();
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
     sim.ride_at(30.0, 120.0, 0.0, 90.0);
     assert_eq!(sim.workout()["workout"], "FROM_THE_PHONE");
     assert_eq!(sim.workout()["step"], "1/8");
@@ -4865,19 +4638,15 @@ fn a_workout_added_from_the_phone_is_found_in_the_picker_and_ridden() {
     sim.stop_ride();
     sim.done();
 
-    // Back on the page, the workout is listed and deleted.
     sim.connect_phone();
     let (_, body) = sim.phone_request(Method::Get, "/api/workouts", b"");
-    let file = body
-        .split(r#""file":""#)
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
-        .unwrap_or_else(|| panic!("no workout listed: {body}"))
-        .to_string();
-    let (status, _) = sim.phone_request(Method::Delete, &format!("/api/workouts?file={file}"), b"");
+    assert!(body.contains(r#""name":"FROM THE PHONE""#), "{body}");
+    let (status, _) = sim.phone_request(Method::Delete, "/api/workouts", b"");
     assert_eq!(status, 204);
-    assert_eq!(sim.file(&format!("workouts/{file}")), None);
+    assert_eq!(sim.file(vana::workout::today::FILE), None);
     assert!(sim.file("workouts/keep.vw").is_some());
+    let (_, today) = sim.command("WORKOUT STATUS");
+    assert_eq!(today, "workout=none");
 }
 
 /// A GPX loop of about 5 km: north, round a bend east, down the far side
@@ -5861,216 +5630,6 @@ fn pausing_in_the_pass_that_arrives_keeps_the_arrival_chime() {
     pressed_as_the_rider_arrives_the_chime_still_sounds(Role::Act, "pause");
 }
 
-/// Santiago on 14 October 2026: sunset 19:55 local, 22:55 UTC.
-#[test]
-fn riding_into_dusk_warns_before_sunset_and_again_at_sunset() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.set_gps_clock(22 * 3600 + 10 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    sim.advance(minutes(2));
-    sim.expect_no_text("SUNSET IN");
-    let latency = sim.wait_for("SUNSET IN 30 MIN", minutes(20)).unwrap();
-    // About 22:25 UTC: 15 minutes in, less the two spent already.
-    assert!(
-        (minutes(11)..=minutes(14)).contains(&latency),
-        "warned after {latency} ms"
-    );
-    sim.advance(seconds(1));
-    let ids = played_since(&sim, 0);
-    assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
-    sim.checkpoint("toast: sunset in 30 minutes");
-    // Once: nothing more until the sun sets.
-    sim.advance(seconds(30));
-    sim.expect_no_text("SUNSET IN");
-    sim.wait_for("LIGHTS ON", minutes(40)).unwrap();
-    sim.checkpoint("toast: sunset, lights on");
-    sim.advance(minutes(5));
-    sim.expect_no_text("LIGHTS ON");
-}
-
-/// A ride that starts in the dark has no sunset to warn of, and turning the
-/// SUNSET setting off silences the warning.
-#[test]
-fn no_sunset_alert_when_off_or_when_the_ride_starts_after_dark() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.option("SUNSET", "OFF");
-    sim.set_gps_clock(22 * 3600 + 10 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    sim.advance(minutes(60));
-    sim.expect_no_text("SUNSET IN");
-    sim.expect_no_text("LIGHTS ON");
-
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.set_gps_clock(23 * 3600 + 30 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    sim.advance(minutes(10));
-    sim.expect_no_text("SUNSET IN");
-    sim.expect_no_text("LIGHTS ON");
-}
-
-/// A straight road `km` north of the start and back, for rides whose way home
-/// is the way they came.
-fn straight_out_and_back_gpx(km: f64) -> String {
-    gpx_through(
-        "straight out and back",
-        &[(0.0, 0.0), (0.0, km * 1000.0), (0.0, 0.0)],
-    )
-}
-
-/// Advance `minutes` a second at a time, so no two-second toast can pass
-/// unseen, and fail if `needle` shows.
-#[track_caller]
-fn expect_quiet(sim: &mut Sim, minutes: u64, needle: &str) {
-    for _ in 0..minutes * 60 {
-        sim.advance(seconds(1));
-        sim.expect_no_text(needle);
-    }
-}
-
-/// Santiago on 14 October 2026 (UTC-3, sunset 19:55 local, 22:55 UTC), riding
-/// out at 25 km/h from 90 minutes before sunset. The way home takes as long as
-/// the ride so far (the straight line times 1.3 is capped at the track ridden,
-/// which on a straight road is the line), so after t minutes the margin is
-/// 90 - 2t: it drops under 15 minutes at 37.5, and the last turn is then
-/// 22:17:30 UTC, 19:17 here.
-#[test]
-fn riding_out_toward_dusk_says_when_to_turn_back() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.ride_route(Route::from_gpx(&straight_out_and_back_gpx(40.0)).unwrap());
-    sim.set_gps_clock(21 * 3600 + 25 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    sim.advance(minutes(20));
-    sim.expect_no_text("TURN BACK");
-    let latency = sim.wait_for("TURN BACK BY", minutes(30)).unwrap();
-    // 37.5 minutes after the start, less the 20 spent already.
-    assert!(
-        (minutes(17)..=minutes(18)).contains(&latency),
-        "told after {latency} ms"
-    );
-    sim.expect_text("TURN BACK BY 19:17");
-    sim.advance(seconds(1));
-    let ids = played_since(&sim, 0);
-    assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
-    sim.checkpoint("toast: turn back by 19:17");
-    // The toast ends on the first frame after its two seconds.
-    sim.wait_gone("TURN BACK", seconds(2)).unwrap();
-    // Once: the margin holds while riding on, and the toast does not return,
-    // not at the sunset warning, nor at sunset, nor in the dark after it.
-    expect_quiet(&mut sim, 3, "TURN BACK");
-    sim.wait_for("SUNSET IN 30 MIN", minutes(30)).unwrap();
-    expect_quiet(&mut sim, 5, "TURN BACK");
-    sim.wait_for("LIGHTS ON", minutes(40)).unwrap();
-    expect_quiet(&mut sim, 10, "TURN BACK");
-    sim.stop_ride();
-}
-
-/// Riding home already says nothing, even when slow riding home shrinks the
-/// margin under 15 minutes: out 12.5 km at 25 km/h, 60 minutes from sunset,
-/// then back at 10 km/h. Without the guard it would speak after about 15
-/// minutes. A ride in the dark and one with SUNSET off say nothing either.
-#[test]
-fn no_turn_back_when_riding_home_in_the_dark_or_with_sunset_off() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.ride_route(Route::from_gpx(&straight_out_and_back_gpx(12.5)).unwrap());
-    sim.set_gps_clock(21 * 3600 + 25 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    sim.advance(minutes(29));
-    sim.expect_no_text("TURN BACK");
-    sim.ride_at(10.0, 0.0, 0.0, 0.0);
-    expect_quiet(&mut sim, 28, "TURN BACK");
-    sim.checkpoint("riding home slowly, no turn back toast");
-    sim.stop_ride();
-
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.set_gps_clock(23 * 3600 + 30 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    expect_quiet(&mut sim, 30, "TURN BACK");
-
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.option("SUNSET", "OFF");
-    sim.set_gps_clock(21 * 3600 + 25 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    expect_quiet(&mut sim, 50, "TURN BACK");
-}
-
-/// A square loop of 8 km sides, ridden counter-clockwise from its corner.
-fn square_loop_gpx() -> String {
-    gpx_through(
-        "square loop",
-        &[
-            (0.0, 0.0),
-            (0.0, 8_000.0),
-            (8_000.0, 8_000.0),
-            (8_000.0, 0.0),
-            (0.0, 0.0),
-        ],
-    )
-}
-
-/// Round a loop at 25 km/h from two hours before sunset. The farthest the
-/// rider gets from the start is 11 km, 35 minutes of riding home with the
-/// winding of roads, so the margin never drops under 15 minutes. On the last
-/// leg the whole breadcrumb is 25 km, but home is 7 km away: the way home is
-/// the straight line, so no turn-back alert is due, nor is turning back the
-/// shorter way there.
-#[test]
-fn riding_round_a_loop_never_says_turn_back_on_the_last_leg() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.ride_route(Route::from_gpx(&square_loop_gpx()).unwrap());
-    sim.set_gps_clock(20 * 3600 + 55 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    expect_quiet(&mut sim, 62, "TURN BACK");
-    assert!(
-        sim.world().distance_m > 25_000.0,
-        "{:.0} m",
-        sim.world().distance_m
-    );
-    sim.checkpoint("on the last leg of the loop, no turn back toast");
-    sim.stop_ride();
-}
-
-/// 25 minutes at 3 km/h is long enough for the margin to fall under 15
-/// minutes.
-#[test]
-fn no_turn_back_when_stopping_on_the_way_home() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.ride_route(Route::from_gpx(&straight_out_and_back_gpx(8.0)).unwrap());
-    sim.set_gps_clock(21 * 3600 + 40 * 60, (14, 10, 26));
-    sim.advance(seconds(15));
-    sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    sim.start_ride();
-    expect_quiet(&mut sim, 30, "TURN BACK");
-    sim.ride_at(3.0, 0.0, 0.0, 0.0);
-    expect_quiet(&mut sim, 25, "TURN BACK");
-    sim.checkpoint("crawling home, no turn back toast");
-    sim.stop_ride();
-}
-
 /// How far VANA thinks the ride went against how far the rider really went,
 /// both in km, since `start_m` on the world's odometer.
 fn distances(sim: &mut Sim, start_m: f64) -> (f64, f64) {
@@ -6097,6 +5656,16 @@ fn wheel_fields(sim: &mut Sim) -> String {
     let (status, fields) = sim.command("RIDE WHEEL");
     assert_eq!(status, "OK", "{fields}");
     fields
+}
+
+/// The millimetres `name` holds in `RIDE WHEEL`'s `fields`.
+#[track_caller]
+fn wheel_field(fields: &str, name: &str) -> u16 {
+    fields
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix(name)?.strip_prefix('='))
+        .and_then(|mm| mm.parse().ok())
+        .unwrap_or_else(|| panic!("no {name}: {fields}"))
 }
 
 #[test]
@@ -6138,10 +5707,12 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
         fields.contains("wheel_mm=2136 stored_mm=2136 mode=auto"),
         "{fields}"
     );
-    assert!(
-        fields.contains("estimate_mm=22") && fields.contains("pending_mm=22"),
-        "{fields}"
-    );
+    // The learned size depends on where the ride's GPS windows fall, so a
+    // millimetre of timing drift may move it.
+    for field in ["estimate_mm", "pending_mm"] {
+        let mm = wheel_field(&fields, field);
+        assert!((2199..=2201).contains(&mm), "{fields}");
+    }
     let (shown_before, true_before) = distances(&mut sim, start);
     let error_before = (shown_before - true_before) / true_before * 100.0;
     assert!((error_before + 2.9).abs() < 0.2, "{error_before:.2} %");
@@ -6149,17 +5720,10 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
     sim.stop_ride();
     // Stopped, so Ride done does not start the next ride.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
-    sim.wait_for("WHEEL SET 22", seconds(5)).unwrap();
+    sim.wait_for("WHEEL SET 2", seconds(5)).unwrap();
     sim.checkpoint("ride 1 over: the rider is told once");
-    // The learned size depends on where the ride's GPS windows fall, so a
-    // millimetre of timing drift may move it.
     let fields = wheel_fields(&mut sim);
-    let learned: u16 = fields
-        .split("stored_mm=")
-        .nth(1)
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|mm| mm.parse().ok())
-        .unwrap();
+    let learned = wheel_field(&fields, "stored_mm");
     assert!((2199..=2201).contains(&learned), "{fields}");
     assert!(
         fields.contains(&format!("wheel_mm={learned} stored_mm={learned} mode=auto")),
@@ -6227,6 +5791,7 @@ fn a_hilly_winding_loop_is_learned_just_as_well() {
         .unwrap();
     assert!((learned - 2200.0).abs() / 2200.0 < 0.005, "{fields}");
     go_home(&mut sim);
+    sim.ride_at(28.0, 0.0, 140.0, 85.0);
     sim.start_ride();
     let start = sim.world().distance_m;
     sim.advance(minutes(20));
@@ -8041,13 +7606,14 @@ fn saver_mode_is_kept_over_a_restart_and_draws_only_what_arrives() {
 
     assert!(sim.command("OPTION").1.contains("display=normal"));
     sim.option("DISPLAY", "SAVER");
-    sim.advance(seconds(5));
+    sim.advance(seconds(3));
 
     sim.power_loss();
-    assert!(sim.command("PROFILE").1.contains("stored=current"));
-    let (_, options) = sim.command("OPTION");
-    assert!(options.contains("display=saver"), "{options}");
-    sim.advance(seconds(3));
+    let options = sim.command("OPTION").1;
+    assert!(
+        options.contains("display=saver") && options.contains("stored=current"),
+        "{options}"
+    );
 
     let saver = measure(&mut sim);
     sim.checkpoint("main page in SAVER");
@@ -8077,61 +7643,6 @@ fn saver_mode_is_kept_over_a_restart_and_draws_only_what_arrives() {
         saver.car_frames,
         smooth.car_frames
     );
-}
-
-fn backlight_in(sim: &mut Sim, light: Option<u16>) -> u8 {
-    sim.set_ambient_light(light);
-    sim.advance(seconds(60));
-    sim.device.shell.effective()
-}
-
-#[test]
-fn auto_brightness_follows_the_light_saver_sits_lower_and_a_percent_ignores_it() {
-    let mut sim = rider();
-    never_dim(&mut sim);
-    assert!(sim.command("OPTION").1.contains("brightness=auto"));
-    assert!(sim.device.shell.auto());
-    assert_eq!(
-        backlight_in(&mut sim, None),
-        50,
-        "no reading: the stored 50%"
-    );
-
-    let bright = backlight_in(&mut sim, Some(1_500));
-    let dim = backlight_in(&mut sim, Some(68));
-    assert!((82..=88).contains(&bright), "{bright}");
-    assert!((21..=27).contains(&dim), "{dim}");
-    sim.checkpoint("brightness AUTO in a dim room");
-    assert_eq!(
-        backlight_in(&mut sim, None),
-        50,
-        "reading lost: back to 50%"
-    );
-
-    sim.option("DISPLAY", "SAVER");
-    let saver_bright = backlight_in(&mut sim, Some(1_500));
-    let saver_dim = backlight_in(&mut sim, Some(68));
-    assert!(
-        saver_bright < bright && saver_dim < dim,
-        "{saver_bright} {saver_dim}"
-    );
-    assert!(saver_bright <= 60 && saver_dim <= 18);
-
-    sim.option("BRIGHTNESS", "50");
-    sim.advance(seconds(1));
-    assert!(!sim.device.shell.auto());
-    for light in [Some(40), Some(4_000), None] {
-        assert_eq!(backlight_in(&mut sim, light), 50, "{light:?}");
-    }
-    sim.checkpoint("brightness fixed at 50% ignores the light");
-}
-
-/// Keep the backlight from dimming, at the dim level it has.
-fn never_dim(sim: &mut Sim) {
-    let (_, settings) = sim.command("SETTINGS");
-    let level = status_field(&settings, "dim_brightness").to_string();
-    let (status, out) = sim.command(&format!("IDLE 0 {level}"));
-    assert_eq!(status, "OK", "IDLE 0 {level}: {out}");
 }
 
 mod navigation {
@@ -8334,6 +7845,29 @@ mod navigation {
         sim.checkpoint("start-turn-around-map");
         ride_until_shown(&mut sim, "FOLLOWING COURSE", 1_200.0);
         sim.expect_no_text("AROUND");
+    }
+
+    #[test]
+    fn tapping_the_banner_opens_the_map() {
+        let course = straight_then(1_000.0);
+        let mut sim = on_course(&course, &course);
+        sim.ride_at(30.0, 180.0, 150.0, 85.0);
+        start_following(&mut sim);
+        assert_eq!(
+            sim.ride_page_name().as_deref(),
+            Some("ride/main"),
+            "a loaded course keeps the map in the cycle"
+        );
+        ride_until_cue(&mut sim, "turn_soon", 6_900.0);
+        sim.tap(120, 200);
+        assert_eq!(
+            sim.ride_page_name().as_deref(),
+            Some("ride/main"),
+            "not on the sign"
+        );
+        sim.tap(120, 60);
+        expect_map(&sim);
+        sim.checkpoint("the banner tapped opens the map");
     }
 }
 

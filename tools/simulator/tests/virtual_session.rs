@@ -343,7 +343,7 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     assert_eq!(entries.last().unwrap().active_ms, saved_duration);
 
     // A later workout appends after the completed one, including across restart.
-    press(&mut s, Role::Act); // Summary: Done, Home.
+    press(&mut s, Role::Act); // Ride done: any key, Home.
     press(&mut s, Role::Act);
     state(&mut s, "recording");
     s.advance(1500).unwrap();

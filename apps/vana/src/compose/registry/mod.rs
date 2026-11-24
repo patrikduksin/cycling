@@ -9,15 +9,14 @@ mod primitive;
 mod ride;
 mod road;
 mod script;
-mod scroll;
 mod sensors;
 mod sheet;
 mod statics;
 
 #[allow(unused_imports)]
 pub use {
-    kit::*, map_summary::*, primitive::*, ride::*, road::*, script::*, scroll::*, sensors::*,
-    sheet::*, statics::*,
+    kit::*, map_summary::*, primitive::*, ride::*, road::*, script::*, sensors::*, sheet::*,
+    statics::*,
 };
 
 /// A family's block of ids and its tiles, the first at the block's start.
@@ -45,7 +44,6 @@ const FAMILIES: &[Family] = &[
     family(40, 48, map_summary::TILES),
     family(48, 56, statics::TILES),
     family(statics::LINE, 64, statics::QUESTIONS),
-    family(64, 76, scroll::TILES),
     family(80, 96, script::TILES),
     family(96, 104, sensors::TILES),
     family(104, 112, sheet::TILES),

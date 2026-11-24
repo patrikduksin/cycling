@@ -6,38 +6,28 @@ use crate::ride::laps::AutoLap;
 use crate::ride::rider::{self, Rider};
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
-use crate::screens::ride::Deck;
-use crate::screens::ride::slots::{self, Slots};
 use crate::sensors::saved::{FIELD_CAPACITY, Saved};
 use device_api::display::Display;
 use device_api::input::InputSource;
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::{AppPreferences, Source};
-use firmware_shell::shell::{BrightnessChoice, Shell};
+use firmware_shell::shell::Shell;
 
-const VERSION: u8 = 15;
+const VERSION: u8 = 16;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
 const WHEEL_LENGTH: usize = 3;
 const ZONE_LENGTH: usize = 2;
-const OPTIONS_LENGTH: usize = 4
-    + Deck::LENGTH
-    + ALERTS_LENGTH
-    + 1
-    + ZONE_LENGTH
-    + WHEEL_LENGTH
-    + rider::LENGTH
-    + slots::LENGTH
-    + 2;
+const OPTIONS_LENGTH: usize =
+    2 + ALERTS_LENGTH + 1 + ZONE_LENGTH + WHEEL_LENGTH + rider::LENGTH + 1;
 const RECORD_CAPACITY: usize = PROFILE_LENGTH + FIELD_CAPACITY + OPTIONS_LENGTH;
 /// Edits settle this long before a flash write, so a run of presses saves once.
 const DEBOUNCE_MS: u64 = 2_000;
 const AUTO_PAUSE: u8 = 1 << 0;
 const SOUNDS: u8 = 1 << 1;
-const SUNSET: u8 = 1 << 2;
 /// The longest automatic lap a record may hold.
 pub const AUTO_LAP_MAX_KM: u8 = 100;
 const AUTO_LAP_AT_START: u8 = 255;
@@ -49,69 +39,28 @@ const AUTO_LAP_FIRST_UNUSED: u8 = AUTO_LAP_MAX_KM + 1;
 /// decode and check them. All off but the radar.
 pub const ALERTS_DEFAULT: [u8; ALERTS_LENGTH] = [0, 0, 0, 0, 0, 0, 0, 0, 1];
 
-/// When the screen follows the sun, or keeps one look.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Daylight {
-    #[default]
-    Auto,
-    Day,
-    Night,
-}
-
-impl Daylight {
-    const fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(Self::Auto),
-            1 => Some(Self::Day),
-            2 => Some(Self::Night),
-            _ => None,
-        }
-    }
-
-    const fn byte(self) -> u8 {
-        match self {
-            Self::Auto => 0,
-            Self::Day => 1,
-            Self::Night => 2,
-        }
-    }
-}
-
-/// Which look the screens have: the dark palette as painted, or the same
-/// screens with luminance inverted (`screens::look`).
+/// Which look the screens have: Night, the dark palette as painted, or Day,
+/// the same screens with luminance inverted (`screens::look`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
+    Day,
     #[default]
-    Dark,
-    Light,
-    /// Light by day, dark at night.
-    Auto,
+    Night,
 }
 
 impl Theme {
     const fn from_byte(byte: u8) -> Option<Self> {
         match byte {
-            0 => Some(Self::Dark),
-            1 => Some(Self::Light),
-            2 => Some(Self::Auto),
+            0 => Some(Self::Night),
+            1 => Some(Self::Day),
             _ => None,
         }
     }
 
     const fn byte(self) -> u8 {
         match self {
-            Self::Dark => 0,
-            Self::Light => 1,
-            Self::Auto => 2,
-        }
-    }
-
-    /// Whether the light look is in force, given whether it is night.
-    pub const fn is_light(self, night: bool) -> bool {
-        match self {
-            Self::Dark => false,
-            Self::Light => true,
-            Self::Auto => !night,
+            Self::Night => 0,
+            Self::Day => 1,
         }
     }
 }
@@ -160,14 +109,6 @@ const fn auto_lap_byte(auto_lap: AutoLap) -> u8 {
     }
 }
 
-const fn flag_from_byte(byte: u8) -> Option<bool> {
-    match byte {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
-    }
-}
-
 const fn auto_lap_from_byte(byte: u8) -> Option<AutoLap> {
     match byte {
         0 => Some(AutoLap::Off),
@@ -177,7 +118,7 @@ const fn auto_lap_from_byte(byte: u8) -> Option<AutoLap> {
     }
 }
 
-/// Ride, display and sound choices, and how far first-run setup got.
+/// Ride, display and sound choices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     /// Pause and resume the ride from wheel speed.
@@ -185,24 +126,14 @@ pub struct Options {
     /// Ride cues and battery warnings sound; safety alerts always do.
     pub sounds: bool,
     pub auto_lap: AutoLap,
-    pub daylight: Daylight,
     pub theme: Theme,
     pub zone: Zone,
     pub wheel: Wheel,
     /// Weight, age and sex, for heart-rate calories and W/kg.
     pub rider: Rider,
-    /// The first-run setup step to resume, 0 when setup is done.
-    pub setup: u8,
     /// Ride alert settings, carried for `ride::alerts`.
     pub alerts: [u8; ALERTS_LENGTH],
-    /// Warn before sunset and at it, while riding.
-    pub sunset_alert: bool,
-    /// The optional ride pages the rider left on, in their order.
-    pub deck: Deck,
-    /// The readings on the main page's lower line.
-    pub main_slots: Slots,
     pub mode: DisplayMode,
-    pub auto_brightness: bool,
 }
 
 impl Default for Options {
@@ -211,26 +142,17 @@ impl Default for Options {
             auto_pause: true,
             sounds: true,
             auto_lap: AutoLap::Every(5),
-            daylight: Daylight::Auto,
-            theme: Theme::Dark,
+            theme: Theme::Night,
             zone: Zone::Chile,
             wheel: Wheel::default(),
             rider: Rider::default(),
-            setup: 0,
             alerts: ALERTS_DEFAULT,
-            sunset_alert: true,
-            deck: Deck::default(),
-            main_slots: Slots::default(),
             mode: DisplayMode::default(),
-            auto_brightness: true,
         }
     }
 }
 
 impl Options {
-    /// A device that never saved preferences starts first-run setup here.
-    pub const FIRST_RUN: u8 = 1;
-
     fn encode(self) -> [u8; OPTIONS_LENGTH] {
         let mut flags = 0;
         if self.auto_pause {
@@ -239,26 +161,16 @@ impl Options {
         if self.sounds {
             flags |= SOUNDS;
         }
-        if self.sunset_alert {
-            flags |= SUNSET;
-        }
         let mut bytes = [0; OPTIONS_LENGTH];
         let mut at = 0;
         for field in [
-            &[
-                flags,
-                auto_lap_byte(self.auto_lap),
-                self.daylight.byte(),
-                self.setup,
-            ][..],
-            &self.deck.encode(),
+            &[flags, auto_lap_byte(self.auto_lap)][..],
             &self.alerts,
             &[self.theme.byte()],
             &self.zone.encode(),
             &self.wheel.encode(),
             &self.rider.encode(),
-            &self.main_slots.encode(),
-            &[self.mode.byte(), u8::from(self.auto_brightness)],
+            &[self.mode.byte()],
         ] {
             bytes[at..at + field.len()].copy_from_slice(field);
             at += field.len();
@@ -268,36 +180,28 @@ impl Options {
 
     fn decode(bytes: &[u8]) -> Option<Self> {
         let bytes: &[u8; OPTIONS_LENGTH] = bytes.try_into().ok()?;
-        let (&[flags, auto_lap, daylight, setup], rest) = bytes.split_first_chunk()?;
-        if flags & !(AUTO_PAUSE | SOUNDS | SUNSET) != 0 {
+        let (&[flags, auto_lap], rest) = bytes.split_first_chunk()?;
+        if flags & !(AUTO_PAUSE | SOUNDS) != 0 {
             return None;
         }
-        let (&deck, rest) = rest.split_first_chunk()?;
         let (&alerts, rest) = rest.split_first_chunk::<ALERTS_LENGTH>()?;
         let (&theme, rest) = rest.split_first()?;
         let (&zone, rest) = rest.split_first_chunk()?;
         let (&wheel, rest) = rest.split_first_chunk()?;
         let (&rider, rest) = rest.split_first_chunk()?;
-        let (&main_slots, rest) = rest.split_first_chunk()?;
-        let &[mode, auto_brightness] = rest else {
+        let &[mode] = rest else {
             return None;
         };
         Some(Self {
             auto_pause: flags & AUTO_PAUSE != 0,
             sounds: flags & SOUNDS != 0,
             auto_lap: auto_lap_from_byte(auto_lap)?,
-            daylight: Daylight::from_byte(daylight)?,
             theme: Theme::from_byte(theme)?,
             zone: Zone::decode(zone)?,
             wheel: Wheel::decode(wheel)?,
             rider: Rider::decode(rider)?,
-            setup,
             alerts,
-            sunset_alert: flags & SUNSET != 0,
-            deck: Deck::decode(deck)?,
-            main_slots: Slots::decode(main_slots)?,
             mode: DisplayMode::from_byte(mode)?,
-            auto_brightness: flag_from_byte(auto_brightness)?,
         })
     }
 }
@@ -369,9 +273,7 @@ pub fn encode(record: &Record) -> heapless::Vec<u8, RECORD_CAPACITY> {
 
 pub fn decode(bytes: &[u8]) -> (Record, Stored) {
     if bytes.is_empty() {
-        let mut record = Record::default();
-        record.options.setup = Options::FIRST_RUN;
-        return (record, Stored::Missing);
+        return (Record::default(), Stored::Missing);
     }
     match decode_current(bytes) {
         Some(record) if encode(&record)[..] == *bytes => (record, Stored::Current),
@@ -396,8 +298,8 @@ fn decode_current(bytes: &[u8]) -> Option<Record> {
     })
 }
 
-/// The shell's backlight choices as Settings shows and edits them. The
-/// shell owns and stores them; VANA only asks it to change them.
+/// The shell's backlight choices. The shell owns and stores them; VANA only
+/// asks it to change them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplayChoice {
     pub brightness: u8,
@@ -608,23 +510,10 @@ impl Runtime {
         system: &mut Shell<D, I, P, B>,
         now: u64,
     ) {
-        self.adopt_brightness_choice(system, now);
         if self.preferences.due(now) {
             self.write_preferences(system, now);
         }
         self.save_display(system, now, false);
-    }
-
-    fn adopt_brightness_choice<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
-        &mut self,
-        system: &mut Shell<D, I, P, B>,
-        now: u64,
-    ) {
-        if let Some(choice) = system.take_brightness_choice() {
-            let mut options = self.preferences.options;
-            options.auto_brightness = choice == BrightnessChoice::Auto;
-            self.set_options(options, now);
-        }
     }
 
     /// Apply a backlight edit, and store it once settled or when `flush`.
@@ -710,13 +599,16 @@ impl Runtime {
     pub fn training_profile(&self) -> TrainingProfile {
         self.preferences.profile
     }
+
+    /// Whether the screens take the light look now.
+    pub fn light(&self) -> bool {
+        self.preferences.options.theme == Theme::Day
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::data::Metric as Reading;
-    use crate::screens::ride::RidePage;
 
     fn sensor(device_type: u8, device_number: u16) -> device_api::ant::Identity {
         device_api::ant::Identity {
@@ -742,8 +634,8 @@ mod tests {
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                15, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1, 0, 1
+                16, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -758,33 +650,23 @@ mod tests {
             auto_pause: false,
             sounds: true,
             auto_lap: AutoLap::Every(10),
-            daylight: Daylight::Night,
-            theme: Theme::Auto,
+            theme: Theme::Day,
             zone: Zone::utc(-3),
             wheel: Wheel {
                 mm: Some(2105),
                 manual: true,
             },
             rider: Rider::decode([72, 41, 2]).unwrap(),
-            setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
-            sunset_alert: true,
-            deck: Deck::default().toggled(RidePage::Climb),
-            main_slots: Slots {
-                left: Reading::Kcal,
-                right: Reading::NormalizedPower,
-            },
-            mode: DisplayMode::default().next(),
-            auto_brightness: false,
+            mode: DisplayMode::from_byte(1).unwrap(),
         };
         let chosen = record(profile, sensors, options);
         let bytes = encode(&chosen);
         assert_eq!(
             bytes.as_slice(),
             [
-                15, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 1, 40, 7, 0, 5, 0, 0b110, 10, 2, 3, 3,
-                0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6,
-                2, 1, 0
+                16, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 1, 40, 7, 0, 5, 0, 0b10, 10, 50, 180, 100,
+                0, 0x2c, 1, 70, 30, 0, 1, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 1
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -795,28 +677,15 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 84);
+        assert_eq!(bytes.len(), 77);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
     }
 
     #[test]
-    fn a_brightness_choice_round_trips_and_an_unknown_one_is_damage() {
-        let mut manual = Record::default();
-        manual.options.auto_brightness = false;
-        let bytes = encode(&manual);
-        assert_eq!(bytes[bytes.len() - 1], 0);
-        assert_eq!(decode(&bytes), (manual, Stored::Current));
-        let mut damaged = bytes.to_vec();
-        let last = damaged.len() - 1;
-        damaged[last] = 2;
-        assert_eq!(decode(&damaged), (Record::default(), Stored::Foreign));
-    }
-
-    #[test]
     fn a_stored_mode_round_trips_and_an_unknown_row_is_damage() {
         let mut chosen = Record::default();
-        chosen.options.mode = DisplayMode::default().next();
+        chosen.options.mode = DisplayMode::from_byte(1).unwrap();
         let bytes = encode(&chosen);
         assert_eq!(bytes[bytes.len() - 1], 1);
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -831,37 +700,13 @@ mod tests {
         }
     }
 
-    /// The slots are stored as ids; an id no firmware wrote is damage, in
-    /// either slot, and the record stays as it was.
-    #[test]
-    fn stored_main_page_readings_round_trip_and_an_unknown_id_is_damage() {
-        let mut chosen = Record::default();
-        chosen.options.main_slots = Slots {
-            left: Reading::Kcal,
-            right: Reading::NormalizedPower,
-        };
-        let bytes = encode(&chosen);
-        assert_eq!(bytes[bytes.len() - 4..bytes.len() - 2], [6, 2]);
-        assert_eq!(decode(&bytes), (chosen, Stored::Current));
-        for tail in [[9, 1], [0, 9], [255, 1], [0, 255]] {
-            let mut damaged = bytes.to_vec();
-            let at = damaged.len() - 4;
-            damaged[at..at + 2].copy_from_slice(&tail);
-            assert_eq!(
-                decode(&damaged),
-                (Record::default(), Stored::Foreign),
-                "{tail:?}"
-            );
-        }
-    }
-
     /// The rider's body is stored whole and a damaged one is never trusted.
     #[test]
     fn a_stored_body_round_trips_and_a_damaged_one_is_refused() {
         let mut chosen = Record::default();
         chosen.options.rider = Rider::decode([72, 41, 2]).unwrap();
         let bytes = encode(&chosen);
-        assert_eq!(bytes[bytes.len() - 7..bytes.len() - 4], [72, 41, 2]);
+        assert_eq!(bytes[bytes.len() - 4..bytes.len() - 1], [72, 41, 2]);
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
         for tail in [
             [29, 41, 2],
@@ -871,7 +716,7 @@ mod tests {
             [72, 41, 3],
         ] {
             let mut damaged = bytes.to_vec();
-            let at = damaged.len() - 6;
+            let at = damaged.len() - 4;
             damaged[at..at + 3].copy_from_slice(&tail);
             assert_eq!(
                 decode(&damaged),
@@ -889,7 +734,7 @@ mod tests {
             manual: false,
         };
         let bytes = encode(&learned);
-        let wheel_at = bytes.len() - 10;
+        let wheel_at = bytes.len() - 7;
         assert_eq!(&bytes[wheel_at..wheel_at + 3], [0x98, 0x08, 0]);
         assert_eq!(decode(&bytes), (learned, Stored::Current));
         assert_eq!(learned.options.wheel.size_mm(), 2200);
@@ -914,16 +759,6 @@ mod tests {
             edge[at..at + 2].copy_from_slice(&mm.to_le_bytes());
             assert_eq!(decode(&edge).0.options.wheel.mm, Some(mm));
         }
-    }
-
-    #[test]
-    fn the_light_look_follows_the_theme_and_night() {
-        for night in [false, true] {
-            assert!(!Theme::Dark.is_light(night));
-            assert!(Theme::Light.is_light(night));
-        }
-        assert!(Theme::Auto.is_light(false));
-        assert!(!Theme::Auto.is_light(true));
     }
 
     #[test]
@@ -958,9 +793,7 @@ mod tests {
     #[test]
     fn missing_unknown_and_damaged_records_use_defaults() {
         let defaults = Record::default();
-        let mut first_run = Record::default();
-        first_run.options.setup = Options::FIRST_RUN;
-        assert_eq!(decode(&[]), (first_run, Stored::Missing));
+        assert_eq!(decode(&[]), (defaults, Stored::Missing));
         let current = encode(&defaults);
         for (version, stored) in [
             (0, Stored::Outdated),
@@ -986,35 +819,15 @@ mod tests {
         for older in [&[0, 250, 0, 170, 0][..], &[VERSION - 1, 250, 0, 170, 0, 0]] {
             assert_eq!(decode(older), (defaults, Stored::Outdated), "{older:?}");
         }
-        let off = Options {
-            sunset_alert: false,
-            ..Options::default()
-        };
-        assert_eq!(off.encode()[0], AUTO_PAUSE | SOUNDS);
-        assert_eq!(Options::decode(&off.encode()), Some(off));
-        assert!(
-            Options::decode(&Options::default().encode())
-                .unwrap()
-                .sunset_alert
-        );
-        assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        let hidden = Options {
-            deck: Deck::default().toggled(RidePage::Climb),
-            ..Options::default()
-        };
-        assert_eq!(hidden.encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [3, 0xff]);
-        assert_eq!(Options::decode(&hidden.encode()), Some(hidden));
+        assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS);
         const FLAGS: usize = 0;
         const AUTO_LAP: usize = 1;
-        const DAYLIGHT: usize = 2;
-        const DECK: usize = 4;
-        const THEME: usize = DECK + Deck::LENGTH + ALERTS_LENGTH;
+        const THEME: usize = 2 + ALERTS_LENGTH;
         const ZONE: usize = THEME + 1;
         const WHEEL: usize = ZONE + ZONE_LENGTH;
         const WHEEL_MANUAL: usize = WHEEL + 2;
         const RIDER: usize = WHEEL + WHEEL_LENGTH;
-        const AUTO_BRIGHTNESS: usize = OPTIONS_LENGTH - 1;
+        const MODE: usize = OPTIONS_LENGTH - 1;
         const FTP: [u8; 2] = [250, 0];
         let good = Options::default().encode();
         let with = |at: usize, value: u8| {
@@ -1025,18 +838,15 @@ mod tests {
         for (case, profile, options) in [
             ("one byte short", FTP, good[..OPTIONS_LENGTH - 1].to_vec()),
             ("one byte long", FTP, [&good[..], &[0]].concat()),
-            ("unknown flag", FTP, with(FLAGS, good[FLAGS] | 1 << 3)),
-            ("unknown ride page", FTP, with(DECK, 4)),
-            ("a ride page twice", FTP, with(DECK + 1, good[DECK])),
+            ("unknown flag", FTP, with(FLAGS, good[FLAGS] | 1 << 2)),
             ("lap too long", FTP, with(AUTO_LAP, AUTO_LAP_FIRST_UNUSED)),
-            ("unknown day/night", FTP, with(DAYLIGHT, 3)),
-            ("unknown theme", FTP, with(THEME, 3)),
+            ("unknown theme", FTP, with(THEME, 2)),
             ("unknown zone", FTP, with(ZONE, 2)),
             ("implausible wheel", FTP, with(WHEEL, 0xdb)),
             ("unknown wheel source", FTP, with(WHEEL_MANUAL, 2)),
             ("rider weight out of range", FTP, with(RIDER, 29)),
             ("rider age out of range", FTP, with(RIDER + 1, 100)),
-            ("unknown brightness choice", FTP, with(AUTO_BRIGHTNESS, 3)),
+            ("unknown display mode", FTP, with(MODE, 2)),
             ("impossible FTP", [0, 0], good.to_vec()),
         ] {
             let damaged = [&[VERSION, profile[0], profile[1], 170, 0, 0][..], &options].concat();
@@ -1122,25 +932,13 @@ mod tests {
                 1 => AutoLap::AtStart,
                 _ => AutoLap::Every(rng.range(1, u64::from(AUTO_LAP_MAX_KM)) as u8),
             },
-            daylight: rng.pick(&[Daylight::Auto, Daylight::Day, Daylight::Night]),
-            theme: rng.pick(&[Theme::Dark, Theme::Light, Theme::Auto]),
-            setup: rng.byte(),
+            theme: rng.pick(&[Theme::Day, Theme::Night]),
             alerts: core::array::from_fn(|_| rng.byte()),
-            sunset_alert: rng.one_in(2),
             wheel: Wheel {
                 mm: rng.one_in(2).then(|| rng.range(1_500, 2_400) as u16),
                 manual: rng.one_in(2),
             },
-            deck: Deck::OPTIONAL
-                .into_iter()
-                .filter(|_| rng.one_in(2))
-                .fold(Deck::default(), Deck::toggled),
-            main_slots: Slots {
-                left: rng.pick(&Reading::LOWER),
-                right: rng.pick(&Reading::LOWER),
-            },
             mode: DisplayMode::from_byte(rng.below(2) as u8).unwrap(),
-            auto_brightness: rng.one_in(2),
             rider: Rider::decode([
                 rng.pick(&[0, 30, 72, 200]),
                 rng.pick(&[0, 10, 41, 99]),

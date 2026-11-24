@@ -11,7 +11,7 @@ use crate::compose::registry::{SPACE, TOP_LINE};
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_| tree(),
+    tree: || tree(),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Ride(Role::Act),

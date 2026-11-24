@@ -1,6 +1,5 @@
-use super::data::{Data, ListKind};
+use super::data::Data;
 use super::input::{Action, Cues};
-use super::list::Costed;
 use super::node::{Flags, MAX_DEPTH, MAX_NODES, Node, Sizing, What};
 use super::parse::{Anchor, Tree};
 use super::registry;
@@ -95,29 +94,6 @@ pub struct Placed {
     pub form: u8,
 }
 
-/// A Scroll's viewport and its item template, placed once at the
-/// viewport's start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Scroll {
-    pub node: u8,
-    pub viewport: Rect16,
-    pub template: Rect16,
-    first: u8,
-    count: u8,
-}
-
-impl Scroll {
-    /// The page of items its viewport shows, on this panel.
-    pub fn page(&self, at: &Scaled) -> crate::screens::scroll::Layout {
-        super::list::page(self.viewport, self.template, at)
-    }
-
-    /// Where its template's tiles sit among the layout's tiles.
-    pub fn tiles(&self) -> core::ops::Range<usize> {
-        usize::from(self.first)..usize::from(self.first + self.count)
-    }
-}
-
 /// A tree solved under one set of flags. Preorder of its tiles is the
 /// focus order of those with an action.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,7 +102,6 @@ pub struct Solved<'a> {
     flags: Flags,
     leaves: heapless::Vec<Placed, MAX_LEAVES>,
     focus: u32,
-    scroll: Option<Scroll>,
 }
 
 const _: () = assert!(core::mem::size_of::<Solved>() <= 340);
@@ -137,7 +112,6 @@ impl Solved<'_> {
         flags: Flags::NONE,
         leaves: heapless::Vec::new(),
         focus: 0,
-        scroll: None,
     };
 
     pub const fn flags(&self) -> Flags {
@@ -148,16 +122,10 @@ impl Solved<'_> {
         &self.leaves
     }
 
-    /// The scroll and the tiles of its template.
-    pub fn scroll(&self) -> Option<(Scroll, &[Placed])> {
-        let scroll = self.scroll?;
-        Some((scroll, &self.leaves[scroll.tiles()]))
-    }
-
-    /// Draw each tile onto `out`, a scroll's template once a card.
+    /// Draw each tile onto `out`.
     pub fn prepare(&self, data: &dyn Data, out: &mut Canvas) {
         if let Some(tree) = self.tree {
-            prepare(tree, &self.leaves, self.scroll.as_ref(), None, data, out);
+            prepare(tree, &self.leaves, None, data, out);
         }
     }
 
@@ -197,7 +165,6 @@ pub(crate) enum Balance {
 pub(crate) trait Sink<'a> {
     fn start(&mut self, tree: &'a Tree, flags: Flags);
     fn leaf(&mut self, placed: Placed, focus: bool);
-    fn scroll(&mut self, scroll: Scroll);
     fn node(&mut self, _node: u8, _rect: Rect16) {}
 }
 
@@ -217,10 +184,6 @@ impl<'a> Sink<'a> for Solved<'a> {
         if self.leaves.push(placed).is_err() {
             unreachable!("solve refuses more than MAX_LEAVES tiles before it places one");
         }
-    }
-
-    fn scroll(&mut self, scroll: Scroll) {
-        self.scroll = Some(scroll);
     }
 }
 
@@ -249,22 +212,16 @@ pub(crate) fn solve<'a>(
     solver.place(at, area, balance, cues, sink)
 }
 
-/// Draw `leaves`, solved from `tree`, onto `out`: each tile once, but the
-/// template of `scroll` once on each card in view.
-/// Draw `leaves`; the tile at node `focused` shows its focus.
+/// Draw `leaves`, solved from `tree`, onto `out`; the tile at node
+/// `focused` shows its focus.
 pub fn prepare(
     tree: &Tree,
     leaves: &[Placed],
-    scroll: Option<&Scroll>,
     focused: Option<u8>,
     data: &dyn Data,
     out: &mut Canvas,
 ) {
-    let template = scroll.map_or(0..0, Scroll::tiles);
-    for (index, placed) in leaves.iter().enumerate() {
-        if template.contains(&index) {
-            continue;
-        }
+    for placed in leaves {
         if let Some((tile, arg)) = component(tree.nodes()[usize::from(placed.node)]) {
             if Some(placed.node) == focused {
                 tile.focused(arg, placed, tree.at(), data, out);
@@ -272,9 +229,6 @@ pub fn prepare(
                 tile.prepare(arg, placed, tree.at(), data, out);
             }
         }
-    }
-    if let Some(scroll) = scroll {
-        super::list::prepare(tree, scroll, &leaves[template], data, out);
     }
 }
 
@@ -370,11 +324,6 @@ impl<'a> Solver<'a> {
                 next = usize::from(solver.end[next]);
             }
             solver.end[i] = next as u8;
-            if let What::Scroll { .. } = nodes[i].known() {
-                for item in i + 1..next {
-                    solver.never_upgraded |= 1 << item;
-                }
-            }
         }
         solver.present = u32::from(nodes[0].condition().holds(flags));
         for i in 0..nodes.len() {
@@ -408,15 +357,6 @@ impl<'a> Solver<'a> {
             }
             None
         })
-    }
-
-    /// An item's height down its scroll, which place refuses to lay
-    /// across: the template's units when it names them, else its look.
-    fn item_length(&self, template: usize, at: &Scaled) -> u16 {
-        match self.nodes[template].size().get() {
-            Sizing::Units(n) => at.unit(usize::from(n)) as u16,
-            Sizing::Content | Sizing::Grow(_) => self.want[template][index(Axis::Down)],
-        }
     }
 
     fn misfit(&self, node: usize, axis: Axis, gets: u16, needs: u16) -> Why {
@@ -472,18 +412,6 @@ impl<'a> Solver<'a> {
                         want[0] = want[0].max(self.want[child][0]);
                         want[1] = want[1].max(self.want[child][1]);
                     }
-                    want
-                }
-                What::Scroll { .. } => {
-                    let (across, down) = (index(Axis::Across), index(Axis::Down));
-                    let mut want = [0, 0];
-                    for child in self.children(i) {
-                        want[across] = want[across].max(self.want[child][across]);
-                        let item = self.want[child][down].max(self.item_length(child, at));
-                        want[down] = want[down].max(item);
-                    }
-                    want[across] += 2 * super::list::gutter(at);
-                    want[down] += 2 * super::list::gap(at);
                     want
                 }
             };
@@ -580,7 +508,7 @@ impl<'a> Solver<'a> {
                 .is_some_and(|frame| usize::from(frame.end) <= i)
             {
                 if let Some(frame) = frames.pop() {
-                    frame.close(at, &mut cost, sink)?;
+                    frame.close(&mut cost);
                 }
             }
             if !self.is_present(i) {
@@ -597,7 +525,7 @@ impl<'a> Solver<'a> {
             sink.node(i as u8, rect);
             let node = self.nodes[i];
             let tile = component(node);
-            if tile.is_some() || matches!(node.known(), What::Scroll { .. }) {
+            if tile.is_some() {
                 for axis in [Axis::Across, Axis::Down] {
                     let (has, wants) = (rect.len(axis), self.want[i][index(axis)]);
                     if wants > has {
@@ -606,11 +534,7 @@ impl<'a> Solver<'a> {
                 }
             }
             if let Some((tile, arg)) = tile {
-                let before = cost;
                 self.leaf(i, rect, hidden, (tile, arg), at, cues, &mut cost, sink)?;
-                if let Some(frame) = frames.iter_mut().rev().find(|frame| frame.scrolls()) {
-                    frame.template_tile(rect, before, cost)?;
-                }
             } else {
                 let how = Open { at, balance, cost };
                 let frame = Frame::open(self, i, rect, hidden, axis, how);
@@ -621,7 +545,7 @@ impl<'a> Solver<'a> {
             i += 1;
         }
         while let Some(frame) = frames.pop() {
-            frame.close(at, &mut cost, sink)?;
+            frame.close(&mut cost);
         }
         if cost.shapes > MAX_SHAPES || cost.runs > MAX_RUNS {
             return Err(Why::Canvas {
@@ -678,7 +602,6 @@ impl<'a> Solver<'a> {
 }
 
 struct Frame {
-    node: u8,
     end: u8,
     rect: Rect16,
     hidden: bool,
@@ -695,15 +618,6 @@ enum Kind {
         shown: bool,
         base: Cost,
         most: Cost,
-    },
-    /// `base` is the cost before the template; `tiles` are the template's,
-    /// which `list::most` charges for every card in view.
-    Scroll {
-        list: ListKind,
-        first: u8,
-        template: Rect16,
-        base: Cost,
-        tiles: heapless::Vec<Costed, { super::list::MOST_TEMPLATE_TILES }>,
     },
 }
 
@@ -747,50 +661,15 @@ impl Frame {
                     most: Cost::default(),
                 },
             ),
-            What::Scroll { list } => (
-                parent,
-                Kind::Scroll {
-                    list,
-                    first: how.cost.shown,
-                    template: super::list::template_at(rect, how.at),
-                    base: how.cost,
-                    tiles: heapless::Vec::new(),
-                },
-            ),
             What::Leaf { .. } => unreachable!("a leaf opens no frame"),
         };
         Self {
-            node: i as u8,
             end: solver.end[i],
             rect,
             hidden,
             axis,
             kind,
         }
-    }
-
-    fn scrolls(&self) -> bool {
-        matches!(self.kind, Kind::Scroll { .. })
-    }
-
-    /// Note a tile of the scroll's template: where it sits on its card and
-    /// what it cost the canvas.
-    fn template_tile(&mut self, rect: Rect16, before: Cost, after: Cost) -> Result<(), Why> {
-        let Kind::Scroll {
-            template, tiles, ..
-        } = &mut self.kind
-        else {
-            unreachable!("only a scroll's frame notes its template's tiles");
-        };
-        let costed = Costed {
-            top: rect.top - template.top,
-            bottom: rect.bottom - template.top,
-            shapes: (after.shapes - before.shapes) as u8,
-            runs: (after.runs - before.runs) as u8,
-        };
-        tiles
-            .push(costed)
-            .map_err(|_| Why::Template { node: self.node })
     }
 
     fn hides(&self) -> bool {
@@ -807,7 +686,6 @@ impl Frame {
         at: &Scaled,
         cost: &mut Cost,
     ) -> Result<Rect16, Why> {
-        let want = solver.want[child];
         let (rect, main) = (self.rect, self.axis);
         match &mut self.kind {
             Kind::Stack { shown, base, most } => {
@@ -815,62 +693,16 @@ impl Frame {
                 slide_ends(cost, *base, most);
                 Ok(rect)
             }
-            Kind::Scroll { template, .. } => {
-                if main == Axis::Across {
-                    return Err(Why::Across { node: self.node });
-                }
-                let item = solver.item_length(child, at);
-                if let Sizing::Units(_) = solver.nodes[child].size().get()
-                    && want[index(main)] > item
-                {
-                    return Err(solver.misfit(child, main, item, want[index(main)]));
-                }
-                // Place refused a viewport too small for the item, its gaps
-                // and gutters before it opened this frame.
-                template.bottom = template.top + item;
-                Ok(*template)
-            }
             Kind::Line(line) => line.next(solver, child, main, rect, at),
         }
     }
 
-    fn close<'a>(self, at: &Scaled, cost: &mut Cost, sink: &mut impl Sink<'a>) -> Result<(), Why> {
-        match self.kind {
-            Kind::Stack { base, mut most, .. } => {
-                slide_ends(cost, base, &mut most);
-                cost.shapes += most.shapes;
-                cost.runs += most.runs;
-            }
-            Kind::Scroll {
-                list,
-                first,
-                template,
-                base,
-                tiles,
-            } => {
-                let items = super::list::in_view(self.rect, template, at);
-                if items > list.most_in_view() {
-                    return Err(Why::InView {
-                        node: self.node,
-                        items: items as u8,
-                    });
-                }
-                let (shapes, runs) = super::list::most(self.rect, template, &tiles, at);
-                cost.shapes = base.shapes + shapes;
-                cost.runs = base.runs + runs;
-                if !self.hidden {
-                    sink.scroll(Scroll {
-                        node: self.node,
-                        viewport: self.rect,
-                        template,
-                        first,
-                        count: cost.shown - first,
-                    });
-                }
-            }
-            Kind::Line(_) => {}
+    fn close(self, cost: &mut Cost) {
+        if let Kind::Stack { base, mut most, .. } = self.kind {
+            slide_ends(cost, base, &mut most);
+            cost.shapes += most.shapes;
+            cost.runs += most.runs;
         }
-        Ok(())
     }
 }
 

@@ -13,12 +13,11 @@ use super::node::{Flags, MAX_DEPTH, MAX_NODES, Node, What, When};
 use super::registry::{self, SCRIPT};
 use super::reject::{Place, Reject, Why};
 use super::script::{self, INSTANCES, SLOTS, TILES_A_TREE};
-use super::solve::{self, Balance, Placed, Rect16, Scroll, Sink, Solved};
+use super::solve::{self, Balance, Placed, Rect16, Sink, Solved};
 use crate::screens::scaled::Scaled;
 use core::num::NonZeroU8;
-use core::ops::Range;
 
-pub const VERSION: u8 = 4;
+pub const VERSION: u8 = 5;
 pub const RECORD: usize = firmware_services::storage::CAPACITY;
 pub const MAX_SCREENS: usize = 32;
 pub const MAX_LAYERS: usize = 8;
@@ -118,7 +117,6 @@ struct Check;
 impl Sink<'_> for Check {
     fn start(&mut self, _: &Tree, _: Flags) {}
     fn leaf(&mut self, _: Placed, _: bool) {}
-    fn scroll(&mut self, _: Scroll) {}
 }
 
 impl Screen {
@@ -196,40 +194,17 @@ impl Screen {
 }
 
 /// The first tile with an action no button of its screen reaches where
-/// focus never lands on it: anywhere on a screen that keeps MOVE, and in a
-/// list's item template, which stands for every item rather than one.
+/// focus never lands on it: anywhere on a screen that keeps MOVE.
 fn unreachable_tile(tree: &Tree, buttons: &Buttons) -> Option<Why> {
-    let items = items(&tree.nodes);
     tree.nodes.iter().enumerate().find_map(|(index, node)| {
         let What::Leaf { component, arg } = node.known() else {
             return None;
         };
         let action = registry::tile(component).action(arg)?;
         let node = index as u8;
-        if buttons.reach(action) || action.touch_only() {
-            None
-        } else if buttons.move_.is_some() {
-            Some(Why::NoButtonPath { node })
-        } else {
-            items.contains(&index).then_some(Why::ItemAction { node })
-        }
+        (!buttons.reach(action) && !action.touch_only() && buttons.move_.is_some())
+            .then_some(Why::NoButtonPath { node })
     })
-}
-
-/// The nodes of the scroll's item template: the subtree after the scroll.
-fn items(nodes: &[Node]) -> Range<usize> {
-    let Some(scroll) = nodes
-        .iter()
-        .position(|node| matches!(node.known(), What::Scroll { .. }))
-    else {
-        return 0..0;
-    };
-    let (mut end, mut open) = (scroll + 1, 1);
-    while open > 0 {
-        open = open - 1 + usize::from(nodes[end].children());
-        end += 1;
-    }
-    scroll + 1..end
 }
 
 impl Layer {
@@ -578,7 +553,7 @@ pub(crate) fn tree(bytes: &[u8], at: &Scaled) -> Result<Tree, Why> {
         .map(Node::from_bytes)
         .collect();
     let mut open: heapless::Vec<Open, MAX_DEPTH> = heapless::Vec::new();
-    let (mut hero, mut heavy, mut scroll) = (false, false, false);
+    let (mut hero, mut heavy) = (false, false);
     for (i, &node) in nodes.iter().enumerate() {
         let at = i as u8;
         if i > 0 && open.is_empty() {
@@ -601,12 +576,6 @@ pub(crate) fn tree(bytes: &[u8], at: &Scaled) -> Result<Tree, Why> {
                     return Err(Why::Empty { node: at });
                 }
                 children
-            }
-            What::Scroll { .. } => {
-                if core::mem::replace(&mut scroll, true) {
-                    return Err(Why::Scroll { node: at });
-                }
-                1
             }
             What::Leaf { component, arg } => {
                 let tile = registry::tile(component);

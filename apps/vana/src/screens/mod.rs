@@ -9,21 +9,17 @@ pub mod done;
 pub mod format;
 pub mod home;
 pub mod icons;
-pub mod kinetic;
 pub mod limits;
 pub mod look;
 pub mod power;
 pub mod ride;
 pub mod scaled;
-pub mod scroll;
 pub mod sensors;
-pub mod settings;
 pub mod sheet;
 pub mod sign;
 pub mod theme;
 pub mod touch;
 pub mod workout;
-pub mod workouts;
 
 use device_api::input::Fixtures;
 

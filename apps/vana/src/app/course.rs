@@ -16,7 +16,6 @@ use crate::ride::current::{Outing, Ride};
 use crate::ride::journal::Read;
 use crate::ride::log::{Slot, Status, decode};
 use crate::ride::medium::Medium;
-use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
 use crate::screens::ride::map::Ground;
@@ -364,20 +363,6 @@ impl Runtime {
             self.display.redraw();
         }
     }
-}
-
-/// The way home to warn about: none while a recovered ride's track is
-/// still being read, as its length so far is not the way home.
-pub(super) fn way_home(track: &RideTrack, speed_mm_s: Option<u32>, moving_ms: u64) -> Option<Leg> {
-    if matches!(track.resume, Resume::Reading { .. }) {
-        return None;
-    }
-    Leg::of(
-        &track.breadcrumb.guide()?,
-        track.breadcrumb.way_back(),
-        speed_mm_s,
-        moving_ms,
-    )
 }
 
 /// Follow the course as it is now, or nothing once it is cleared. Once

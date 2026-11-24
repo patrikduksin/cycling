@@ -2,6 +2,8 @@
 use super::*;
 use crate::app::navigation::To;
 use crate::sensors::ant::device_type::HEART_RATE;
+use crate::workout::model::Name;
+use crate::workout::today;
 use device_api::server::{
     AccessPoint, AccessPointConfig, AccessPointState, Method, Reach, Request, Server,
 };
@@ -465,7 +467,7 @@ struct Upload {
     journal: Journal,
     transport: Transport,
     radio: Radio2,
-    files: crate::workout::library::tests::Region,
+    files: crate::workout::today::tests::Region,
     now: u64,
 }
 
@@ -481,7 +483,7 @@ impl Upload {
             journal,
             transport: Transport::default(),
             radio: Radio2::default(),
-            files: crate::workout::library::tests::formatted(),
+            files: crate::workout::today::tests::formatted(),
             now,
         };
         upload.step();
@@ -710,7 +712,7 @@ fn the_phone_clears_the_course_from_memory_and_the_card() {
 #[test]
 fn without_a_formatted_card_no_course_is_kept() {
     let mut phone = Upload::new();
-    phone.files = crate::workout::library::tests::Region::default();
+    phone.files = crate::workout::today::tests::Region::default();
     let gpx = loop_gpx("Nowhere", 40);
     let (status, body) = phone.send(Method::Put, gpx.as_bytes(), 512);
     assert_eq!(status, 503, "{body}");
@@ -813,7 +815,6 @@ impl Upload {
 
     /// The files under `workouts/`, each of which must decode.
     fn stored_workouts(&mut self) -> Vec<String> {
-        use crate::workout::library::FOLDER;
         let mut sector = [0; 512];
         let mut store = firmware_services::volume::open(
             &mut self.files,
@@ -824,7 +825,7 @@ impl Upload {
         let dir = firmware_services::files::mount(&mut store, &mut sector).unwrap();
         let mut entries = Vec::new();
         dir.list(&mut store, &mut sector, |entry| {
-            if entry.name.as_str().starts_with(FOLDER) {
+            if entry.name.as_str().starts_with("workouts/") {
                 entries.push(*entry);
             }
         })
@@ -849,143 +850,57 @@ impl Upload {
 }
 
 #[test]
-fn a_phone_uploads_lists_replaces_and_deletes_a_workout() {
+fn a_phone_uploads_replaces_and_deletes_todays_workout() {
     let mut phone = Upload::new();
     let (status, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
     assert_eq!(
-        (status, body.contains(r#""uploads":[]"#)),
-        (200, true),
-        "{body}"
+        (status, body.as_str()),
+        (200, r#"{"store":"ok","workout":null}"#)
     );
     let bytes = workout_bytes("Over \"Unders\"", 10);
     let (status, body) = phone.put_workout(&bytes, 37);
     assert_eq!(status, 200, "{body}");
-    assert!(
-        body.contains(r#""name":"OVER \"UNDERS\"","minutes":20,"steps":2"#),
-        "{body}"
+    assert_eq!(
+        body,
+        r#"{"store":"ok","workout":{"name":"OVER \"UNDERS\"","minutes":20,"steps":2}}"#
     );
-    assert!(body.contains(r#""max":8"#), "{body}");
-    let stored = phone.stored_workouts();
-    assert_eq!(stored.len(), 1);
-    let file = stored[0].strip_prefix("workouts/").unwrap();
-    assert!(
-        file.starts_with("over-unders-") && file.ends_with(".vw"),
-        "{file}"
-    );
-    // The picker lists it, and the chosen workout stays chosen.
-    assert_eq!(phone.runtime.training.library.uploads().len(), 1);
-    // The same name replaces the file; another name is another file.
-    let longer = workout_bytes("Over \"Unders\"", 15);
-    assert_eq!(phone.put_workout(&longer, 512).0, 200);
-    assert_eq!(phone.stored_workouts(), stored);
-    assert!(
-        phone
-            .put_workout(&workout_bytes("Tempo", 20), 512)
-            .1
-            .contains("TEMPO")
-    );
-    assert_eq!(phone.stored_workouts().len(), 2);
-    let query = std::format!("file={file}");
-    let (status, _) = phone.request(Method::Delete, "/api/workouts", &query, b"", 1);
+    assert_eq!(phone.stored_workouts(), [today::FILE]);
+    let name = |phone: &Upload| phone.runtime.training.today.map(|w| w.name);
+    assert_eq!(name(&phone), Some(Name::new("OVER \"UNDERS\"")));
+    let (status, body) = phone.put_workout(&workout_bytes("Tempo", 20), 512);
+    assert!(status == 200 && body.contains("TEMPO"), "{body}");
+    assert_eq!(phone.stored_workouts(), [today::FILE]);
+    assert_eq!(name(&phone), Some(Name::new("TEMPO")));
+    let (status, _) = phone.request(Method::Delete, "/api/workouts", "", b"", 1);
     assert_eq!(status, 204);
-    assert_eq!(phone.stored_workouts().len(), 1);
-    let (status, _) = phone.request(Method::Delete, "/api/workouts", &query, b"", 1);
+    assert!(phone.stored_workouts().is_empty());
+    assert_eq!(name(&phone), None);
+    let (status, _) = phone.request(Method::Delete, "/api/workouts", "", b"", 1);
     assert_eq!(status, 404, "gone already");
-    for odd in [
-        "file=../course.dat",
-        "file=course.dat",
-        "file=",
-        "",
-        "file=%00",
-    ] {
-        let (status, _) = phone.request(Method::Delete, "/api/workouts", odd, b"", 1);
-        assert_eq!(status, 404, "{odd}");
-    }
-    assert_eq!(phone.stored_workouts().len(), 1);
 }
 
-/// The list of eight workouts whose names need the most escaping still fits
-/// its response and ends whole.
+/// A name that needs the most escaping still fits its response whole.
 #[test]
-fn the_list_of_eight_worst_case_names_is_whole() {
+fn a_worst_case_name_is_whole() {
     let mut phone = Upload::new();
-    for index in 0..8 {
-        let name = std::format!("{index}{}", "\"".repeat(19));
-        assert_eq!(phone.put_workout(&workout_bytes(&name, 10), 512).0, 200);
-    }
+    let name = "\"".repeat(20);
+    assert_eq!(phone.put_workout(&workout_bytes(&name, 10), 512).0, 200);
     let (status, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
     assert_eq!(status, 200);
-    assert!(body.ends_with("]}"), "{body}");
-    assert_eq!(body.matches(r#""file":"#).count(), 8, "{body}");
+    assert!(body.contains(&"\\\"".repeat(20)), "{body}");
+    assert!(body.ends_with("}}"), "{body}");
 }
 
-/// A file the host left that the device cannot read takes one of the eight
-/// places; the page lists it so it can be deleted, and nothing else can.
+/// A file a host left that the device cannot read says why, and an upload
+/// replaces it.
 #[test]
-fn an_unreadable_file_is_listed_and_deleted_from_the_phone() {
+fn an_unreadable_file_reports_and_an_upload_replaces_it() {
     let mut phone = Upload::new();
-    for index in 0..7 {
-        let (status, _) = phone.put_workout(&workout_bytes(&std::format!("Set {index}"), 10), 512);
-        assert_eq!(status, 200);
-    }
-    crate::workout::library::tests::put(
-        &mut phone.files,
-        "workouts/zz-broken.vw",
-        b"not a workout",
-    );
+    crate::workout::today::tests::put(&mut phone.files, today::FILE, b"not a workout");
     let (_, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
-    assert!(
-        body.contains(r#""unlisted":[{"file":"zz-broken.vw"}]"#),
-        "{body}"
-    );
-    assert_eq!(body.matches(r#""name":"#).count(), 7, "{body}");
-    let (status, body) = phone.put_workout(&workout_bytes("Set 7", 10), 512);
-    assert_eq!((status, body.as_str()), (409, r#"{"error":"full"}"#));
-    for odd in [
-        "file=zz-broken.vw.bak",
-        "file=../course.dat",
-        "file=course.dat",
-    ] {
-        assert_eq!(
-            phone
-                .request(Method::Delete, "/api/workouts", odd, b"", 1)
-                .0,
-            404
-        );
-    }
-    let (status, _) = phone.request(Method::Delete, "/api/workouts", "file=zz-broken.vw", b"", 1);
-    assert_eq!(status, 204);
-    assert_eq!(phone.stored_workouts().len(), 7);
-    assert_eq!(phone.put_workout(&workout_bytes("Set 7", 10), 512).0, 200);
-    let (_, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
-    assert!(body.contains(r#""unlisted":[]"#), "{body}");
-}
-
-#[test]
-fn a_ninth_workout_is_refused_and_a_stored_one_can_be_replaced() {
-    use crate::workout::library::UPLOADS;
-    let mut phone = Upload::new();
-    for index in 0..UPLOADS {
-        let (status, body) =
-            phone.put_workout(&workout_bytes(&std::format!("Set {index}"), 10), 512);
-        assert_eq!(status, 200, "{body}");
-    }
-    let before = phone.stored_workouts();
-    let (status, body) = phone.put_workout(&workout_bytes("Set 8", 10), 512);
-    assert_eq!((status, body.as_str()), (409, r#"{"error":"full"}"#));
-    assert_eq!(phone.stored_workouts(), before);
-    assert_eq!(phone.put_workout(&workout_bytes("Set 3", 30), 512).0, 200);
-    assert_eq!(phone.stored_workouts().len(), UPLOADS);
-    // Room made by a delete is room again.
-    let file = before[0].strip_prefix("workouts/").unwrap();
-    let query = std::format!("file={file}");
-    assert_eq!(
-        phone
-            .request(Method::Delete, "/api/workouts", &query, b"", 1)
-            .0,
-        204
-    );
-    assert_eq!(phone.put_workout(&workout_bytes("Set 8", 10), 512).0, 200);
+    assert_eq!(body, r#"{"store":"decode","workout":null}"#);
+    assert_eq!(phone.put_workout(&workout_bytes("Set", 10), 512).0, 200);
+    assert_eq!(phone.stored_workouts(), [today::FILE]);
 }
 
 #[test]
@@ -1022,7 +937,7 @@ fn a_workout_the_card_cannot_keep_says_why_and_stores_nothing() {
     let (status, _) = phone.put_workout(&workout_bytes("   ", 10), 512);
     assert_eq!(status, 422);
     assert_eq!(phone.stored_workouts(), kept);
-    phone.files = crate::workout::library::tests::Region::default();
+    phone.files = crate::workout::today::tests::Region::default();
     let (status, reply) = phone.put_workout(&good, 512);
     assert_eq!(
         (status, reply.contains("unavailable")),
@@ -1033,8 +948,8 @@ fn a_workout_the_card_cannot_keep_says_why_and_stores_nothing() {
 
 /// Hostile uploads: damaged workouts (half with their CRC made right again,
 /// so the checks behind it run) and random bytes, in pieces of any size.
-/// Nothing panics, every answer is a status the page knows, and every file
-/// under `workouts/` is a whole valid workout, at most eight.
+/// Nothing panics, every answer is a status the page knows, and the one file
+/// under `workouts/` is a whole valid workout, the one the device holds.
 #[test]
 fn hostile_workout_uploads_never_panic_and_leave_only_valid_files() {
     use crate::testing::Rng;
@@ -1069,74 +984,14 @@ fn hostile_workout_uploads_never_panic_and_leave_only_valid_files() {
             400 | 409 | 413 | 422 => refused += 1,
             other => panic!("seed {seed}: {other} {reply}"),
         }
-        assert!(phone.stored_workouts().len() <= 8, "seed {seed}");
+        assert!(phone.stored_workouts().len() <= 1, "seed {seed}");
         assert_eq!(
-            phone.runtime.training.library.uploads().len(),
-            phone.stored_workouts().len().min(8),
+            phone.runtime.training.today.is_some(),
+            !phone.stored_workouts().is_empty(),
             "seed {seed}"
         );
     }
     assert!(kept >= 1 && refused > 200, "{kept} kept, {refused} refused");
-}
-
-fn learn_radio_in_a_phone_pass(
-    runtime: &mut Runtime,
-    journal: &mut Journal,
-    ap: &mut impl AccessPoint,
-    now: u64,
-) {
-    runtime.serve_phone(&mut Absent, ap, journal, &mut MustNotWrite, now);
-}
-
-fn device_rows(runtime: &Runtime) -> (bool, Vec<&'static str>) {
-    let mut view = runtime.navigation.view(None);
-    view.compose_main();
-    let _ = view.show_settings();
-    view.prepare();
-    let canvas = view.canvas();
-    let shown = ["SENSORS", "PHONE", "STORAGE", "FIRMWARE"]
-        .into_iter()
-        .filter(|label| canvas.shows(label))
-        .collect();
-    (canvas.shows("DEVICE"), shown)
-}
-
-#[test]
-fn without_wifi_settings_device_shows_three_rows_for_move_swipe_and_tap() {
-    use crate::screens::settings::Row;
-    use crate::screens::workout::Page;
-    let mut journal = Journal::erased();
-    let mut radio = super::Radio::new();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut Absent, 900);
-    runtime.navigation.go(To::Settings);
-    super::touch::touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], 1000);
-    assert_eq!(
-        device_rows(&runtime),
-        (true, std::vec!["SENSORS", "STORAGE", "FIRMWARE"])
-    );
-    assert_eq!(runtime.navigation.setting(), Row::Sensors);
-    let mut now = 2000;
-    let mut walked = std::vec![runtime.navigation.setting()];
-    for _ in 0..3 {
-        runtime.input_received(press(Role::Move), now, now, &mut radio);
-        walked.push(runtime.navigation.setting());
-        now += 500;
-    }
-    assert_eq!(
-        walked,
-        [Row::Sensors, Row::Storage, Row::Firmware, Row::Ftp]
-    );
-    super::touch::touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], now);
-    assert_eq!(device_rows(&runtime).1, ["SENSORS", "STORAGE", "FIRMWARE"]);
-    super::touch::touch(
-        &mut runtime,
-        &mut radio,
-        &[(120, 76 + 2 * 52 + 10)],
-        now + 500,
-    );
-    assert_eq!(runtime.navigation.setting(), Row::Firmware);
-    assert_eq!(runtime.navigation.page(), Page::Settings);
 }
 
 /// Holding MOVE on the map stops following the course, whether or not a

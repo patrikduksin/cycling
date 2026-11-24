@@ -2,13 +2,13 @@
 //! not confirmed. ACT (trash) discards them with the journal; BACK keeps
 //! them.
 use super::question::{answer, block, gap, panel, say};
-use super::{Builtin, Choices, Nodes};
+use super::{Builtin, Nodes};
 use crate::compose::input::Buttons;
 use crate::compose::tiles::line::Say;
 use crate::screens::cue::Icon;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| TREE.into_iter().collect::<Nodes>(),
+    tree: || TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Trash),
         back: answer(false, Icon::Back),

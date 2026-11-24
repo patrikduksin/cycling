@@ -1,5 +1,4 @@
 //! Portable foreground presentation and preferences. Acquisition lives independently.
-use crate::backlight::{Backlight, Curve};
 use crate::idle::Config;
 use crate::idle::Gate;
 use crate::idle::Idle;
@@ -14,15 +13,7 @@ use device_api::input::Input;
 use device_api::input::InputSource;
 use device_api::observation::Availability;
 use device_api::observation::Error;
-use device_api::observation::Observation;
 use device_api::power::Power;
-use device_api::sensors::Light;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BrightnessChoice {
-    Percent,
-    Auto,
-}
 
 /// Required display/input, with power and persistent settings independently optional.
 /// Constant working memory; rendering borrows no frame buffer across submission.
@@ -201,10 +192,6 @@ pub struct Shell<D, I, P, B> {
     pub clock: Option<fn() -> u64>,
     idle: Idle,
     effective: u8,
-    curve: Option<&'static Curve>,
-    backlight: Backlight,
-    light: Observation<Light>,
-    brightness_choice: Option<BrightnessChoice>,
     power: P,
     display: D,
     input: I,
@@ -302,10 +289,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             clock: None,
             idle: Idle::new(now),
             effective: 0,
-            curve: None,
-            backlight: Backlight::default(),
-            light: Observation::Unavailable,
-            brightness_choice: None,
             power,
             display,
             input,
@@ -393,24 +376,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn effective(&self) -> u8 {
         self.effective
     }
-    /// Follow the ambient light along `curve` from the next tick, or show the
-    /// stored brightness with none.
-    pub fn set_curve(&mut self, curve: Option<&'static Curve>) {
-        self.curve = curve;
-    }
-    pub fn auto(&self) -> bool {
-        self.curve.is_some()
-    }
-    pub fn offer_brightness_choice(&mut self, choice: BrightnessChoice) {
-        self.brightness_choice = Some(choice);
-    }
-    /// The choice offered since the last call, once.
-    pub fn take_brightness_choice(&mut self) -> Option<BrightnessChoice> {
-        self.brightness_choice.take()
-    }
-    pub fn observe_light(&mut self, light: Observation<Light>) {
-        self.light = light;
-    }
     pub fn dimmed(&self) -> bool {
         self.idle.dimmed()
     }
@@ -496,17 +461,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             0
         } else {
             self.idle.tick(now, config);
-            let selected = match self.curve {
-                Some(curve) => {
-                    self.backlight
-                        .step(self.light, curve, self.settings.brightness, now)
-                }
-                None => {
-                    self.backlight = Backlight::default();
-                    self.settings.brightness
-                }
-            };
-            self.idle.effective(selected, config)
+            self.idle.effective(self.settings.brightness, config)
         };
         self.power_error = self.power.availability() == Availability::Failed;
         if self.power.availability() == Availability::Ready && self.effective != effective {

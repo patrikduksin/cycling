@@ -222,7 +222,6 @@ impl Runtime {
         };
         self.storage_worked |= media.touched;
         self.pin_climb(fresh);
-        self.follow_road();
         status
     }
 
@@ -241,11 +240,6 @@ impl Runtime {
         } else {
             state.pinned = None;
         }
-    }
-
-    /// The climb the map pinned, for the climb page and its follower.
-    pub(super) fn pinned(&self) -> Option<&Pinned> {
-        pinned_of(&self.lookahead)
     }
 
     /// What the look-ahead did last: no pack, off the map, working or idle.

@@ -5,7 +5,7 @@ use super::scaled::Scaled;
 use super::sensors::Glance;
 use super::theme::{self, Theme};
 use crate::compose::builtin::Laid;
-use crate::compose::data::{Data, Effort, ListKind, Metric};
+use crate::compose::data::{Data, Effort, Metric};
 use crate::compose::registry::SPACE;
 
 pub const SENSORS: usize = 3;
@@ -24,10 +24,6 @@ impl Data for Facts {
 
     fn zone(&self, _: Effort) -> Option<u8> {
         None
-    }
-
-    fn list(&self, _: ListKind) -> u16 {
-        0
     }
 
     fn sheet(&self) -> Option<&Facts> {

@@ -26,8 +26,6 @@ invariants! {
         PageWhileWiping: "a page other than FORMAT or the brand shown while a wipe runs"
             if matches!(runtime.format, Format::Running { .. })
                 && !matches!(runtime.navigation.page(), Page::Format | Page::Boot),
-        EditingOffSettings: "a Settings number edited off the Settings page"
-            if runtime.navigation.editing() && runtime.navigation.page() != Page::Settings,
         TurningOffUnsynced: "turning off while the phone has not confirmed every ride"
             if matches!(runtime.power.sheet, Sheet::TurningOff { .. } | Sheet::Requested { .. })
                 && runtime.holds_unsynced(),

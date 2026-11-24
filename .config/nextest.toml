@@ -5,18 +5,10 @@ slow = { max-threads = "num-cpus" }
 filter = """
 test(=ride::recorder::explore::every_state_of_the_recorder_keeps_the_rules)
 | test(=a_two_hour_ride_with_a_pause_replays_exactly)
-| test(=no_turn_back_when_riding_home_in_the_dark_or_with_sunset_off)
-| test(=riding_out_toward_dusk_says_when_to_turn_back)
-| test(=the_battery_estimate_shows_on_ready_and_warns_during_a_fast_drain)
 | test(=a_five_hour_track_on_the_card_reads_back_after_a_restart)
-| test(=every_dark_screen_reads_the_same_through_the_light_look)
 | test(=benchmark_screens_paint_their_recorded_pixels)
-| test(=riding_into_dusk_warns_before_sunset_and_again_at_sunset)
-| test(=riding_round_a_loop_never_says_turn_back_on_the_last_leg)
 | test(=navigation::arriving_shows_the_ride_totals_for_a_minute)
-| test(=no_turn_back_when_stopping_on_the_way_home)
 | test(=bulk_media_keeps_a_long_ride_through_power_loss)
-| test(=a_wipe_cut_at_any_write_keeps_the_other_stores_and_leaves_none_foreign_or_unusable)
 """
 test-group = "slow"
 priority = 100

@@ -69,7 +69,7 @@ pub struct Case {
     pub feed: Feed,
 }
 
-pub static CASES: [Case; 11] = [
+pub static CASES: [Case; 10] = [
     Case {
         name: "ride main, noisy, radar",
         reach: scenes::ride_main,
@@ -93,11 +93,6 @@ pub static CASES: [Case; 11] = [
     Case {
         name: "workout",
         reach: scenes::workout_page,
-        feed: Feed::Steady { cars: false },
-    },
-    Case {
-        name: "stats",
-        reach: scenes::stats,
         feed: Feed::Steady { cars: false },
     },
     Case {

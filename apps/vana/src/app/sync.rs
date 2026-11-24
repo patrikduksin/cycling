@@ -100,17 +100,11 @@ impl Runtime {
     }
 
     /// The newest ride on the journal the ride pages show waits for the
-    /// phone: its summary says SYNC TO SAVE, not RIDE SAVED.
+    /// phone: the toast says SYNC TO SAVE, not RIDE SAVED.
     pub(super) fn shown_ride_unsynced(&self) -> bool {
         let medium = self.ride.shown();
         let newest = self.ride.recorder(medium).next_ride_id().wrapping_sub(1);
         self.sync.protects(medium, newest)
-    }
-
-    pub(super) fn can_discard(&self) -> bool {
-        self.ride
-            .volatile_ride()
-            .is_none_or(|id| !self.sync.protects(Medium::Internal, id))
     }
 
     /// The host asked to clear the internal journal under `token`. With

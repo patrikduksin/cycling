@@ -1,14 +1,15 @@
-//! Structured training: workouts, the library riders pick them from, their
-//! upload format and the player that runs one during a ride.
+//! Structured training: workouts, today's workout, their upload format and
+//! the player that runs one during a ride.
 //!
-//! `model` owns steps, targets and repeats; `library` the built-ins and the
-//! uploads on the FILES volume; `codec` the upload bytes; `player` the
-//! ride-time state, including the 20-minute and ramp FTP tests; `history`
-//! the record of how a saved ride's workout went. Screens live in
-//! `screens::workouts` (the picker) and `screens::ride::workout` (the page).
+//! `model` owns steps, targets and repeats; `today` the one workout stored on
+//! the FILES volume; `codec` the upload bytes; `player` the ride-time state,
+//! including the 20-minute and ramp FTP tests; `history` the record of how a
+//! saved ride's workout went. `screens::ride::workout` draws the page.
 pub mod codec;
-pub mod ftp;
+#[cfg(any(test, feature = "invariants"))]
+pub mod fixtures;
 pub mod history;
-pub mod library;
 pub mod model;
 pub mod player;
+pub mod shape;
+pub mod today;

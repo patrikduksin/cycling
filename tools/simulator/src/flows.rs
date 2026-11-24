@@ -228,7 +228,8 @@ impl Sim {
         self.wait_for("RESUMED", seconds(3)).unwrap();
     }
 
-    /// Set an option from the terminal, as `OPTION AUTO_LAP START` does.
+    /// Set one of VANA's options from the terminal, as the `cycling` CLI
+    /// does: `OPTION NAME VALUE`.
     #[track_caller]
     pub fn option(&mut self, name: &str, value: &str) {
         let (status, out) = self.command(&format!("OPTION {name} {value}"));
@@ -258,31 +259,27 @@ impl Sim {
             .to_string()
     }
 
-    /// Choose the workout `name` from the terminal; the next ride plays it.
+    /// Put `workout` on FILES as today's workout and have VANA read it, as
+    /// `cycling workout-load` does. A board without an MMC gets one, since
+    /// FILES lives there.
     #[track_caller]
-    pub fn choose_workout(&mut self, name: &str) {
-        let (status, list) = self.command("WORKOUT LIST");
-        assert_eq!(status, "OK", "WORKOUT LIST: {list}");
-        let rows: usize = status_field(&list, "rows")
-            .and_then(|rows| rows.parse().ok())
-            .unwrap_or_else(|| panic!("WORKOUT LIST: {list}"));
-        let wanted = format!("workout={}", name.replace(' ', "_"));
-        for row in 1..rows {
-            let (status, out) = self.command(&format!("WORKOUT SELECT {row}"));
-            assert_eq!(status, "OK", "WORKOUT SELECT {row}: {out}");
-            let (_, chosen) = self.command("WORKOUT STATUS");
-            if chosen.split_whitespace().any(|field| field == wanted) {
-                return;
-            }
+    pub fn load_workout(&mut self, workout: &vana::workout::model::Workout) {
+        if self.device.bulk.presence() == crate::bulk::Presence::Absent {
+            self.fit_bulk(crate::bulk::Presence::Ready);
         }
-        panic!("no workout {name:?}: {list}");
+        let bytes = vana::workout::codec::encode(workout);
+        self.put_file(vana::workout::today::FILE, &bytes);
+        let (status, out) = self.command("WORKOUT LOAD");
+        assert_eq!(status, "OK", "WORKOUT LOAD: {out}");
     }
 
-    /// From Home, choose the workout `name` and start its ride.
+    /// Load `workout` as today's, then start it from Home, which opens on
+    /// its card.
     #[track_caller]
-    pub fn start_workout(&mut self, name: &str) {
-        self.choose_workout(name);
-        self.start_ride();
+    pub fn start_workout(&mut self, workout: &vana::workout::model::Workout) {
+        self.load_workout(workout);
+        self.press_home_start();
+        self.wait_for("RECORDING", seconds(2)).unwrap();
     }
 
     /// `WORKOUT STATUS` as fields, such as `step` = "3/12".
@@ -299,8 +296,16 @@ impl Sim {
     /// "End ride?" and ACT answers it; Ride done opens at once, and this
     /// waits for the ride's last samples to be written. Ends on Ride done.
     pub fn stop_ride(&mut self) {
+        let heart_bpm = self.world().heart_bpm;
+        self.ride_at(0.0, 0.0, heart_bpm, 0.0);
         if self.ride_state() == "recording" {
-            self.pause_ride();
+            // An auto pause may already be on its way, and VANA ignores the
+            // press while one is: either pause lets the ride end.
+            self.press(Role::Act);
+            self.wait_until(seconds(3), |screen| {
+                screen.contains("Paused") || screen.contains("Auto paused")
+            })
+            .unwrap();
         }
         self.press(Role::Back);
         self.expect_text("End ride?");

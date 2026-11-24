@@ -11,8 +11,8 @@ code that implements these rules lives in `apps/vana/src/screens/chrome.rs`
 `apps/vana/src/screens/canvas.rs` (a prepared screen of text runs and shapes)
 and `packages/shell/src/rendering/font` (type).
 
-Every screen uses it: Home, Sensors, Workouts, the ride pages, the
-paused screen, End ride, the ride summary, Settings, the brand
+Every screen uses it: Home, Sensors, the ride pages, the
+paused screen, End ride, the brand
 reveal, the power sheets and the charge shown while the device is off on USB
 power. None draws in the 5 × 7 bitmap font.
 
@@ -207,46 +207,19 @@ as it is painted, so `BLACK` shows white; no screen paints a second palette.
 
 ### Night
 
-At night VANA keeps the same palette. The backlight does not follow the sun:
-with Brightness on AUTO the ambient light sensor lowers it in the dark (see
-Brightness below). A dimmer palette would make the panel darker still but
-would also shrink the gap between `WHITE` readings and `SECONDARY` labels, and
+At night VANA keeps the same palette. A dimmer palette would make the panel
+darker still but would also shrink the gap between `WHITE` readings and `SECONDARY` labels, and
 between `AMBER` and `RED` alerts and everything else, so it is not used:
 alerts keep their full contrast at night.
 
-DAY / NIGHT in Settings → Display chooses AUTO, DAY or NIGHT. In AUTO the sun
-decides: night begins once it is 4° below the horizon at the last fixed
-position (mid civil twilight) and ends once it is back above 2° below, so a
-reading near the line cannot flicker. The time is the recorded UTC: network
-time, else the GPS receiver's clock. Without a position, the local clock
-decides (night from 20:00 to 7:00); with no clock at all, the last answer
-stays. Night decides only the THEME's AUTO and the DAY / NIGHT note.
-
 ### Brightness
 
-BRIGHTNESS in Settings → Display steps through AUTO, 25, 50, 75 and 100%. A
-percent is a fixed brightness. AUTO follows the ambient light sensor along
-the curve of the display mode (see MODE under Motion): SAVER is lower than
-NORMAL at every light. A change in the light must last before the backlight follows: a
-darker one for more than 6 s, a brighter one for more than 2 s, so a tunnel,
-a passing shadow or lamps close together never move it. Light that repeats
-slower than that, bright for over 2 s and dark for over 6 s, can still move it
-(street lamps far apart at a slow pace); a ride trace will show whether real
-lamps reach the sensor that strongly. It then rises at most 8 points every
-100 ms (a full brightening takes about a second) and falls at most 1 point
-every 100 ms (100% to 10% takes 9 s). A change smaller than 3 points is
-ignored. The curves are provisional: no daylight reading
-is known yet, so NORMAL reaches 100% at a reading of 4,000. Without a fresh
-reading AUTO shows the stored percent, and so does charging standby. Dimming
-after inactivity keeps its own level on top of either. The terminal's `BRIGHTNESS n` is a rider's percent, a fixed brightness, and
-`BRIGHTNESS AUTO` returns to AUTO; VANA adopts either on its next pass and
-stores it. `SETTINGS` reports `auto` and the `effective` level.
+`OPTION BRIGHTNESS` sets a fixed brightness, 10 to 100% in steps of 10; 100%
+is the default. Dimming after inactivity keeps its own level on top of it.
 
 ### Light
 
-THEME in Settings → Display chooses DARK, LIGHT or AUTO. DARK is the default.
-In AUTO the light look follows the day and night decision above: light by day,
-dark at night. The row's note says LIGHT NOW or DARK NOW.
+`OPTION THEME` chooses NIGHT or DAY, the light look. NIGHT is the default.
 
 The light look is derived from the one palette, applied to each colour as it
 is painted. A screen paints through a row that carries the look, and the row
@@ -283,8 +256,7 @@ steepness: grey, blue, green, yellow, orange, red, purple (Z1 to Z7).
 Without a profile or a reading the zone colour is `TERTIARY`. Heart rate uses
 Z1 to Z5 of the same ramp.
 
-Climb steepness uses the ramp from blue up, on the climb page's profile and on
-the summary's elevation page:
+Climb steepness uses the ramp from blue up, on the climb page's profile:
 
 | Band | Colour |
 | --- | --- |
@@ -340,19 +312,16 @@ two roles' buttons are nearest the same corner does not build.
 | Trash | `RED`, white icon | Throw a ride away or forget a sensor: beside MOVE it asks first, beside ACT it answers (or asks, on a sensor's page) |
 | Target | `GREEN`, black icon | Zero a power meter (ACT) |
 
-The summary's FTP offer uses two of them at once: Check beside ACT takes the
-suggested FTP, Back beside BACK keeps the one in force. END RIDE? uses three:
-Back, Check and, with a FILES store to note it on, Trash beside MOVE, which
-asks DISCARD RIDE?. DISCARD RIDE? and a boot's
-FORMAT STORAGE? ([volumes](mmc-volumes.md#format)) put Trash beside ACT.
+END RIDE? uses two of them at once: Back and Check. A boot's
+FORMAT STORAGE? ([volumes](mmc-volumes.md#format)) puts Trash beside ACT.
 A screen with a cue in a top corner shows without the status bar, which
 would cut the cue. On the C606 that is every screen with a back cue: the
-paused screen, END RIDE?, DISCARD RIDE?, LOSE n UNSAVED RIDES?, the FTP offer,
+paused screen, END RIDE?, LOSE n UNSAVED RIDES?,
 FORMAT STORAGE? and a sensor's pages. The
 layout check fails any frame that draws a cue under the status bar.
 
-Only the paused screen, End ride, Discard ride, LOSE n UNSAVED RIDES?, the
-summary, FORMAT STORAGE? and a sensor's pages
+Only the paused screen, End ride, LOSE n UNSAVED RIDES?,
+FORMAT STORAGE? and a sensor's pages
 (its detail and FORGET SENSOR?) show cues. Ride pages
 never do: their buttons keep fixed roles. Content stays clear of the
 corners the screen's own cues take on that device, wherever the buttons put
@@ -362,7 +331,7 @@ the C606's.
 
 ## Cells
 
-The stats, lap and climb pages (the map page draws instead) list readings in cells: a `CAPTION` in
+The climb page (the map page draws instead) lists readings in cells: a `CAPTION` in
 `SECONDARY` over its value in `VALUE`, in the metric's colour. Cells sit in two
 columns from the body's 10 px margin, 48 px apart, so each caption has 7 clear
 rows above it, and keep 8 px between the columns. A page that
@@ -487,13 +456,13 @@ Only one toast shows at a time. From highest priority to lowest:
 1. The lap just taken.
 2. An automatic start or resume (AUTO START, AUTO RESUME), shown briefly.
 3. Transient announcements, shown for 2 s: RECORDING, RESUMED, RIDE SAVED
-   (when a ride ends away from the summary), RIDE RECOVERED. A pause has no
+   (when a ride ends away from RIDE SAVED), RIDE RECOVERED. A pause has no
    toast: the paused screen says it. Battery news shows for 4 s, on any
    page: CHARGING 64% (`Good`) when USB power arrives, LOW BATTERY 20% (`Warn`) as the charge falls to
    20%, and CHARGE SOON 10% (`Alert`) at 10% and again at 5%. Each level is
    announced once per discharge; charging re-arms them. A device switched on
-   already low says so only in its status bar. Ride alerts, chosen under
-   Settings ALERTS and LIMITS, show here on ride pages, each with its cue
+   already low says so only in its status bar. Ride alerts, chosen with
+   `OPTION`, show here on ride pages, each with its cue
    ([sounds](ux-flows.md#sounds)): a limit broken for 10 s, HR HIGH 172, HR
    LOW 95, POWER HIGH 400W, POWER LOW 120W or CADENCE LOW 60, is `Warn` and
    repeats every 2 min while it lasts. EAT AND DRINK (`Info`) comes every
@@ -509,10 +478,7 @@ Only one toast shows at a time. From highest priority to lowest:
    point flicker is ignored and a smaller fall counts as one moment. A battery
    level toast keeps it back for 30 s. It rarely shows without a ride or an
    hour of use behind it, since nothing is stored between boots. Limits
-   and reminders keep 3 s apart; the radar's beeps never wait. The sunset
-   alerts, SUNSET IN 30 MIN, SUNSET - LIGHTS ON, and TURN BACK BY 17:40 or
-   TURN BACK NOW, are `Warn` (the font is ASCII, so a dash stands for a
-   dot); [UX flows](ux-flows.md#sunset) says when each shows.
+   and reminders keep 3 s apart; the radar's beeps never wait.
 4. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
    FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
    hidden: the only one item 5 may replace is the bulk failure that moved
@@ -546,7 +512,7 @@ looks. Its digits jump to each new distance: 10 m steps under 1 km, then
 
 | Form | Where | Box | Content |
 | --- | --- | --- | --- |
-| Banner | Main, stats and climb | Rows 22 to 104, full width, square corners | The glyph, then the distance in `SIGN_50` with its unit in `SIGN_20`; off course a second line TURN BACK in `SIGN_18`; arrived ARRIVED in `SIGN_27`; turn around the U-turn glyph and TURN over AROUND in `SIGN_27` on baselines 58 and 86 (`SIGN_20` on 56 and 78 in the badge) |
+| Banner | Main and climb | Rows 22 to 104, full width, square corners | The glyph, then the distance in `SIGN_50` with its unit in `SIGN_20`; off course a second line TURN BACK in `SIGN_18`; arrived ARRIVED in `SIGN_27`; turn around the U-turn glyph and TURN over AROUND in `SIGN_27` on baselines 58 and 86 (`SIGN_20` on 56 and 78 in the badge) |
 | Chip | Main, at rest | `RAISED` where the main page's tree places it, under the time; 28 tall, radius 8, as wide as its text; the glyph on a 28 × 28 turn-fill square | The distance in `SIGN_20`, its unit in `SIGN_13` `MUTED` |
 | Badge | The map | At (8, 30), 60 tall, radius 12, as wide as its text | The banner at 60/82 of its size |
 
@@ -599,7 +565,6 @@ Applied to the cycling-specific charts:
 | Chart | Design |
 | --- | --- |
 | Zone gauge (main page) | One segment per zone, 5 px. Zones below the current one are lit in their colours. The current zone fills left to right as the reading moves through it. Zones above are `TERTIARY`. The zone chip (`Z4`) beside the reading is `BODY` in the zone colour, `Z-` without a zone. |
-| Time in zone (stats) | One 8 px bar per metric, `PWR` and `HR` captions on its left, segments proportional to time in each zone, in zone colours, with 2 px gaps and no empty zones. A `TERTIARY` track before any time is recorded. |
 | Elevation profile (climb) | A solid area per column in the look's zone colour for the steepness of that column's grade, under a 2 px outline in the look's text colour, with a 10 px disc for the rider in the text colour on a 2 px ring of the background. The road behind the rider mixes its colour half way to the background ([UX flows](ux-flows.md#climb) says which stretch the profile spans). Over it, LAST or CLIMB, AVG and MAX in `TAG`, each over its number in `DIGITS_19`. |
 | Workout (workout page) | One bar per played step across the chart's box inside its gutters, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity, scaled so the hardest step nearly fills the chart. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the theme's zone colour of the target's middle, Z3's for cadence and the unlit colour without a target. Steps already ridden keep a third of their colour over the background; the step on now and those ahead are full colour. A 2 px line in the text colour runs the chart's height where the ride is now. |
 | Target band (main page) | During a workout, a 2 px `WHITE` bar under the power or heart gauge spans the step's target. |
@@ -703,13 +668,13 @@ clock's minute, a reading, a glide that reaches the next pixel, the battery
 or a sensor, or when a press or a test capture waits for a frame. A charging
 battery that is almost full climbs by less than a pixel, so it sends nothing.
 
-MODE in Settings → Display chooses NORMAL or SAVER, the rider's call, never
+`OPTION DISPLAY` chooses NORMAL or SAVER, the rider's call, never
 automatic. NORMAL is everything described here. SAVER draws less: gauges and
 radar markers jump to each reading or report instead of gliding, radar
 markers stop closing between reports, and every number on the ride pages changes
 once a second, when the ride clock's second turns (the wall clock's while no
 ride records): speed, power, heart rate, cadence, the distance and totals on
-the lower line and the stats, lap, climb and workout figures. Gauges and markers still show every reading as it arrives, so
+the lower line and the climb and workout figures. Gauges and markers still show every reading as it arrives, so
 SAVER draws a frame for each report, about four a second, and one for the
 numbers. `apps/vana/src/app/mode.rs` holds one table row per mode; the rest
 of VANA reads its fields and never asks which mode is on. The choice is
@@ -735,69 +700,6 @@ alerts use readings as they arrive. The mechanism is
 | Turn off | The ring's tail chases its head round until it is gone, while the wordmark and TURNING OFF fade to black. VANA asks the device to turn off once the black frame is on the panel. | 480 ms |
 | Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
 | Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
-| Light changes | In AUTO the backlight follows a light that has changed for 2 s (brighter) or 6 s (darker), then ramps up 8% or down 1% every 100 ms. Nothing is redrawn. | Up: from 2 s, a full step in about 1 s more. Down: from 6 s, 100% to 10% in 9 s |
-
-## Settings
-
-Settings is a list of sections, one per page, with page dots in the status
-bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, MAIN PAGE, RIDE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
-headline over rows that scroll under the finger, between the headline and
-the save status (see Lists that scroll). The `TITLE` falls back to `BODY`
-when a section name is too wide, as `RIDE PAGES` is. A section whose rows do not fit
-shows a 3 px scroll bar in the right margin: a `CARD` track down the rows,
-the part in view in `SECONDARY`. A row is a small card (radius 12) with its
-label as a `CAPTION` over its value in `BODY`, and an optional note in
-`SECONDARY` at the right of the value line. A note that does not fit whole is
-left out, after trying the part following its first comma. The focused row is `RAISED` with a 3 px `ACCENT` ring.
-
-BODY holds WEIGHT KG, AGE YEARS and SEX, each NOT SET until entered. Weight
-and age move one per press. The first press of an unset number starts it at
-70 kg or 30 years, and a tap below the lowest value clears it again; a held
-button stops at the lowest value. With a weight set, the FTP note adds W/KG.
-
-Acting on a row does one of three things:
-
-- a number (FTP, LTHR, WHEEL) opens the editor: one `ACCENT` field with the value in
-  `VALUE` and the note it anchors (a zone, or AUTO or MANUAL for the wheel), over
-  minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
-- a choice steps to its next value at once (brightness auto/25/50/75/100%, dim
-  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, mode normal/saver, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
-  km/at start, wheel mode auto/manual, the main page's two lower readings, ride pages (STATS, LAP, CLIMB, MAP) on/off, sounds on/off);
-- an action opens a page (SENSORS).
-
-On a device without Wi-Fi (its access point reports `Unsupported`) DEVICE
-holds SENSORS, STORAGE and FIRMWARE only: no PHONE row and no gap, and MOVE,
-swipes, taps and scrolling treat the section as three rows. A radio that is
-fitted but failed keeps the PHONE row.
-
-Storage and firmware rows only show facts. The save status sits in the
-bottom band, under any toast. Brightness and dimming belong to the shell, so
-VANA asks it to apply them at once and store them; the other choices, AUTO
-among them, are stored in VANA's preference record and VANA hands the shell
-the display mode's curve. Every choice survives a restart. A preference
-record another firmware version wrote is foreign: VANA keeps the defaults,
-saves nothing over it and asks FORMAT STORAGE? at boot
-([volumes](mmc-volumes.md#format)).
-
-TIME ZONE sets the clock on the status bar, ride start times and night by the
-clock. CHILE, the default, follows mainland Chile's summer
-time: UTC-3 from the first Saturday of September at 24:00 to the first
-Saturday of April at 24:00, UTC-4 otherwise. Its note says which is in force,
-such as UTC-4 NOW. UTC-3 (Magallanes, Aysén) and UTC-4 hold all year. The
-shell's own `TIMEZONE` terminal setting does not move VANA's clock.
-
-### Main page readings
-
-MAIN PAGE chooses the two readings on the main page's last line
-([UX flows](ux-flows.md#choosing-the-main-pages-readings)). The unit beside
-the value names the reading: RPM, KM, NP, KCAL, KJ or M. The three averages
-share the unit AVG, because the half-width slot has no room for more, and
-their colour tells them apart (`POWER`, `HEART`, `SPEED`). A count past
-9999 KCAL reads in thousands ("10K"), so a number is never cut off. A
-reading with no data yet shows `--`.
-
-RIDE PAGES turns the optional ride pages on and off
-([UX flows](ux-flows.md#choosing-the-ride-pages)).
 
 ## Sounds
 
@@ -812,90 +714,27 @@ holding TopLeft to reboot are in [UX flows](ux-flows.md#buttons).
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: runs the start or opens Sensors from the widget on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left extends the step by a minute (500 m for a distance step) |
-| Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
-| Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: runs the start (Ride, today's workout card, Just ride) or opens Sensors from the widget on Home, and the row on Sensors; a cue acts as its button. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
+| Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages |
 | Long press | Still for 1 s, then lifted | On the map, stops following the course (COURSE OFF; [UX flows](ux-flows.md#map)) |
 | Tap on the course sign | As a tap, on the banner or the chip | Opens the map page ([UX flows](ux-flows.md#course)) |
-| Settings pads | Act on contact | Step the edited value |
 
 ### How touch is routed
 
 Touch follows UIKit's model. When a finger lands, the screen hit-tests what
-lies under it: the control a tap would act on (a card, tile or row), the
-list it sits in and whether the page takes swipes. The contact stays bound to
-that hit until it lifts. The list's drag, the page's swipe and the control's
-tap then compete for it, and the first to win takes it: 10 px of mostly
-vertical travel give it to the list, as much mostly sideways travel to the
-swipe, and leaving the 16 px tap slop any other way loses it for all. A
-control that lost is released, never activated. The Settings pads act as the
-finger lands. `apps/vana/src/screens/touch.rs` owns this arbitration.
+lies under it: the control a tap would act on (a card, tile or row) and
+whether the page takes swipes. The contact stays bound to that hit until it
+lifts. The page's pull, the page's swipe and the control's tap then compete
+for it, and the first to win takes it: 10 px of travel the way the page pulls
+give it to the pull, as much mostly sideways travel to the swipe, and leaving
+the 16 px tap slop any other way loses it for all. A control that lost is
+released, never activated. `apps/vana/src/screens/touch.rs` owns this arbitration.
 
-A card in a list shows as pressed (`PRESSED`, iOS's touched-cell grey) only
-once the finger has rested 150 ms, as a scroll view holds a touch back until it
-knows the finger will not scroll; a control outside a list is pressed at once.
-A finger lifted before the delay still activates its card.
+A control shows as pressed (`PRESSED`, iOS's touched-cell grey) as soon as
+the finger lands on it.
 
 Buttons go to the focus, which is not touch. A tap moves the focus only by
-activating a control, and scrolling never moves it.
-
-### Lists that scroll
-
-Workouts and a Settings section are pages of cards that scroll under
-the finger, with the motion of iOS's `UIScrollView`:
-
-- The page follows the finger pixel for pixel once it has travelled 10 px.
-- Past either end it stretches with UIKit's rubber band:
-  `(1 - 1 / (x * 0.55 / d + 1)) * d` for an overshoot `x` over a viewport `d`
-  tall.
-- Let go, it coasts at the finger's speed and slows by 0.998 each
-  millisecond (UIKit's normal deceleration); a finger that stopped before
-  lifting throws nothing.
-- Coasting into an end, or let go past one, hands its speed to a critically
-  damped spring (mass 1, stiffness 100) that settles on the end without
-  wobbling.
-- A finger on a moving page stops it, and that touch is no tap.
-
-Workouts scrolls its title with the page; once it has gone under
-the status bar, the page's name and the focus's place (`3/44`) pin in a band
-at the top, over a `CARD` hairline. A Settings section keeps its headline and
-save status still and scrolls its rows between them.
-
-The focus may scroll out of view. A button press then first brings it back:
-MOVE focuses the first card that shows whole, without scrolling, and ACT
-scrolls the focused card into view and does nothing else. With the focus in
-view, MOVE focuses the next card and scrolls it into view on a stiffer spring
-(about a third of a second), and ACT acts on it.
-
-Touch never starts, pauses, laps or ends a ride. Wet gloves, rain and bumps
-cause stray contacts, and a ride must not depend on them. Anything touch can do,
-a button can do too.
-
-A contact belongs to the screen it began on. Every touch edge reaches the
-arbiter, even while a sheet owns the buttons. If the page, its subview (ride
-page, a Sensors page, Settings edit mode) or a sheet changes
-before the finger lifts, that contact gives nothing. A `Cancel` during a contact
-drops the rest of it, however long the finger keeps sliding. A `Cancel` with no
-finger down changes nothing for touch, so the next tap still counts. On Sensors
-it still reaches the menu, which then waits for MOVE before ACT can change a
-sensor.
-
-Producers and the arbiter share one contract, set out on `Input::Cancel` in
-`packages/device-api/src/input.rs`. After a `Cancel` the producer sends nothing
-more from that contact. It sends one `Release` when the panel reports the lift
-or stops reporting the finger for 250 ms. A finger the
-panel stops reporting is cancelled and released at once, so a tap right after
-it is whole. The C606 touch driver keeps this contract.
-
-Every edge queue keeps the contract too. When a slow consumer overflows its
-queue of touch edges, the queue drops its history and sends a `Cancel`. It then drops the
-points of the contact in progress until that contact's `Release`, and tells the
-producer, which cancels its own contact. A retained move can never reach the
-arbiter as a fresh touch.
-
-A producer that cannot keep the contract still loses only the cancelled
-contact: a `Touch` that arrives at least 250 ms after the last touch edge
-starts a new contact.
+activating a control.
 
 ## Testing screens
 

@@ -1,7 +1,6 @@
 use super::Device;
 use super::chrome::{
-    ACCENT, BLACK, GREEN, Look, RAISED, RED, Rect, Row, SECONDARY, Shown, WHITE, blend, disc,
-    paint_disc_over, rounded,
+    ACCENT, BLACK, GREEN, Look, RAISED, RED, Rect, Row, SECONDARY, Shown, WHITE, blend, rounded,
 };
 use super::scaled::Scaled;
 use device_api::input::{ALONG, Fixtures, Role, Side};
@@ -327,60 +326,6 @@ impl Cue {
 }
 
 const ICON_REACH: i32 = 9;
-
-/// A green disc with a black icon inside, such as the check over RIDE SAVED.
-/// The same drawing as a cue, placed anywhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Badge {
-    pub cx: usize,
-    pub cy: usize,
-    pub radius: usize,
-    pub icon: Icon,
-}
-
-impl Badge {
-    pub fn paint(&self, row: &mut Row) {
-        let y = row.y();
-        if y + self.radius + 1 < self.cy || y > self.cy + self.radius + 1 {
-            return;
-        }
-        let disc = (
-            4 * self.cx as i32,
-            4 * self.cy as i32,
-            4 * self.radius as i32,
-        );
-        paint_disc_over(row, disc, GREEN);
-        let dy = y as i32 - self.cy as i32;
-        if dy.abs() > ICON_REACH {
-            return;
-        }
-        let (cx, cy) = (self.cx as i32, self.cy as i32);
-        let range = (cx - ICON_REACH).max(0) as usize..(cx + ICON_REACH + 1) as usize;
-        let black = row.ink(BLACK);
-        row.each_over(range, |x, under| {
-            let coverage = icon(self.icon, 4 * (x as i32 - cx) + 2, 4 * (y as i32 - cy) + 2);
-            (coverage > 0).then(|| blend(black, under, coverage))
-        });
-    }
-
-    pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown) -> Shown {
-        let (cx, cy) = (self.cx as i32, self.cy as i32);
-        let coverage = disc(x, y, 4 * cx, 4 * cy, 4 * self.radius as i32);
-        if coverage == 0 {
-            return under;
-        }
-        let color = blend(look.ink(GREEN), under, coverage);
-        let (dx, dy) = (x as i32 - cx, y as i32 - cy);
-        if dx.abs() > ICON_REACH || dy.abs() > ICON_REACH {
-            return color;
-        }
-        match icon(self.icon, 4 * dx + 2, 4 * dy + 2) {
-            0 => color,
-            ink => blend(look.ink(BLACK), color, ink),
-        }
-    }
-}
-
 /// Coverage 0..=15 of an icon at offset (x, y) from its centre, in quarter
 /// pixels.
 fn icon(icon: Icon, x: i32, y: i32) -> u8 {

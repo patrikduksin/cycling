@@ -428,15 +428,13 @@ fn a_record_from_the_old_catalogue_wipes_to_the_builtins() {
 }
 
 #[test]
-fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
+fn reset_after_saving_the_builtin_shows_the_builtin_again() {
     use crate::compose::Flags;
     use crate::compose::builtin::{Laids, main_tree};
-    use crate::screens::ride::slots::Slots;
 
     let mut flash = flash();
     let mut overrides = boot(&mut flash);
-    let initial = Choices::default();
-    let mut laids = Laids::new(&C606, initial, Flags::NONE, overrides.shown());
+    let mut laids = Laids::new(&C606, Flags::NONE, overrides.shown());
     let identical: Vec<_> = main_tree()
         .into_iter()
         .flat_map(|node| node.bytes())
@@ -453,16 +451,7 @@ fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
         laids.main().screen(),
         overrides.shown().screen(MAIN).unwrap()
     );
-    laids.update(initial, Flags::NONE, overrides.shown());
-
-    let choices = Choices {
-        main_slots: Slots {
-            left: Metric::AvgPower,
-            ..initial.main_slots
-        },
-        ..initial
-    };
-    laids.update(choices, Flags::NONE, overrides.shown());
+    laids.update(Flags::NONE, overrides.shown());
     assert_eq!(
         laids.main().screen(),
         overrides.shown().screen(MAIN).unwrap()
@@ -473,6 +462,6 @@ fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
         Saved::Revision(2)
     );
     assert!(overrides.shown().screen(MAIN).is_none());
-    laids.update(choices, Flags::NONE, overrides.shown());
+    laids.update(Flags::NONE, overrides.shown());
     assert_eq!(laids.main().screen().tree().nodes(), main_tree().as_slice());
 }

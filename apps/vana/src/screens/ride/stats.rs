@@ -1,34 +1,4 @@
-//! The time-in-zone bar the summary draws.
-use super::zones::{BAR_WIDTH, Bar};
-use crate::compose::tiles::zones::segments;
-use crate::screens::canvas::Canvas;
-use crate::screens::chrome::{Align, Rect};
-use crate::screens::scaled::Scaled;
-
-/// A caption at `caption_left`, then across `rect` one segment per zone
-/// ridden (`zones::segments`).
-pub(super) fn zone_bar<const N: usize>(
-    canvas: &mut Canvas,
-    at: &Scaled,
-    caption: &[u8],
-    caption_left: usize,
-    rect: Rect,
-    bar: Bar<N>,
-) {
-    // The caption's capitals centre on the bar.
-    canvas.caption(
-        at,
-        caption,
-        rect.left - at.unit(8) - caption_left,
-        caption_left,
-        rect.top + at.unit(10),
-        Align::Left,
-    );
-    let ends = bar.map(|ends| ends.map(|end| end as u16));
-    let ends = ends.as_ref().map_or(&[][..], |ends| &ends[..]);
-    segments(canvas, at, rect, ends, BAR_WIDTH as u16);
-}
-
+//! The ride's time in each zone, as the ride pages read it.
 #[cfg(test)]
 mod tests {
     use crate::compose::data::Shares;

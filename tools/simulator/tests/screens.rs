@@ -260,6 +260,7 @@ fn a_free_ride() {
         sim.expect_text("End ride?");
     });
     walk.cell("end-ride", "free-ride");
+    walk.all(|sim| sim.ride_at(0.0, 0.0, 72.0, 0.0));
     walk.guide(|sim| {
         sim.press(Role::Act);
         sim.wait_for("Ride saved", seconds(5)).unwrap();
@@ -310,7 +311,7 @@ fn ride_done_pictures() {
 fn a_saver_ride() {
     let mut walk = Walk::paired(world, &KINDS);
     walk.all(|sim| sim.option("DISPLAY", "SAVER"));
-    walk.guide(|sim| sim.start_ride());
+    walk.guide(Sim::start_ride);
     walk.all(|sim| sim.ride_at(28.0, 230.0, 142.0, 88.0));
     walk.advance(seconds(20));
     walk.all(vehicles);
@@ -319,7 +320,7 @@ fn a_saver_ride() {
 }
 
 #[test]
-fn a_climb_and_its_summary() {
+fn a_climb() {
     let mut walk = riding(hilly);
     walk.guide(|sim| sim.ride_page("ride/climb"));
     walk.all(|sim| sim.ride_at(14.0, 260.0, 150.0, 75.0));
@@ -334,8 +335,11 @@ fn a_climb_and_its_summary() {
 #[test]
 fn a_workout() {
     let mut walk = Walk::paired(world, &KINDS);
-    walk.all(|sim| sim.choose_workout("FTP TEST 20 MIN"));
-    walk.guide(|sim| sim.start_ride());
+    walk.all(|sim| sim.load_workout(&vana::workout::fixtures::FTP_TWENTY));
+    walk.guide(|sim| {
+        sim.press_home_start();
+        sim.wait_for("RECORDING", seconds(2)).unwrap();
+    });
     walk.all(|sim| sim.ride_at(30.0, 150.0, 142.0, 90.0));
     walk.advance(seconds(30));
     walk.cell("ride-workout", "warm-up");
@@ -350,11 +354,6 @@ fn a_workout() {
         assert_eq!(sim.workout()["step"], "11/12", "twenty minutes all out");
     });
     walk.cell("ride-workout", "all-out");
-    walk.all(|sim| sim.ride_at(30.0, 260.0, 142.0, 90.0));
-    walk.guide(|sim| {
-        sim.wait_for("NEW FTP", seconds(25 * 60)).unwrap();
-    });
-    walk.cell("sheet", "new-ftp");
 }
 
 #[derive(Clone, Copy)]

@@ -224,8 +224,6 @@ def preserved(expected, actual):
 
 def apply(connection, settings):
     expect(connection, f'BRIGHTNESS {settings["brightness"]}', 'OK')
-    if settings.get('auto') == 'true':
-        expect(connection, 'BRIGHTNESS AUTO', 'OK')
     expect(connection, f'IDLE {settings["dim_timeout"]} {settings["dim_brightness"]}', 'OK')
     expect(connection, f'TIMEZONE {settings["timezone"]}', 'OK')
     # A timeout here has unknown completion. Caller must not retry this save.

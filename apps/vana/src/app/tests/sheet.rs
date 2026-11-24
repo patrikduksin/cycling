@@ -88,10 +88,6 @@ fn a_finger_sets_the_level_flips_the_look_and_opens_the_sensors() {
     let (left, right) = (bar.left as u16, bar.right as u16);
     touch(&mut runtime, &mut radio, &[(left + 2, y)], 2000);
     assert_eq!(level(&runtime), 10);
-    assert!(
-        !runtime.preferences.options.auto_brightness,
-        "the rider chose it"
-    );
     let middle = left + (right - left) / 2;
     touch(
         &mut runtime,
@@ -163,7 +159,7 @@ fn a_frame_draws_the_sheet_over_the_dimmed_screen_and_its_bar_as_it_moves() {
     pull(&mut runtime, &mut radio, 4000);
     assert!(screen.present(&mut runtime, &radio, 4200));
     let bar = tile(&runtime, LEVEL);
-    let (x, y) = (bar.left + bar.width() / 3, bar.top + bar.height() / 2);
+    let (x, y) = (bar.left + bar.width() * 4 / 5, bar.top + bar.height() / 2);
     let lit = screen.panel.pixel(x, y);
     for now in [5000, 5400, 5800] {
         runtime.input_received(press(Role::Move), now, now, &mut radio);

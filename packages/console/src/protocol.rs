@@ -15,12 +15,6 @@ pub fn request_status(result: Result<(), device_api::observation::Error>) -> &'s
 pub const MAX_LINE: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Brightness {
-    Percent(u8),
-    Auto,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
     Power(Option<device_api::power::Operation>),
     PowerShutdownAfter(u32),
@@ -56,7 +50,7 @@ pub enum Command {
     /// UTC in whole seconds since 1970, from a host.
     SetTime(u32),
     Settings,
-    SetBrightness(Brightness),
+    SetBrightness(u8),
     SetTimezone(i16),
     SetIdle(u16, u8),
     Save,
@@ -418,15 +412,11 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
         },
         "BRIGHTNESS" => {
             let word = words.next().ok_or(Error::Invalid)?;
-            if word == "AUTO" {
-                Command::SetBrightness(Brightness::Auto)
-            } else {
-                let value: u8 = word.parse().map_err(|_| Error::Invalid)?;
-                if value > 100 {
-                    return Err(Error::Invalid);
-                }
-                Command::SetBrightness(Brightness::Percent(value))
+            let value: u8 = word.parse().map_err(|_| Error::Invalid)?;
+            if value > 100 {
+                return Err(Error::Invalid);
             }
+            Command::SetBrightness(value)
         }
         "TIMEZONE" => {
             let value: i16 = words
@@ -606,19 +596,16 @@ mod tests {
         }
     }
     #[test]
-    fn brightness_takes_a_percent_or_auto_and_nothing_else() {
+    fn brightness_takes_a_percent_and_nothing_else() {
         assert_eq!(
             parse(b"CMD 1 BRIGHTNESS 20").unwrap().command,
-            Command::SetBrightness(Brightness::Percent(20))
-        );
-        assert_eq!(
-            parse(b"CMD 1 BRIGHTNESS AUTO").unwrap().command,
-            Command::SetBrightness(Brightness::Auto)
+            Command::SetBrightness(20)
         );
         for line in [
             "CMD 1 BRIGHTNESS",
+            "CMD 1 BRIGHTNESS AUTO",
             "CMD 1 BRIGHTNESS auto",
-            "CMD 1 BRIGHTNESS AUTO 5",
+            "CMD 1 BRIGHTNESS 20 5",
         ] {
             assert!(parse(line.as_bytes()).is_err(), "{line}");
         }

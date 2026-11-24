@@ -9,7 +9,7 @@ use crate::compose::registry::{ROAD_FIELD, ROAD_PROFILE, SPACE, TOP_LINE};
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_| tree(),
+    tree: || tree(),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Ride(Role::Act),

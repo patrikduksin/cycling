@@ -23,7 +23,7 @@ const fn home(role: Role) -> Option<Button> {
 }
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_| tree(),
+    tree: || tree(),
     buttons: Buttons {
         act: home(Role::Act),
         back: home(Role::Back),

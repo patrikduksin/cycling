@@ -1,13 +1,8 @@
 //! What tiles read: a frame's view, each number in its base unit, and the
 //! gliding graphics alone for asking where a glide lands.
-use super::chrome::SECONDARY;
 use super::ride::{ClimbRoad, GAUGE_WIDTH, Mark, Training, gauges};
-use super::settings::{NOTES, STATUS, VALUES};
-use super::workout::Page;
 use super::workout::{Graphics, View};
-use crate::compose::data::{
-    Count, Data, Edited, Effort, Entry, ListKind, Listed, Metric, OnGauge, PageData, Shares,
-};
+use crate::compose::data::{Count, Data, Effort, Metric, OnGauge, PageData, Shares};
 use crate::ride::zones::TrainingProfile;
 
 impl Data for View<'_> {
@@ -58,64 +53,6 @@ impl Data for View<'_> {
         }
     }
 
-    fn list(&self, list: ListKind) -> u16 {
-        match list {
-            ListKind::Workouts => self.picker().count() as u16,
-            ListKind::Settings => self.sections.rows(self.cursor).0.len() as u16,
-        }
-    }
-
-    fn listed(&self, list: ListKind) -> Listed {
-        match list {
-            ListKind::Workouts => {
-                let picker = self.picker();
-                Listed {
-                    offset: self.scroll,
-                    focus: Some(picker.cursor as u16),
-                    pressed: picker.pressed.map(|index| index as u16),
-                }
-            }
-            ListKind::Settings => {
-                let (sections, cursor) = (self.sections, self.cursor);
-                let first = sections.rows(cursor).1;
-                Listed {
-                    offset: self.scroll,
-                    focus: Some((cursor % sections.fields() - first) as u16),
-                    pressed: self.pressed_setting(),
-                }
-            }
-        }
-    }
-
-    fn heading(&self, list: ListKind) -> &str {
-        match list {
-            ListKind::Settings => {
-                let sections = self.sections;
-                sections.title(sections.section(self.cursor).0)
-            }
-            ListKind::Workouts => list.name(),
-        }
-    }
-
-    fn saving(&self) -> Option<(&str, bool)> {
-        if self.page != Page::Settings || self.toast.is_some() {
-            return None;
-        }
-        let status = self.lines()[STATUS].as_str();
-        Some((status, matches!(status, "SAVED" | "SAVING")))
-    }
-
-    fn edited(&self) -> Option<Edited<'_>> {
-        let row = self.sections.row(self.cursor);
-        let lines = self.lines();
-        (self.page == Page::Settings && self.editing).then(|| Edited {
-            label: row.label(),
-            value: lines[VALUES].as_str(),
-            note: lines[NOTES].as_str(),
-            step: row.step(),
-        })
-    }
-
     fn sensors(&self) -> Option<&crate::screens::sensors::Menu> {
         self.sensor_pages()
     }
@@ -123,26 +60,6 @@ impl Data for View<'_> {
     fn done(&self) -> Option<&crate::screens::done::Done> {
         self.done()
     }
-
-    fn entry(&self, list: ListKind, index: u16) -> Option<Entry<'_>> {
-        match list {
-            ListKind::Workouts => self.picker().entry(usize::from(index)),
-            ListKind::Settings => {
-                let rows = self.sections.rows(self.cursor).0;
-                let slot = usize::from(index);
-                let lines = self.lines();
-                Some(Entry {
-                    title: lines[VALUES + slot].as_str(),
-                    detail: rows.get(slot)?.label(),
-                    note: lines[NOTES + slot].as_str(),
-                    note_color: SECONDARY,
-                    note_first: false,
-                    chosen: false,
-                })
-            }
-        }
-    }
-
     fn road(&self) -> Option<ClimbRoad<'_>> {
         super::ride::climb::road(self)
     }
@@ -187,8 +104,6 @@ impl Data for View<'_> {
         match count {
             Count::Unsaved => Some(i32::from(self.unsaved)),
             Count::Goes => self.format.goes().map(i32::from),
-            Count::FtpNew => self.ftp_offer.map(|(new, _)| i32::from(new)),
-            Count::FtpOld => self.ftp_offer.map(|(_, old)| i32::from(old)),
             Count::Seconds
             | Count::Farewell
             | Count::Charge
@@ -199,11 +114,6 @@ impl Data for View<'_> {
 
     fn map(&self) -> Option<&super::ride::MapFrame> {
         View::map(self)
-    }
-
-    fn summary(&self) -> Option<super::ride::summary::Facts<'_>> {
-        use super::workout::Page;
-        (self.page == Page::Summary).then(|| super::ride::summary::facts(self))
     }
 
     fn zone_time(&self, effort: Effort) -> Option<Shares> {
@@ -293,10 +203,6 @@ impl Data for Gliding<'_> {
 
     fn zone(&self, _: Effort) -> Option<u8> {
         None
-    }
-
-    fn list(&self, _: ListKind) -> u16 {
-        0
     }
 
     fn gauge(&self, effort: Effort) -> Option<OnGauge> {

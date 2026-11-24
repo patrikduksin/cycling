@@ -583,7 +583,7 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workout::library::{FTP_RAMP, FTP_TWENTY, VO2_MAX};
+    use crate::workout::fixtures::{FTP_RAMP, FTP_TWENTY, VO2_MAX};
 
     fn riding(watts: u16) -> Sample {
         Sample {

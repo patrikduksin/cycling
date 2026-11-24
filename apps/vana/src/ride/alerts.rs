@@ -13,10 +13,7 @@
 //!
 //! The rider's choices are `Settings`, stored with the VANA preferences.
 //! 0 turns a limit off.
-use crate::clock::Zone;
-use crate::daylight::Sun;
 use crate::ride::log::{Sample, Status};
-use crate::ride::turn_back::{self, Turn};
 use crate::sensors::radar::{self, Snapshot};
 
 /// A reading must stay outside its band this long to alert, and back inside
@@ -38,13 +35,6 @@ pub const BATTERY_HOLD_MS: u64 = 5 * 60_000;
 pub const SETTINGS_BYTES: usize = 9;
 /// Allowed reminder intervals, in minutes.
 pub const FUEL_MINUTES: [u8; 5] = [0, 20, 30, 45, 60];
-/// The Settings choices for each limit; 0 is off. Every low choice is
-/// below every high one, so any pair stays a valid band.
-pub const HEART_HIGH_BPM: [u8; 6] = [0, 150, 160, 170, 180, 190];
-pub const HEART_LOW_BPM: [u8; 6] = [0, 90, 100, 110, 120, 130];
-pub const POWER_HIGH_W: [u16; 6] = [0, 250, 300, 350, 400, 500];
-pub const POWER_LOW_W: [u16; 4] = [0, 100, 150, 200];
-pub const CADENCE_LOW_RPM: [u8; 4] = [0, 60, 70, 80];
 
 /// The rider's alert choices. A zero limit is off.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,8 +128,6 @@ pub enum Cue {
     Fuel,
     /// The last vehicle passed.
     RadarClear,
-    /// The light is about to end, or has; the last turn home is near.
-    Sunset,
     /// The battery may not last the ride.
     Battery,
 }
@@ -156,15 +144,6 @@ pub enum Alert {
     /// The battery may not last: the minutes it should.
     BatteryLeft(u16),
     RadarClear,
-    /// Sunset is about half an hour away.
-    SunsetSoon,
-    /// The sun has set: lights on.
-    SunsetNow,
-    /// The latest turn home that is still home by sunset: minutes after local
-    /// midnight.
-    TurnBackBy(u16),
-    /// That turn has passed.
-    TurnBackNow,
 }
 
 impl Alert {
@@ -173,9 +152,6 @@ impl Alert {
         match self {
             Self::Fuel => Some(Cue::Fuel),
             Self::RadarClear => Some(Cue::RadarClear),
-            Self::SunsetSoon | Self::SunsetNow | Self::TurnBackBy(_) | Self::TurnBackNow => {
-                Some(Cue::Sunset)
-            }
             Self::BatteryLeft(_) => Some(Cue::Battery),
             _ => Some(Cue::Band),
         }
@@ -198,18 +174,6 @@ impl Alert {
                 crate::ride::battery_life::about(minutes)
             ),
             Self::RadarClear => write!(text, "ALL CLEAR"),
-            // The font is ASCII: a dash stands for the middle dot.
-            Self::SunsetSoon => write!(text, "SUNSET IN 30 MIN"),
-            Self::SunsetNow => write!(text, "SUNSET - LIGHTS ON"),
-            Self::TurnBackBy(minute) => {
-                write!(
-                    text,
-                    "TURN BACK BY {:02}:{:02}",
-                    minute / 60 % 24,
-                    minute % 60
-                )
-            }
-            Self::TurnBackNow => write!(text, "TURN BACK NOW"),
         };
         text
     }
@@ -277,8 +241,6 @@ pub struct Alerts {
     /// radar has been empty.
     seen: bool,
     empty_since: Option<u64>,
-    sunset: SunsetWatch,
-    turn_back: turn_back::Watch,
     /// The battery warning was given this ride.
     battery_told: bool,
     /// Since when the battery estimate has been under its threshold.
@@ -292,70 +254,9 @@ state!(Alerts {
     last,
     seen,
     empty_since,
-    sunset,
-    turn_back,
     battery_told,
     battery_short_since,
 });
-
-/// The last Unix time a clock is asked to read: the end of year 9999, so a
-/// hostile time cannot overflow the calendar sums.
-const LATEST_UNIX: i64 = 253_402_300_799;
-
-/// The sunset warning is due this long before sunset, and still given until
-/// `SUNSET_LATEST_S` before it: a ride resumed or a page returned to a few
-/// minutes late still gets it, but never as "30 MIN" when it is 10.
-pub const SUNSET_WARN_S: i64 = 30 * 60;
-pub const SUNSET_LATEST_S: i64 = 20 * 60;
-
-/// A ride already this old when its watch began was recovered after a
-/// restart, so the warning it may have given before is not given again.
-const RECOVERED_AFTER_MS: u64 = 120_000;
-
-/// What this ride has seen of the sun and said about it.
-#[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_os = "none"), derive(Debug))]
-struct SunsetWatch {
-    warned: bool,
-    /// The sun was up at some point of this ride, so its setting is news.
-    saw_up: bool,
-    lit: bool,
-    began: bool,
-}
-
-impl SunsetWatch {
-    fn observe(&mut self, sun: Sun, active_ms: u64) {
-        if !self.began {
-            self.began = true;
-            self.warned = active_ms > RECOVERED_AFTER_MS;
-        }
-        self.saw_up |= matches!(sun, Sun::Up { .. });
-    }
-
-    fn due(&self, sun: Sun, now_unix: i64) -> Option<Alert> {
-        match sun {
-            Sun::Up { sets_at } => {
-                let left = sets_at - now_unix;
-                (!self.warned && (SUNSET_LATEST_S..=SUNSET_WARN_S).contains(&left))
-                    .then_some(Alert::SunsetSoon)
-            }
-            // A ride that starts after sunset says nothing: the rider can
-            // see it is dark. It is news only when the sun sets mid-ride.
-            Sun::Down => (self.saw_up && !self.lit).then_some(Alert::SunsetNow),
-            Sun::Midnight => None,
-        }
-    }
-
-    fn given(&mut self, alert: Alert) {
-        match alert {
-            Alert::SunsetSoon => self.warned = true,
-            _ => {
-                self.lit = true;
-                self.warned = true;
-            }
-        }
-    }
-}
 
 impl Alerts {
     /// Decide this tick's alert. `active_ms` is the ride's recorded time.
@@ -448,70 +349,6 @@ impl Alerts {
             None => self.fuel_at_ms = active_ms,
         }
         Some(alert)
-    }
-
-    /// The sunset alert of this tick, once per ride each, from the sun as
-    /// last worked out (`None` without a position and time) and the Unix
-    /// time now. It needs a recording ride, the rider's setting on, and
-    /// `shown`: the ride page is up, so the toast can be seen; otherwise it
-    /// waits for the rider's return to that page. Call after `update` on the
-    /// same tick: an alert that tick, or one within `SPACING_MS`, holds it
-    /// back unspent.
-    pub fn sunset(
-        &mut self,
-        now: u64,
-        enabled: bool,
-        status: Status,
-        shown: bool,
-        sun: Option<(Sun, i64)>,
-    ) -> Option<Alert> {
-        let (sun, now_unix) = sun?;
-        if !enabled || !matches!(status, Status::Recording | Status::Paused) {
-            return None;
-        }
-        self.sunset.observe(sun, self.active_ms);
-        let spaced = self
-            .last
-            .is_none_or(|last| now.saturating_sub(last) >= SPACING_MS);
-        if status != Status::Recording || !shown || !spaced {
-            return None;
-        }
-        let alert = self.sunset.due(sun, now_unix)?;
-        self.sunset.given(alert);
-        self.last = Some(now);
-        Some(alert)
-    }
-
-    /// TURN BACK BY, once per ride (`ride::turn_back` says when it re-arms):
-    /// `turn` is the latest turn from the sun and the way home, `None` when it
-    /// cannot be said (no fix, no sunset ahead, riding home, a recovered ride
-    /// still reading its track). Local time follows `zone`. Needs a recording
-    /// ride, the SUNSET setting on and `shown`, as `sunset` does, and goes
-    /// after it on the same tick.
-    pub fn turn_back(
-        &mut self,
-        now: u64,
-        enabled: bool,
-        status: Status,
-        shown: bool,
-        turn: Option<Turn>,
-        zone: Zone,
-    ) -> Option<Alert> {
-        let turn = turn.filter(|_| enabled && status == Status::Recording);
-        let spaced = self
-            .last
-            .is_none_or(|last| now.saturating_sub(last) >= SPACING_MS);
-        if !self.turn_back.due(now, turn, !shown || !spaced) {
-            return None;
-        }
-        let turn = turn?;
-        self.last = Some(now);
-        Some(if turn.left_s <= 0 {
-            Alert::TurnBackNow
-        } else {
-            let local = zone.local(turn.by.clamp(0, LATEST_UNIX) as u64).of_day();
-            Alert::TurnBackBy((local / 60) as u16)
-        })
     }
 
     /// Once per ride, warn that the battery may not last: its estimated
@@ -839,318 +676,6 @@ mod tests {
         assert_eq!(feed(10_000, vehicles(2)), None);
         assert_eq!(feed(11_000, Snapshot::default()), None);
         assert_eq!(feed(20_000, Snapshot::default()), None);
-    }
-
-    /// Feed the sunset watch once a minute: sunset at 1000 s of Unix time.
-    fn sunset_ride(
-        alerts: &mut Alerts,
-        from_s: i64,
-        to_s: i64,
-        status: impl Fn(i64) -> Status,
-        sets_at: i64,
-    ) -> Vec<(i64, Alert)> {
-        (from_s..to_s)
-            .step_by(60)
-            .filter_map(|t| {
-                let sun = if t < sets_at {
-                    Sun::Up { sets_at }
-                } else {
-                    Sun::Down
-                };
-                alerts
-                    .sunset(t as u64 * 1000, true, status(t), true, Some((sun, t)))
-                    .map(|alert| (t, alert))
-            })
-            .collect()
-    }
-
-    fn turn(left_s: i64) -> Option<Turn> {
-        Some(Turn {
-            by: 1_000_000 + left_s,
-            left_s,
-        })
-    }
-
-    #[test]
-    fn turn_back_names_the_local_time_and_needs_its_conditions() {
-        // 1_000_000 s is 13:46:40 UTC on day 11; Chile is UTC-3 then.
-        let zone = Zone::utc(-3);
-        let mut alerts = Alerts::default();
-        let rec = Status::Recording;
-        assert_eq!(alerts.turn_back(0, false, rec, true, turn(60), zone), None);
-        assert_eq!(
-            alerts.turn_back(1, true, Status::Paused, true, turn(60), zone),
-            None
-        );
-        assert_eq!(alerts.turn_back(2, true, rec, false, turn(60), zone), None);
-        assert_eq!(alerts.turn_back(3, true, rec, true, None, zone), None);
-        let alert = alerts
-            .turn_back(4, true, rec, true, turn(60), zone)
-            .unwrap();
-        assert_eq!(alert, Alert::TurnBackBy(10 * 60 + 47));
-        assert_eq!(alert.text().as_str(), "TURN BACK BY 10:47");
-        assert_eq!(alert.cue(), Some(Cue::Sunset));
-        assert_eq!(
-            alerts.turn_back(10_000, true, rec, true, turn(60), zone),
-            None
-        );
-    }
-
-    #[test]
-    fn turn_back_reads_any_time_without_overflow() {
-        for by in [i64::MIN, -1, i64::MAX] {
-            let mut alerts = Alerts::default();
-            let turn = Some(Turn { by, left_s: 60 });
-            for zone in [Zone::Chile, Zone::utc(14)] {
-                alerts.turn_back = turn_back::Watch::default();
-                alerts.last = None;
-                let rec = Status::Recording;
-                assert!(alerts.turn_back(0, true, rec, true, turn, zone).is_some());
-            }
-        }
-    }
-
-    #[test]
-    fn turn_back_says_now_once_the_turn_has_passed() {
-        let mut alerts = Alerts::default();
-        let alert = alerts
-            .turn_back(0, true, Status::Recording, true, turn(-30), Zone::utc(0))
-            .unwrap();
-        assert_eq!(alert, Alert::TurnBackNow);
-        assert_eq!(alert.text().as_str(), "TURN BACK NOW");
-    }
-
-    #[test]
-    fn turn_back_keeps_its_distance_from_another_alert_and_a_new_ride_rearms_it() {
-        let zone = Zone::utc(0);
-        let rec = Status::Recording;
-        let mut alerts = Alerts {
-            last: Some(1_000),
-            ..Alerts::default()
-        };
-        assert_eq!(
-            alerts.turn_back(2_000, true, rec, true, turn(60), zone),
-            None
-        );
-        assert!(
-            alerts
-                .turn_back(4_000, true, rec, true, turn(60), zone)
-                .is_some()
-        );
-        let sample = Sample::default();
-        alerts.update(
-            10_000,
-            &Settings::default(),
-            rec,
-            60_000,
-            &sample,
-            Snapshot::default(),
-        );
-        alerts.update(
-            20_000,
-            &Settings::default(),
-            rec,
-            0,
-            &sample,
-            Snapshot::default(),
-        );
-        assert!(
-            alerts
-                .turn_back(30_000, true, rec, true, turn(60), zone)
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn sunset_warns_once_half_an_hour_ahead_and_again_at_sunset() {
-        let sets = 100_000;
-        let mut alerts = Alerts::default();
-        let fired = sunset_ride(
-            &mut alerts,
-            sets - 3 * 3600,
-            sets + 3600,
-            |_| Status::Recording,
-            sets,
-        );
-        assert_eq!(
-            fired,
-            [(sets - 1800, Alert::SunsetSoon), (sets, Alert::SunsetNow)]
-        );
-        assert_eq!(Alert::SunsetSoon.text().as_str(), "SUNSET IN 30 MIN");
-        assert_eq!(Alert::SunsetNow.cue(), Some(Cue::Sunset));
-        // Crossing midnight UTC changes nothing: only the time left counts.
-        let midnight = 86_400 * 20_000;
-        let mut alerts = Alerts::default();
-        let over = sunset_ride(
-            &mut alerts,
-            midnight - 3600,
-            midnight + 3600,
-            |_| Status::Recording,
-            midnight + 1800,
-        );
-        assert_eq!(
-            over,
-            [
-                (midnight, Alert::SunsetSoon),
-                (midnight + 1800, Alert::SunsetNow)
-            ]
-        );
-        // Already inside 15 minutes at the start: no 30 MIN, just LIGHTS ON.
-        let mut alerts = Alerts::default();
-        let soon = sunset_ride(
-            &mut alerts,
-            midnight,
-            midnight + 3600,
-            |_| Status::Recording,
-            midnight + 900,
-        );
-        assert_eq!(soon, [(midnight + 900, Alert::SunsetNow)]);
-    }
-
-    #[test]
-    fn sunset_waits_out_a_pause_and_a_late_start_stays_quiet() {
-        let sets = 100_000;
-        // Paused across the 30-minute mark, resumed at 25 min left: warned then.
-        let mut alerts = Alerts::default();
-        let paused = |t: i64| {
-            if (sets - 2400..sets - 1500).contains(&t) {
-                Status::Paused
-            } else {
-                Status::Recording
-            }
-        };
-        let fired = sunset_ride(&mut alerts, sets - 3600, sets + 600, paused, sets);
-        assert_eq!(fired[0].1, Alert::SunsetSoon);
-        assert!(
-            fired[0].0 >= sets - 1500 && fired[0].0 < sets - 1400,
-            "{fired:?}"
-        );
-        assert_eq!(fired.len(), 2);
-        // Resumed after the warning window: no 30 MIN, only LIGHTS ON.
-        let mut alerts = Alerts::default();
-        let late = |t: i64| {
-            if (sets - 3000..sets - 600).contains(&t) {
-                Status::Paused
-            } else {
-                Status::Recording
-            }
-        };
-        let fired = sunset_ride(&mut alerts, sets - 3600, sets + 600, late, sets);
-        assert_eq!(fired, [(sets, Alert::SunsetNow)]);
-        // Starting after sunset: nothing at all, then a new ride warns afresh.
-        let mut alerts = Alerts::default();
-        assert!(
-            sunset_ride(
-                &mut alerts,
-                sets + 60,
-                sets + 7200,
-                |_| Status::Recording,
-                sets
-            )
-            .is_empty()
-        );
-        let sample = Sample::default();
-        let _ = alerts.update(
-            0,
-            &Settings::default(),
-            Status::Recording,
-            5_000,
-            &sample,
-            quiet(),
-        );
-        let _ = alerts.update(
-            0,
-            &Settings::default(),
-            Status::Recording,
-            0,
-            &sample,
-            quiet(),
-        );
-        let sets = 500_000;
-        let fired = sunset_ride(
-            &mut alerts,
-            sets - 3600,
-            sets + 60,
-            |_| Status::Recording,
-            sets,
-        );
-        assert_eq!(fired.len(), 2);
-    }
-
-    #[test]
-    fn a_band_or_radar_alert_on_the_same_tick_leaves_the_sunset_alert_unspent() {
-        let settings = Settings::default();
-        let sample = Sample::default();
-        let sun = Some((Sun::Up { sets_at: 1_700 }, 0));
-        let mut alerts = Alerts::default();
-        for (at, snapshot) in [(7_000, vehicles(1)), (8_000, quiet())] {
-            alerts.update(at, &settings, Status::Recording, at, &sample, snapshot);
-        }
-        let radar = alerts.update(
-            10_000,
-            &settings,
-            Status::Recording,
-            10_000,
-            &sample,
-            quiet(),
-        );
-        assert_eq!(radar, Some(Alert::RadarClear));
-        assert_eq!(
-            alerts.sunset(10_000, true, Status::Recording, true, sun),
-            None
-        );
-        assert_eq!(
-            alerts.sunset(12_000, true, Status::Recording, true, sun),
-            None,
-            "spacing"
-        );
-        assert_eq!(
-            alerts.sunset(13_000, true, Status::Recording, true, sun),
-            Some(Alert::SunsetSoon)
-        );
-        assert_eq!(
-            alerts.sunset(20_000, true, Status::Recording, true, sun),
-            None
-        );
-    }
-
-    #[test]
-    fn a_recovered_ride_does_not_repeat_the_warning_but_still_says_lights_on() {
-        let settings = Settings::default();
-        let sample = Sample::default();
-        let mut alerts = Alerts::default();
-        let ten_minutes = 600_000;
-        let _ = alerts.update(
-            0,
-            &settings,
-            Status::Recording,
-            ten_minutes,
-            &sample,
-            quiet(),
-        );
-        let up = Some((Sun::Up { sets_at: 1_500 }, 0));
-        assert_eq!(alerts.sunset(0, true, Status::Recording, true, up), None);
-        let down = Some((Sun::Down, 1_501));
-        assert_eq!(
-            alerts.sunset(60_000, true, Status::Recording, true, down),
-            Some(Alert::SunsetNow)
-        );
-    }
-
-    #[test]
-    fn sunset_needs_the_setting_a_known_sky_and_the_ride_page() {
-        let sun = Some((Sun::Up { sets_at: 1_700 }, 0));
-        let mut alerts = Alerts::default();
-        assert_eq!(alerts.sunset(0, false, Status::Recording, true, sun), None);
-        assert_eq!(alerts.sunset(0, true, Status::Recording, true, None), None);
-        assert_eq!(alerts.sunset(0, true, Status::Recording, false, sun), None);
-        assert_eq!(alerts.sunset(0, true, Status::Ready, true, sun), None);
-        assert_eq!(
-            alerts.sunset(0, true, Status::Recording, true, sun),
-            Some(Alert::SunsetSoon),
-            "still due once the rider is back on the ride page"
-        );
-        assert_eq!(alerts.sunset(0, true, Status::Recording, true, sun), None);
     }
 
     #[test]

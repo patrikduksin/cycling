@@ -6,8 +6,8 @@
 //! alert budget as the alarm. Rising runs mean go (start, resume, saved),
 //! falling ones mean stop (pause), one note marks a lap and two low notes
 //! ask for the charger. A vehicle closing from behind sounds the alarm, then a
-//! low, middle or high note by how near it is. The rider can mute cues in
-//! Settings; the radar cues are safety cues and always sound.
+//! low, middle or high note by how near it is. The rider can mute cues with
+//! `OPTION SOUNDS`; the radar cues are safety cues and always sound.
 use crate::ride::course::nav::Navigation;
 use device_api::sound::{Pattern, Sound};
 use firmware_services::sound::Sequence;

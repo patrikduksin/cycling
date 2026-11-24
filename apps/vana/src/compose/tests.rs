@@ -1,14 +1,13 @@
 use super::bench::{MAIN, MAIN_BYTES};
-use super::data::{Data, Effort, ListKind, Metric, Nothing, OnGauge, PageData};
+use super::data::{Data, Effort, Metric, Nothing, OnGauge, PageData};
 use super::input::{Action, Button, Buttons, Controls, OnPage};
-use super::list;
 use super::node::{Flags, MAX_NODES, Node, Size, Sizing, What, When};
 use super::parse::{self, Anchor, Hold, Layer, Screen, Screens, VERSION};
 use super::registry::{
     self, CAPTION, EFFORT, GAUGE, ICON, READING, SPACE, TOTAL, UNIT, VALUE, ZONE,
 };
 use super::reject::{Axis, Misfit, Place, Reject, Why};
-use super::solve::{self, Balance, MAX_RUNS, MAX_SHAPES, Placed, Rect16, Scroll, Sink, Solved};
+use super::solve::{self, Balance, MAX_RUNS, MAX_SHAPES, Placed, Rect16, Sink, Solved};
 use super::tiles::icon::Glyph;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
@@ -25,8 +24,6 @@ use std::format;
 use std::string::ToString;
 use std::vec;
 use std::vec::Vec;
-
-mod scroll;
 
 fn panels() -> Vec<Scaled> {
     PANELS
@@ -71,10 +68,6 @@ impl<'a> Sink<'a> for Seen<'a> {
         self.solved.leaf(placed, focus);
     }
 
-    fn scroll(&mut self, scroll: Scroll) {
-        Sink::scroll(&mut self.solved, scroll);
-    }
-
     fn node(&mut self, node: u8, rect: Rect16) {
         self.rects[usize::from(node)] = Some(rect);
     }
@@ -90,7 +83,6 @@ fn ends(nodes: &[Node]) -> Vec<usize> {
         let mut next = i + 1;
         let children = match nodes[i].what().unwrap() {
             What::Row { children } | What::Col { children } | What::Stack { children } => children,
-            What::Scroll { .. } => 1,
             What::Leaf { .. } => 0,
         };
         for _ in 0..children {
@@ -761,14 +753,6 @@ fn a_record_names_what_it_refuses() {
         Screen::parse(0, &bytes(&deep), &at, Controls::FREE).is_ok(),
         "six levels"
     );
-    let scrolls = [
-        Node::col(2, Size::CONTENT),
-        Node::scroll(ListKind::Workouts, Size::grow(1)),
-        space,
-        Node::scroll(ListKind::Workouts, Size::grow(1)),
-        space,
-    ];
-    assert_eq!(screen(&scrolls), Why::Scroll { node: 3 });
     let many = vec![space; 25];
     let wide = [&[Node::row(25, Size::CONTENT)][..], &many].concat();
     assert_eq!(
@@ -904,48 +888,6 @@ fn a_stack_shows_its_first_present_child_and_fits_every_child() {
         matches!(reject.why, Why::Misfit(Misfit { node: 4, .. })),
         "{reject}"
     );
-}
-
-#[test]
-fn a_scroll_places_one_item_of_its_template_one_gap_under_its_top_a_gutter_in() {
-    let at = BASE;
-    let nodes = [
-        Node::col(2, Size::grow(1)),
-        tile(SPACE, 0, Size::units(22)),
-        Node::scroll(ListKind::Workouts, Size::grow(1)),
-        Node::row(2, Size::units(40)),
-        tile(CAPTION, Metric::Distance as u8, Size::CONTENT),
-        tile(VALUE, Metric::Distance as u8, Size::CONTENT),
-    ];
-    let screen = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).unwrap();
-    let mut solved = Solved::EMPTY;
-    screen.solve(Flags::NONE, &mut solved);
-    let (scroll, template) = solved.scroll().unwrap();
-    let viewport = Rect16 {
-        left: 0,
-        top: 22,
-        right: 240,
-        bottom: 320,
-    };
-    let (gap, gutter) = (list::gap(&at), list::gutter(&at));
-    assert_eq!(
-        (scroll.node, scroll.viewport, scroll.template),
-        (
-            2,
-            viewport,
-            Rect16 {
-                left: gutter,
-                top: 22 + gap,
-                right: 240 - gutter,
-                bottom: 22 + gap + 40,
-            }
-        )
-    );
-    assert_eq!(template, &solved.leaves()[1..]);
-    assert_eq!(template.len(), 2);
-    for placed in template {
-        assert_eq!(placed.rect.bottom, 22 + gap + 40);
-    }
 }
 
 #[test]
@@ -1198,9 +1140,6 @@ impl Data for Reading {
     fn zone(&self, _: Effort) -> Option<u8> {
         None
     }
-    fn list(&self, _: ListKind) -> u16 {
-        0
-    }
 }
 
 #[test]
@@ -1309,9 +1248,6 @@ impl Data for Widest {
     }
     fn zone(&self, _: Effort) -> Option<u8> {
         Some(7)
-    }
-    fn list(&self, _: ListKind) -> u16 {
-        0
     }
 }
 
@@ -1543,12 +1479,6 @@ impl Data for Reach {
             Self::Turn | Self::High => Some(effort.zones()),
         }
     }
-    fn list(&self, _: ListKind) -> u16 {
-        match self {
-            Self::Nothing | Self::Low => 0,
-            Self::Turn | Self::High => u16::MAX,
-        }
-    }
     fn gauge(&self, effort: Effort) -> Option<OnGauge> {
         let range = 100;
         match self {
@@ -1692,9 +1622,6 @@ impl Data for Everywhere {
         self.0
             .and_then(|value| u8::try_from(value.clamp(1, 7)).ok())
     }
-    fn list(&self, _: ListKind) -> u16 {
-        0
-    }
     fn count(&self, _: super::data::Count) -> Option<i32> {
         self.0
     }
@@ -1808,7 +1735,7 @@ pub(crate) fn drawn_whole_inside(
 fn a_static_tile_at_its_smallest_box_shows_every_reading_whole_and_apart() {
     let (mut checked, mut faults) = (0, Vec::new());
     for at in panels() {
-        for component in [registry::LINE, registry::FTP, registry::POWER_RING] {
+        for component in [registry::LINE, registry::POWER_RING] {
             let tile = registry::tile(component);
             for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
                 for (form, look) in tile.forms(arg, &at).iter().enumerate() {
@@ -1865,9 +1792,6 @@ impl Data for Page<'_> {
     }
     fn zone(&self, _: Effort) -> Option<u8> {
         None
-    }
-    fn list(&self, _: ListKind) -> u16 {
-        0
     }
     fn page(&self) -> PageData<'_> {
         self.0

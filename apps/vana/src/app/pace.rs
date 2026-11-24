@@ -63,16 +63,9 @@ fn pace(seen: &Seen) -> Pace {
         _ => return Pace::Busy,
     }
     let still = match seen.page {
-        Page::Home
-        | Page::Sensors
-        | Page::Settings
-        | Page::Workouts
-        | Page::Ride
-        | Page::EndRide
-        | Page::DiscardRide
-        | Page::LoseRides
-        | Page::Summary
-        | Page::Done => true,
+        Page::Home | Page::Sensors | Page::Ride | Page::EndRide | Page::LoseRides | Page::Done => {
+            true
+        }
         Page::Boot | Page::Format => false,
     };
     if still && !seen.busy {
@@ -146,9 +139,6 @@ impl Runtime {
         now: u64,
     ) -> bool {
         self.navigation.touches().down()
-            || self
-                .page_list()
-                .is_some_and(|list| self.kinetic(list).moving())
             || self.power.view().is_some()
             || self.cues.busy()
             || self.phone.busy()
@@ -223,16 +213,12 @@ impl<M: ReadWrite + ?Sized> ReadWrite for Touched<'_, M> {
 mod tests {
     use super::*;
 
-    const STILL_PAGES: [Page; 10] = [
+    const STILL_PAGES: [Page; 6] = [
         Page::Home,
         Page::Sensors,
-        Page::Settings,
-        Page::Workouts,
         Page::Ride,
         Page::EndRide,
-        Page::DiscardRide,
         Page::LoseRides,
-        Page::Summary,
         Page::Done,
     ];
     const BUSY_PAGES: [Page; 1] = [Page::Boot];

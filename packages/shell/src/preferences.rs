@@ -1,7 +1,7 @@
 //! Versioned user preferences and wear-conscious save scheduling.
 use firmware_services::le::{get_u16, put_u16};
 
-pub const DEFAULT_BRIGHTNESS: u8 = 50;
+pub const DEFAULT_BRIGHTNESS: u8 = 100;
 pub const DEFAULT_DIM_TIMEOUT_SECS: u16 = 30;
 pub const DEFAULT_DIM_BRIGHTNESS: u8 = 10;
 pub const DEFAULT_TIMEZONE_MINUTES: i16 = 0;

@@ -1,6 +1,5 @@
 //! Structured workouts: steps with a length and a target, grouped into
-//! repeated blocks, built at compile time for the library or decoded from an
-//! upload.
+//! repeated blocks, decoded from an upload or built at compile time for tests.
 //!
 //! A workout is a short list of distinct steps and the blocks that repeat
 //! some of them, such as warm up, 5 × (3 min at 105 % / 3 min at 55 %), cool

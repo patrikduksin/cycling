@@ -339,20 +339,12 @@ impl Lift {
             ("auto pause", now.auto_pause != then.auto_pause),
             ("sounds", now.sounds != then.sounds),
             ("auto lap", now.auto_lap != then.auto_lap),
-            ("day and night", now.daylight != then.daylight),
             ("theme", now.theme != then.theme),
             ("time zone", now.zone != then.zone),
             ("wheel size", now.wheel != then.wheel),
             ("rider", now.rider != then.rider),
             ("ride alerts", now.alerts != then.alerts),
-            ("sunset alert", now.sunset_alert != then.sunset_alert),
-            ("ride pages", now.deck != then.deck),
-            ("main page readings", now.main_slots != then.main_slots),
             ("display mode", now.mode != then.mode),
-            (
-                "auto brightness",
-                now.auto_brightness != then.auto_brightness,
-            ),
         ] {
             if differs {
                 self.left(format!("preference {what}"));

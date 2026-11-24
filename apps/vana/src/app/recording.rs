@@ -2,15 +2,11 @@
 //! and does between them what only the runtime can, in the order
 //! `ride::current` describes.
 use super::Runtime;
-use super::navigation::To;
-use crate::ride::auto::{Call, Decision};
-use crate::ride::current::Ended;
 use crate::ride::log::{Sample, Status};
 use crate::ride::medium::Medium;
-use crate::ride::settle::{self, End, Saved};
+use crate::ride::settle::{self, Saved};
 use crate::ride::storage::RideStorage;
 use crate::screens::workout::Page;
-use crate::workout::ftp::Source;
 use device_api::bulk::ReadWrite;
 
 impl Runtime {
@@ -40,16 +36,14 @@ impl Runtime {
         if self.ride.pending() || self.ride.moving() {
             return;
         }
-        let page = self.navigation.page();
         // Not while the sheet is open: a hand on the screen is not a start,
-        // and its hold starts again once the sheet closes.
-        let starts = matches!(page, Page::Ride | Page::Home | Page::Done) && !self.sheet_open();
+        // and its hold starts again once the sheet closes. Rolling off rides
+        // free, as only Home's workout card plays today's workout.
+        let starts = matches!(self.navigation.page(), Page::Ride | Page::Home | Page::Done)
+            && !self.sheet_open();
         let motion = self.readings.motion;
         let automatic = self.preferences.options.auto_pause;
         if let Some(call) = self.ride.auto_update(now, motion, starts, automatic) {
-            if page == Page::Home && call == Call::Do(Decision::Start) {
-                self.training.free = true;
-            }
             self.ride_auto(call, now);
         }
     }
@@ -71,19 +65,7 @@ impl Runtime {
         }
         if self.ride.open_pass(&serviced, now, &sample) {
             self.notices.clear_lap_toast();
-            self.training.ftp.answered(Source::RideSummary);
-            self.navigation.go(To::RideStarted);
-            // The chosen workout starts with the ride, its steps read
-            // now; its steps lap it. One that cannot be read rides free.
-            self.training.player = match self.training.load_chosen(bulk) {
-                Ok(player) => player,
-                Err(error) => {
-                    log::warn!(target: "sdk.workout", "load_failed error={}", error.name());
-                    self.training.selected = None;
-                    self.training.missing = true;
-                    None
-                }
-            };
+            self.training.player = self.training.start();
             self.training.events.clear();
             // The last workout's summary belongs to the ride it ended with.
             self.training.last = None;
@@ -102,22 +84,11 @@ impl Runtime {
                 .flatten()
                 .last()
                 .copied(),
-            efforts: ride.efforts(),
             player,
         };
-        let end = |Ended { medium, discarded }| {
-            if discarded {
-                End::Discarded(saved(medium))
-            } else {
-                End::Finished(saved(medium))
-            }
-        };
         let finished = ended.iter().any(Option::is_some);
-        let settled = settle::settle(ended.map(|ended| ended.map(end)), bulk);
-        if let Some(claimed) = settled.claimed {
-            self.training.ftp.set(Source::RideSummary, claimed.ftp);
-        }
-        self.ride.after_settle(&settled, now);
+        settle::settle(ended.map(|ended| ended.map(saved)), bulk);
+        self.ride.after_settle(now);
         // The ride saved its workout's record: the next ride is free.
         if finished {
             self.leave_workout();

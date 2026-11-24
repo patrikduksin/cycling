@@ -29,7 +29,7 @@
 //! a pause.
 use crate::ride::auto::{Auto, Call, Decision, Motion};
 use crate::ride::bulk::{Bulk, BulkState};
-use crate::ride::climb::{Climbs, Event as ClimbEvent};
+use crate::ride::climb::Climbs;
 use crate::ride::elevation::Trace;
 use crate::ride::journal::{Internal, InternalState, Read};
 use crate::ride::laps::{AutoLap, Lap, Laps};
@@ -38,9 +38,8 @@ use crate::ride::medium::Medium;
 use crate::ride::metrics::Step;
 use crate::ride::power_trace::PowerTrace;
 use crate::ride::recorder::{Action, Recorder, Refused, ResultEvent};
-use crate::ride::settle::{Hide, Settled};
 use crate::ride::storage::RideStorage;
-use crate::ride::totals::{Efforts, Totals};
+use crate::ride::totals::Totals;
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::workout::player::{Events, Player};
 use device_api::bulk::ReadWrite;
@@ -101,15 +100,11 @@ pub(crate) struct Ride {
     laps: Laps,
     /// Time in each training zone, kept and reset with `totals`.
     zone_time: ZoneTime,
-    /// Best power over 5 s to 20 min, kept and reset with `totals`.
-    efforts: Efforts,
-    /// Altitude over distance for the summary's chart, kept and reset with
+    /// Altitude over distance for the climb page, kept and reset with
     /// `totals`.
     trace: Trace,
     /// Power over the whole ride for Ride done, kept and reset with `totals`.
     power: PowerTrace,
-    /// Climbs finished this ride.
-    climbs_done: u16,
     /// Climb detection and the elevation profile, fed and reset with `totals`.
     climbs: Climbs,
     /// The last step wholly inside active time. A step cut short by an accepted
@@ -128,8 +123,6 @@ pub(crate) struct Ride {
     outing: Outing,
     /// Where each journal stood when its boot scan ended.
     scanned: Scanned,
-    /// Where the rider's answer to DISCARD RIDE? stands.
-    discard: Discard,
     /// Set once the boot scan ends if the internal journal's reservation
     /// loses its rides at power-off: the store id that FILES records of its
     /// rides carry. It is drawn afresh each time the journal starts empty, as
@@ -153,20 +146,6 @@ enum Continuation {
         carried_ms: u64,
         pause_owed: bool,
     },
-}
-
-/// The rider's answer to DISCARD RIDE?: the ride is saved as any other, then
-/// hidden.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Discard {
-    #[default]
-    Idle,
-    /// The Finish under this token is being written.
-    Asked(u32),
-    /// The ride was saved, and hidden or not.
-    Saved { hidden: bool },
-    /// The Finish failed: the ride is still open.
-    Failed,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -200,9 +179,7 @@ impl Default for Ride {
             laps: Laps::default(),
             zone_time: ZoneTime::default(),
             power: PowerTrace::default(),
-            efforts: Efforts::default(),
             trace: Trace::default(),
-            climbs_done: 0,
             climbs: Climbs::default(),
             settled: None,
             altitude_fresh: false,
@@ -211,7 +188,6 @@ impl Default for Ride {
             last: None,
             outing: Outing(0),
             scanned: Scanned::default(),
-            discard: Discard::Idle,
             volatile_store: None,
             renew_store: false,
         }
@@ -262,29 +238,12 @@ impl Ride {
     pub(crate) fn power_trace(&self) -> &PowerTrace {
         &self.power
     }
-
-    pub(crate) fn efforts(&self) -> &Efforts {
-        &self.efforts
-    }
-
-    pub(crate) fn trace(&self) -> &Trace {
-        &self.trace
-    }
-
-    pub(crate) fn climbs_done(&self) -> u16 {
-        self.climbs_done
-    }
-
     pub(crate) fn climbs(&self) -> &Climbs {
         &self.climbs
     }
 
     pub(crate) fn auto(&self) -> &Auto {
         &self.auto
-    }
-
-    pub(crate) fn discard(&self) -> Discard {
-        self.discard
     }
 
     /// The medium the rider's ride is on, or the one a new ride would use:
@@ -508,16 +467,6 @@ impl Ride {
         self.host = Request::Idle;
     }
 
-    pub(crate) fn ask_discard(&mut self) {
-        if let Request::Pending(token) = self.request {
-            self.discard = Discard::Asked(token);
-        }
-    }
-
-    pub(crate) fn clear_discard(&mut self) {
-        self.discard = Discard::Idle;
-    }
-
     pub(crate) fn auto_manual(&mut self) {
         self.auto.manual();
     }
@@ -557,7 +506,6 @@ impl Ride {
     pub(crate) fn clear_sums(&mut self) {
         self.totals = Totals::default();
         self.zone_time = ZoneTime::default();
-        self.efforts = Efforts::default();
         self.trace.reset();
         self.power = PowerTrace::default();
     }
@@ -654,19 +602,12 @@ impl Ride {
             .add(credited, distance_mm, &sample, pressure_centi_pa);
         self.zone_time.add(credited, &sample, profile);
         self.power.add(credited, sample.power_watts);
-        if let Some(watts) = sample.power_watts
-            && !cut_short
-        {
-            self.efforts.add_ms(watts, credited);
-        }
         // Only a fresh reading is altitude for the climbs; the totals keep
         // their last one through a gap, which would read as a level road.
         let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
         self.altitude_fresh = altitude.is_some();
         self.trace.add(self.totals.distance_mm(), altitude);
-        if let Some(ClimbEvent::Finished(_)) = self.climbs.add(credited, distance_mm, altitude) {
-            self.climbs_done = self.climbs_done.saturating_add(1);
-        }
+        self.climbs.add(credited, distance_mm, altitude);
         let Some(player) = player else {
             return self
                 .laps
@@ -942,7 +883,6 @@ impl Ride {
                 self.continuation = Continuation::None;
                 self.laps = Laps::default();
                 self.clear_sums();
-                self.climbs_done = 0;
                 self.climbs = Climbs::default();
             }
             self.counted_ms = 0;
@@ -962,25 +902,20 @@ impl Ride {
 
     /// Hand each recorder's result to the actor that asked for it. Returns
     /// the rides whose Finish was written, for the caller to settle.
-    pub(crate) fn finish_pass(&mut self) -> [Option<Ended>; 2] {
+    pub(crate) fn finish_pass(&mut self) -> [Option<Medium>; 2] {
         let mut ended = [None; 2];
         for (index, medium) in [Medium::Internal, Medium::Bulk].into_iter().enumerate() {
             let Some(result) = self.recorder_mut(medium).take_result() else {
                 continue;
             };
-            let discarded = result.token != 0 && self.discard == Discard::Asked(result.token);
             why!(
                 "ride.result",
                 medium,
                 result,
-                discarded,
                 host = matches!(self.host, Request::Pending(token) if token == result.token)
             );
-            if discarded && !result.ok {
-                self.discard = Discard::Failed;
-            }
             if result.ok && result.action == Some(Action::Finish) {
-                ended[index] = Some(Ended { medium, discarded });
+                ended[index] = Some(medium);
             }
             if result.token != 0 {
                 // A ride the rider or host asked for that failed to start is
@@ -1002,11 +937,7 @@ impl Ride {
         ended
     }
 
-    pub(crate) fn after_settle(&mut self, settled: &Settled, now: u64) {
-        match settled.hide {
-            Hide::NotAsked => {}
-            Hide::Kept => self.discard = Discard::Saved { hidden: false },
-        }
+    pub(crate) fn after_settle(&mut self, now: u64) {
         // A ride lost while paused continues paused; automation waits until
         // it is, so an automatic pause stays automatic.
         if let Continuation::Moved {
@@ -1044,8 +975,6 @@ impl why::State for Ride {
         out.field("counted_ms", &self.counted_ms);
         out.field("zone_time", &self.zone_time);
         out.field("power", &self.power);
-        out.field("efforts", &self.efforts);
-        out.field("climbs_done", &self.climbs_done);
         out.field("settled", &self.settled);
         out.field("altitude_fresh", &self.altitude_fresh);
         out.field("auto", &self.auto);
@@ -1053,7 +982,6 @@ impl why::State for Ride {
         out.field("last", &self.last);
         out.field("outing", &self.outing);
         out.field("scanned", &self.scanned);
-        out.field("discard", &self.discard);
         out.field("volatile_store", &self.volatile_store);
         out.field("renew_store", &self.renew_store);
         out.owner("laps", &self.laps);
@@ -1068,12 +996,6 @@ pub(crate) struct Serviced {
     pub(crate) was_scanning: bool,
     pub(crate) reset: [Option<Medium>; 2],
     lost_paused: Option<bool>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct Ended {
-    pub(crate) medium: Medium,
-    pub(crate) discarded: bool,
 }
 
 #[cfg(any(test, feature = "invariants"))]
@@ -1095,14 +1017,6 @@ impl Ride {
 
     pub(crate) fn bulk_mut(&mut self) -> &mut Recorder {
         &mut self.bulk
-    }
-
-    pub(crate) fn totals_mut(&mut self) -> &mut Totals {
-        &mut self.totals
-    }
-
-    pub(crate) fn climbs_mut(&mut self) -> &mut Climbs {
-        &mut self.climbs
     }
 
     pub(crate) fn set_request(&mut self, request: Request, on: Medium) {

@@ -1,7 +1,6 @@
 #![no_std]
 #[cfg(any(test, feature = "std"))]
 extern crate std;
-pub mod backlight;
 pub mod harness;
 pub mod idle;
 pub mod input;

@@ -1,16 +1,14 @@
 //! The composition: the main page's and the shown screen's tiles, kept
-//! solved for the rider's choices and what the ride shows (a course, a
+//! solved for what the ride shows (a course, a
 //! radar, a workout, the arrival). It lives in the runtime, which the
 //! device keeps in PSRAM, so a frame only reads where the tiles go.
 use super::Runtime;
 use super::navigation::To;
-use crate::compose::builtin::{Asks, Choices, Laid, Laids, ScreenId};
+use crate::compose::builtin::{Asks, Laid, Laids, ScreenId};
 use crate::compose::input::{self, Action, Focus, Go, ListAct, OnPage, Owners, Plan, SheetAct};
-use crate::compose::node::What;
 use crate::compose::{Flags, Screens};
 use crate::ride::course::nav::Sign;
 use crate::screens::ride::main_flags;
-use crate::screens::ride::summary::{self, After};
 use crate::screens::touch::Control;
 use crate::screens::workout::Page;
 use device_api::ant::Ant;
@@ -24,7 +22,7 @@ pub(super) struct Composition {
 impl Composition {
     pub(super) fn new(device: &crate::screens::Device) -> Self {
         Self {
-            laids: Laids::new(device, Choices::default(), Flags::NONE, &Screens::EMPTY),
+            laids: Laids::new(device, Flags::NONE, &Screens::EMPTY),
         }
     }
 
@@ -53,7 +51,6 @@ impl Composition {
 #[cfg(not(target_os = "none"))]
 impl firmware_services::why::State for Composition {
     fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
-        out.field("main_slots", &self.main().choices().main_slots);
         out.field("main_flags", &self.main().flags());
     }
 }
@@ -72,18 +69,12 @@ impl Runtime {
             .as_ref()
             .is_some_and(|player| !player.done());
         let flags = main_flags(course, radar, workout, arrived);
-        let choices = Choices {
-            main_slots: self.preferences.options.main_slots,
-            editing: self.editing_number(),
-            today: self.today().is_some(),
-        };
         let shown = self.screen_id();
         let changed = super::overrides::shown(&self.overrides);
         let sheet = self.sheet_facts(now);
         let laids = &mut self.composition.laids;
-        if laids.update(choices, flags, changed) {
-            let slots = choices.main_slots;
-            why!("compose.solve", slots, flags);
+        if laids.update(flags, changed) {
+            why!("compose.solve", flags);
         }
         laids.show(shown, self.device, changed);
         if let Some(facts) = sheet {
@@ -91,39 +82,28 @@ impl Runtime {
         }
     }
 
-    /// Solve the screen shown for what the rider chose, keeping what the
-    /// ride shows: a press or a touch may come before the frame that shows
-    /// a screen just opened or an editor just entered.
+    /// Solve the screen shown, keeping what the ride shows: a press or a
+    /// touch may come before the frame that shows a screen just opened.
     pub(super) fn compose_shown(&mut self) {
-        let choices = Choices {
-            main_slots: self.preferences.options.main_slots,
-            editing: self.editing_number(),
-            today: self.today().is_some(),
-        };
         let flags = self.composition.main().flags();
         let shown = self.screen_id();
         let changed = super::overrides::shown(&self.overrides);
         let laids = &mut self.composition.laids;
-        laids.update(choices, flags, changed);
+        laids.update(flags, changed);
         laids.show(shown, self.device, changed);
     }
 
     pub(super) fn composed_press(&mut self, role: Role) -> Option<Pressed> {
-        let sheet = self.sheet_open();
-        if self.editing_number() && !sheet {
-            return None;
-        }
-        let id = if sheet {
+        let id = if self.sheet_open() {
             ScreenId::ControlSheet
         } else {
             self.screen_id()
         };
         // A press may come before the frame that shows a screen just opened.
         self.compose_shown();
-        let cursor = self.list_cursor_at();
         let laid = self.composition.laids.get_mut(id)?;
         let mut focus = laid.focus();
-        let asked = input::press(role, laid.buttons(), &laid.solved(), &mut focus, cursor);
+        let asked = input::press(role, laid.buttons(), &laid.solved(), &mut focus);
         *laid.focus_mut() = focus;
         Some(match asked {
             Some(action) => Pressed::Asks(action),
@@ -135,20 +115,7 @@ impl Runtime {
     pub(super) fn composed_hit(&self, point: device_api::input::Point) -> Option<Control> {
         let laid = self.composition.laids.get(self.screen_id())?;
         let (focus, action) = input::hit(laid.buttons(), &laid.solved(), point.x, point.y)?;
-        // A pad steps the number while the finger rests on it, not as a tap.
-        Some(match action {
-            Action::Page(OnPage::Lower) => Control::Lower,
-            Action::Page(OnPage::Raise) => Control::Raise,
-            _ => Control::Composed(action, focus),
-        })
-    }
-
-    /// Settings shows the number editor.
-    pub(super) fn editing_number(&self) -> bool {
-        let navigation = &self.navigation;
-        navigation.page() == Page::Settings
-            && navigation.editing()
-            && navigation.setting().kind() == crate::screens::settings::Kind::Number
+        Some(Control::Composed(action, focus))
     }
 
     /// Carry out what a press or a tap on a built-in asked for: a list's
@@ -161,39 +128,7 @@ impl Runtime {
         now: u64,
         ant: &mut impl device_api::ant::Ant,
     ) {
-        match (action, self.page_list()) {
-            (Action::List(act), Some(list)) => self.list_input(list, act, held, now, ant),
-            _ => self.carry(action, held, (received, now), ant),
-        }
-    }
-
-    /// The page of cards built-in `id` scrolls, solved afresh when it is
-    /// not the screen shown.
-    #[inline(never)]
-    pub(super) fn composed_page(&self, id: ScreenId) -> crate::screens::scroll::Layout {
-        let laids = &self.composition.laids;
-        let page = |laid: &Laid| laid.page().copied();
-        let shown = laids.get(id).and_then(page);
-        let main = laids.main();
-        let choices = Choices {
-            editing: false,
-            ..main.choices()
-        };
-        let changed = super::overrides::shown(&self.overrides).screen(id.key());
-        shown
-            .or_else(|| page(&Laid::new(id, self.device, choices, main.flags(), changed)?))
-            .expect("a list screen's built-in has a scroll")
-    }
-
-    /// A tap on card `index` of the built-in shown, which focuses its list.
-    pub(super) fn composed_item(&self, index: usize) -> Option<Control> {
-        let id = self.screen_id();
-        let tree = (id.builtin().tree)(&self.composition.main().choices());
-        let node = tree
-            .iter()
-            .position(|node| matches!(node.what(), Some(What::Scroll { .. })))?;
-        let action = Action::List(ListAct::Tap(index as u16));
-        Some(Control::Composed(action, Focus::Tile(node as u8)))
+        self.carry(action, held, (received, now), ant);
     }
 
     /// What holding MOVE does on the built-in shown, when its owner would
@@ -237,6 +172,37 @@ impl Runtime {
             }
             _ => 0,
         }
+    }
+
+    /// Which stop of the built-in shown starts a free ride, counted as
+    /// `focus_index` counts: Home's Ride or "Just ride".
+    pub(super) fn free_ride_stop(&self) -> Option<usize> {
+        let laid = self.composition.laids.get(self.screen_id())?;
+        let nodes = laid.screen().tree().nodes();
+        let starts = |placed: &crate::compose::solve::Placed| {
+            matches!(
+                nodes[usize::from(placed.node)].what(),
+                Some(crate::compose::node::What::Leaf {
+                    component: crate::compose::registry::START,
+                    ..
+                })
+            )
+        };
+        let index = laid.solved().focus_order().position(starts)?;
+        Some(index + usize::from(laid.buttons().act.is_some()))
+    }
+
+    /// How many stops MOVE walks the focus through on the built-in shown,
+    /// the screen's own stop included, so a harness can walk Home to RIDE.
+    pub(super) fn focus_stops(&self) -> usize {
+        let Some(laid) = self.composition.laids.get(self.screen_id()) else {
+            return 0;
+        };
+        let buttons = laid.buttons();
+        if buttons.move_.is_some() {
+            return usize::from(buttons.act.is_some());
+        }
+        laid.solved().focus_order().count() + usize::from(buttons.act.is_some())
     }
 
     /// Put the focus on stop `index` of the built-in shown, past the screen's
@@ -296,11 +262,6 @@ impl Runtime {
     fn open(&mut self, page: Page, ant: &mut impl Ant, now: u64) {
         match page {
             Page::Sensors => self.open_sensors(ant, now),
-            Page::Workouts => {
-                self.navigation.go(To::Page(Page::Workouts));
-                self.show_focus(crate::screens::touch::List::Workouts, now);
-            }
-            Page::Settings => self.navigation.go(To::Settings),
             page => self.navigation.go(To::Page(page)),
         }
     }
@@ -320,9 +281,7 @@ impl Runtime {
             navigation.page(),
             navigation.ride_page(),
             self.paused_screen_shown(),
-            self.ftp_sheet().is_some(),
             self.asks(),
-            self.summary_shown(),
         ) {
             ScreenId::Sensors => self.menu.screen(),
             id => id,
@@ -332,28 +291,9 @@ impl Runtime {
     fn asks(&self) -> Asks {
         match self.navigation.page() {
             Page::Format => self.format.shows().asks(),
-            Page::DiscardRide if self.ride.discard() != crate::ride::current::Discard::Idle => {
-                Asks::Wait
-            }
+            Page::Home if self.training.today.is_some() => Asks::Plan,
             _ => Asks::Own,
         }
-    }
-
-    /// The summary page shown, from what decides which screen it is.
-    fn summary_shown(&self) -> summary::Shown {
-        let after = match self.navigation.page() {
-            Page::Summary => After {
-                saving: self.saving(),
-                offer: self.summary_offer(),
-                ..After::default()
-            },
-            _ => return summary::Shown::Message,
-        };
-        summary::Shown::of(&After {
-            page: self.navigation.summary_page(),
-            elevation: self.has_elevation(),
-            ..after
-        })
     }
 }
 
@@ -380,7 +320,6 @@ impl<A: Ant> Owners for Carried<'_, A> {
                 runtime.timing.press(self.received);
                 runtime.next_ride_page();
             }
-            (Go::Next, Page::Summary) => runtime.next_summary_page(1),
             (Go::Open(page), _) => runtime.open(page, self.ant, self.now),
             // A held BACK is the power-on hold still going.
             (Go::TurnOff, _) if !self.held => runtime.open_power_sheet(self.received),
@@ -404,30 +343,15 @@ impl<A: Ant> Owners for Carried<'_, A> {
 
     fn page(&mut self, act: OnPage) {
         let (runtime, held) = (&mut *self.runtime, self.held);
-        // A power sheet covers every page, the FTP sheet whatever page it
-        // shows over.
         if runtime.power.view().is_some() {
             if let OnPage::Answer(yes) = act {
                 runtime.answer_power(yes);
             }
             return;
         }
-        if runtime.ftp_sheet().is_some() {
-            if let OnPage::Answer(yes) = act {
-                runtime.answer_ftp(yes, self.now);
-            }
-            return;
-        }
         match (runtime.navigation.page(), act) {
             (Page::Format, OnPage::Answer(yes)) => runtime.format_input(yes, held, self.received),
             (Page::LoseRides, OnPage::Answer(yes)) if !held => runtime.lose_rides_input(yes),
-            (Page::Summary, OnPage::Answer(take)) => {
-                let role = if take { Role::Act } else { Role::Back };
-                if !held {
-                    runtime.answer_ftp_offer(role, self.now);
-                }
-                runtime.ride_press(role, held, self.received, self.now);
-            }
             (Page::Boot, OnPage::Back) => runtime.navigation.go(To::Page(runtime.first_page())),
             _ => why!("compose.unowned", act),
         }
@@ -444,7 +368,9 @@ impl<A: Ant> Owners for Carried<'_, A> {
     fn start(&mut self, plan: Plan) {
         let runtime = &mut *self.runtime;
         runtime.timing.press(self.received);
-        runtime.training.free = plan == Plan::Free;
-        runtime.ride_press(Role::Act, self.held, self.received, self.now);
+        match plan {
+            Plan::Today => runtime.ride_workout(self.held, self.received, self.now),
+            Plan::Free => runtime.ride_press(Role::Act, self.held, self.received, self.now),
+        }
     }
 }

@@ -1199,7 +1199,7 @@ fn test_step_power_shows_at_45_kmh() {
     sim.advance(12);
     sim.advance(259);
     sim.advance(15);
-    sim.start_workout("FTP TEST 20 MIN");
+    sim.start_workout(&vana::workout::fixtures::FTP_TWENTY);
     sim.advance(1265);
     sim.ride_at(0.0, 98.0, 123.0, 62.0);
     sim.advance(1778);

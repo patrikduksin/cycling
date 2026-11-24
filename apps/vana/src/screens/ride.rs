@@ -25,19 +25,15 @@ use core::fmt::Write;
 use firmware_shell::shell::Parts;
 
 pub mod climb;
-pub mod elevation;
 mod main;
 pub mod map;
-pub mod slots;
 mod stats;
-pub mod summary;
 pub mod workout;
 mod zones;
 
 pub(super) use zones::{GAUGE_WIDTH, Mark, Marks, gauges, marks};
 
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent, Road as ClimbRoad};
-pub use elevation::Chart as ElevationChart;
 pub use map::{
     Cache as MapCache, Fetched, Filled as FilledMap, Frame as MapFrame, Track, Zoom as MapZoom,
 };
@@ -45,8 +41,6 @@ pub use workout::{Chart as WorkoutChart, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, POWER, Row};
 pub(super) use chrome::{RED, WHITE};
-
-pub(super) const GRID: u16 = chrome::TERTIARY;
 
 /// The radar strip and its divider.
 pub(crate) const RADAR_WIDTH: usize = 28;
@@ -184,31 +178,13 @@ impl RidePage {
     }
 }
 
-/// The ride pages MOVE steps through, in order. The rider's deck holds the
-/// main page, first and always, then the optional pages left on in the
-/// rider's order; a record stores it without the workout bit (see
-/// `app::preferences`). The deck
-/// shown puts the workout page first while a workout is chosen. Two bytes,
-/// as `View` holds one every frame: three bits a slot, each an optional
-/// page's index or 0 for none, and the top bit for the workout page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Deck(u16);
-
-impl Default for Deck {
-    fn default() -> Self {
-        Self::OPTIONAL
-            .into_iter()
-            .fold(Self::MAIN, |deck, page| deck.pushed(page))
-    }
-}
-
 /// The shown readings the tiles of `id`'s built-in read; none when a tile
 /// reads the workout step's target, whose metric the step picks.
 fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
     use crate::compose::data::Reads;
     use crate::compose::node::What;
     let builtin = id.builtin();
-    let nodes = (builtin.tree)(&crate::compose::builtin::Choices::default());
+    let nodes = (builtin.tree)();
     let mut read = heapless::Vec::<&str, 7>::new();
     for node in &nodes {
         let Some(What::Leaf { component, arg }) = node.what() else {
@@ -229,131 +205,36 @@ fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
     Some(READINGS.into_iter().filter(|r| read.contains(r)).collect())
 }
 
+/// The ride pages MOVE steps through, in order: the workout page first while
+/// a workout is chosen, then the main page, the climb and the map.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Deck {
+    workout: bool,
+}
+
 impl Deck {
-    /// The optional pages in Settings' order; a page turned back on returns
-    /// to its place in it.
-    pub const OPTIONAL: [RidePage; 2] = [RidePage::Climb, RidePage::Map];
-    /// Bytes a record stores: each optional page shown by its index, in
-    /// order, then [`Self::END`].
-    pub const LENGTH: usize = Self::OPTIONAL.len();
-    const END: u8 = 0xff;
-    const SLOT_BITS: u32 = 3;
-    const WORKOUT: u16 = 1 << 15;
-    const MAIN: Self = Self(0);
-
-    fn optional(self) -> impl Iterator<Item = RidePage> + Clone {
-        (0..Self::LENGTH as u32)
-            .map(move |slot| usize::from(self.0 >> (slot * Self::SLOT_BITS) & 0b111))
-            .take_while(|&index| index != 0)
-            .filter_map(|index| {
-                Self::OPTIONAL
-                    .into_iter()
-                    .find(|page| page.index() == index)
-            })
-    }
-
-    fn pushed(self, page: RidePage) -> Self {
-        let slot = self.optional().count() as u32;
-        Self(self.0 | (page.index() as u16) << (slot * Self::SLOT_BITS))
-    }
-
-    pub fn encode(self) -> [u8; Self::LENGTH] {
-        let mut bytes = [Self::END; Self::LENGTH];
-        for (byte, page) in bytes.iter_mut().zip(self.optional()) {
-            *byte = page.index() as u8;
-        }
-        bytes
-    }
-
-    /// The deck a record's bytes stand for; none when a byte names no
-    /// optional page, names one twice, or follows the end.
-    pub fn decode(bytes: [u8; Self::LENGTH]) -> Option<Self> {
-        let mut deck = Self::MAIN;
-        let shown = bytes.iter().take_while(|&&byte| byte != Self::END);
-        for &byte in shown.clone() {
-            let page = *Self::OPTIONAL
-                .iter()
-                .find(|page| page.index() == usize::from(byte))?;
-            if deck.contains(page) {
-                return None;
-            }
-            deck = deck.pushed(page);
-        }
-        let rest = &bytes[shown.count()..];
-        rest.iter().all(|&byte| byte == Self::END).then_some(deck)
+    pub const fn new(workout: bool) -> Self {
+        Self { workout }
     }
 
     /// The pages in MOVE order.
-    pub fn pages(self) -> heapless::Vec<RidePage, { RidePage::TRAINING.len() }> {
-        let workout = (self.0 & Self::WORKOUT != 0).then_some(RidePage::Workout);
-        workout
-            .into_iter()
-            .chain([RidePage::Main])
-            .chain(self.optional())
-            .collect()
-    }
-
-    pub fn shows(self, page: RidePage) -> bool {
-        page == RidePage::Workout || self.contains(page)
-    }
-
-    /// `page` on, in its place among the optional pages if it was off:
-    /// after the last page shown that comes before it, else after main.
-    pub fn showing(self, page: RidePage) -> Self {
-        if self.contains(page) || !Self::OPTIONAL.contains(&page) {
-            return self;
-        }
-        let rank = |page: RidePage| Self::OPTIONAL.iter().position(|&optional| optional == page);
-        let before = self
-            .optional()
-            .filter(|&shown| rank(shown) < rank(page))
-            .last();
-        let after = before.map_or(0, |before| {
-            self.optional()
-                .position(|shown| shown == before)
-                .map_or(0, |at| at + 1)
-        });
-        let deck = self
-            .optional()
-            .take(after)
-            .fold(self.only_workout(), Self::pushed);
-        let deck = deck.pushed(page);
-        self.optional().skip(after).fold(deck, Self::pushed)
-    }
-
-    /// Show or hide `page`; the main page and the workout page stay on.
-    pub fn toggled(self, page: RidePage) -> Self {
-        if !self.contains(page) {
-            return self.showing(page);
-        }
-        self.optional()
-            .filter(|&shown| shown != page)
-            .fold(self.only_workout(), Self::pushed)
-    }
-
-    fn only_workout(self) -> Self {
-        Self(self.0 & Self::WORKOUT)
-    }
-
-    /// The deck MOVE steps through: the workout page first while a workout
-    /// is chosen, then this one.
-    pub fn shown(self, workout: bool) -> Self {
-        if workout {
-            Self(self.0 | Self::WORKOUT)
+    pub const fn pages(self) -> &'static [RidePage] {
+        if self.workout {
+            &RidePage::TRAINING
         } else {
-            self
+            &RidePage::ALL
         }
     }
 
-    pub fn count(self) -> usize {
+    pub const fn count(self) -> usize {
         self.pages().len()
     }
 
-    pub fn first(self) -> RidePage {
+    pub const fn first(self) -> RidePage {
         self.pages()[0]
     }
 
-    pub fn last(self) -> RidePage {
+    pub const fn last(self) -> RidePage {
         self.pages()[self.count() - 1]
     }
 
@@ -386,18 +267,9 @@ impl Deck {
     }
 }
 
-/// Two bytes, three bits a slot, each slot an optional page's index.
-const _: () = {
-    assert!(core::mem::size_of::<Deck>() == 2);
-    assert!(Deck::LENGTH as u32 * Deck::SLOT_BITS < 15);
-    let mut at = 0;
-    while at < Deck::OPTIONAL.len() {
-        let index = Deck::OPTIONAL[at] as usize;
-        assert!(index > 0 && index < 1 << Deck::SLOT_BITS);
-        at += 1;
-    }
-};
-
+/// What a ride page drawn from its tiles prepares before they draw: the
+/// climb chart, in the profile tile's box. The app lays out the workout
+/// chart from its player.
 pub(super) fn prepare_tiles(view: &mut View, laid: &crate::compose::builtin::Laid) {
     if view.ride_page == RidePage::Climb
         && let Some(profile) = laid.box_of(crate::compose::registry::ROAD_PROFILE)
@@ -833,7 +705,7 @@ pub(crate) fn largest_box(device: &super::Device, component: u8) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::builtin::{Choices, Laid, ScreenId};
+    use crate::compose::builtin::{Laid, ScreenId};
     use crate::compose::node::Flags;
     use crate::screens::workout::Page;
 
@@ -848,7 +720,7 @@ mod tests {
     fn the_paused_screen_and_end_ride_are_centred() {
         for id in [ScreenId::RidePaused, ScreenId::RideEnd] {
             for device in crate::screens::panels::ALL {
-                let laid = Laid::new(id, device, Choices::default(), Flags::NONE, None).unwrap();
+                let laid = Laid::new(id, device, Flags::NONE, None).unwrap();
                 let leaves = laid.leaves();
                 let above = i32::from(leaves[0].rect.top);
                 let bottom = i32::from(leaves[leaves.len() - 1].rect.bottom);
@@ -980,7 +852,7 @@ mod tests {
             _ => {}
         }
         view.pause_screen = page.is_none();
-        view.compose(slots::Slots::default());
+        view.compose_main();
         view.prepare();
         let texts = runs_and_neighbour_pairs(view.canvas());
         let mut line = std::string::String::new();
@@ -1036,15 +908,9 @@ mod tests {
         assert_eq!(paused_readings().to_vec(), drawn(None), "paused");
     }
 
-    fn choice(hidden: &[RidePage]) -> Deck {
-        hidden
-            .iter()
-            .fold(Deck::default(), |choice, page| choice.toggled(*page))
-    }
-
     #[test]
     fn pages_step_in_order_and_wrap_both_ways() {
-        let free = Deck::default().shown(false);
+        let free = Deck::new(false);
         assert_eq!(free.pages(), RidePage::ALL);
         assert_eq!(RidePage::default(), RidePage::Main);
         assert_eq!(free.next(RidePage::Main), Some(RidePage::Climb));
@@ -1053,105 +919,18 @@ mod tests {
         assert_eq!(free.following(RidePage::Map), RidePage::Main);
         assert_eq!(free.preceding(RidePage::Main), RidePage::Map);
         assert_eq!(free.preceding(RidePage::Climb), RidePage::Main);
-        let training = Deck::default().shown(true);
+        let training = Deck::new(true);
         assert_eq!(training.pages(), RidePage::TRAINING);
+        assert_eq!(training.first(), RidePage::Workout);
         assert_eq!(training.following(RidePage::Workout), RidePage::Main);
         assert_eq!(training.following(RidePage::Climb), RidePage::Map);
         assert_eq!(training.following(RidePage::Map), RidePage::Workout);
         assert_eq!(training.preceding(RidePage::Workout), RidePage::Map);
         assert_eq!(training.position(RidePage::Main), 1);
         assert_eq!(free.position(RidePage::Workout), 0);
-    }
-
-    #[test]
-    fn every_subset_of_optional_pages_makes_a_walkable_list() {
-        for bits in 0..1u8 << Deck::OPTIONAL.len() {
-            let hidden: std::vec::Vec<RidePage> = Deck::OPTIONAL
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| bits >> i & 1 == 1)
-                .map(|(_, page)| page)
-                .collect();
-            for workout in [false, true] {
-                let pages = choice(&hidden).shown(workout);
-                let list = pages.pages();
-                assert!(list.contains(&RidePage::Main), "{hidden:?}");
-                assert_eq!(list.contains(&RidePage::Workout), workout);
-                assert_eq!(list.len(), pages.count());
-                assert!(hidden.iter().all(|page| !pages.contains(*page)));
-                assert_eq!(
-                    list.len(),
-                    1 + usize::from(workout) + Deck::OPTIONAL.len() - hidden.len()
-                );
-                let mut page = pages.first();
-                for (i, shown) in list.iter().enumerate() {
-                    assert_eq!(page, *shown);
-                    assert_eq!(pages.position(page), i);
-                    assert_eq!(pages.next(page), list.get(i + 1).copied());
-                    assert_eq!(pages.preceding(pages.following(page)), page);
-                    page = pages.following(page);
-                }
-                assert_eq!(page, pages.first(), "a full lap returns");
-                assert_eq!(pages.following(pages.last()), pages.first());
-                assert_eq!(pages.preceding(pages.first()), pages.last());
-            }
-        }
-    }
-
-    #[test]
-    fn with_everything_hidden_only_main_remains() {
-        let all_off = choice(&Deck::OPTIONAL);
-        let pages = all_off.shown(false);
-        assert_eq!(pages.pages(), [RidePage::Main]);
-        assert_eq!(pages.following(RidePage::Main), RidePage::Main);
-        assert_eq!(pages.preceding(RidePage::Main), RidePage::Main);
-        assert_eq!(pages.next(RidePage::Main), None);
-        assert_eq!(
-            all_off.shown(true).pages(),
-            [RidePage::Workout, RidePage::Main]
-        );
-    }
-
-    #[test]
-    fn main_and_workout_cannot_be_hidden_and_toggling_twice_restores() {
-        let default = Deck::default();
-        assert_eq!(default.pages(), RidePage::ALL);
-        for page in [RidePage::Main, RidePage::Workout] {
-            assert_eq!(default.toggled(page), default);
-            assert!(default.shows(page));
-        }
-        for page in Deck::OPTIONAL {
-            let off = default.toggled(page);
-            assert!(!off.shows(page));
-            assert_eq!(off.count(), default.count() - 1);
-            assert_eq!(off.toggled(page), default, "back in its place");
-        }
-    }
-
-    #[test]
-    fn a_deck_round_trips_its_bytes_and_refuses_what_means_nothing() {
-        for bits in 0..1u8 << Deck::OPTIONAL.len() {
-            let hidden: std::vec::Vec<RidePage> = Deck::OPTIONAL
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| bits >> i & 1 == 1)
-                .map(|(_, page)| page)
-                .collect();
-            let deck = choice(&hidden);
-            assert_eq!(Deck::decode(deck.encode()), Some(deck), "{hidden:?}");
-        }
-        assert_eq!(Deck::default().encode(), [1, 3]);
-        assert_eq!(choice(&Deck::OPTIONAL).encode(), [0xff; 2]);
-        let reordered = Deck::decode([3, 1]).unwrap();
-        assert_eq!(
-            reordered.pages(),
-            [RidePage::Main, RidePage::Map, RidePage::Climb]
-        );
-        let map_only = Deck::decode([3, 0xff]).unwrap();
-        assert_eq!(map_only.pages(), [RidePage::Main, RidePage::Map]);
-        assert_eq!(map_only.showing(RidePage::Climb).pages(), RidePage::ALL);
-        for bytes in [[0, 0xff], [2, 0xff], [1, 1], [0xff, 1], [5, 0xff]] {
-            assert_eq!(Deck::decode(bytes), None, "{bytes:?}");
+        for deck in [free, training] {
+            assert_eq!(deck.following(deck.last()), deck.first());
+            assert_eq!(deck.preceding(deck.first()), deck.last());
         }
     }
 

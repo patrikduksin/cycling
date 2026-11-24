@@ -482,14 +482,13 @@ impl Climbs {
             .then(|| (i32::from(to) - i32::from(from)).max(0) as u32 * 3600 / u32::from(span))
     }
 
-    /// The odometer distance of the newest profile sample.
-    pub fn newest_mm(&self) -> Option<u64> {
-        (self.profile.len > 0).then(|| self.next_mm - STEP_MM)
-    }
-
-    /// The profile, oldest first, into `out`; returns how many samples it has.
-    pub fn profile(&self, out: &mut [ProfileSample; PROFILE_LEN]) -> usize {
-        let len = self.profile.len;
+    /// The profile up to `upto_mm` on the odometer, oldest first, into
+    /// `out`; returns how many samples it wrote. Grades come from those
+    /// samples alone, so one taken later never moves them.
+    pub fn profile(&self, upto_mm: u64, out: &mut [ProfileSample; PROFILE_LEN]) -> usize {
+        let newest_mm = self.next_mm.saturating_sub(STEP_MM);
+        let unseen = newest_mm.saturating_sub(upto_mm).div_ceil(STEP_MM) as usize;
+        let len = self.profile.len.saturating_sub(unseen);
         for (index, sample) in out.iter_mut().enumerate().take(len) {
             let altitude = self.profile.get(index);
             let from = index.saturating_sub(LOCAL);
@@ -687,7 +686,7 @@ mod tests {
             assert_eq!(climbs.add(1000, 5000, None), None);
         }
         assert_eq!(
-            climbs.profile(&mut [ProfileSample::default(); PROFILE_LEN]),
+            climbs.profile(u64::MAX, &mut [ProfileSample::default(); PROFILE_LEN]),
             0
         );
         assert_eq!(climbs.vam_m_h(), None);
@@ -780,7 +779,7 @@ mod tests {
         let climb = climbs.climbing().unwrap();
         assert!((940..=960).contains(&climb.gain_dm), "{climb:?}");
         let mut profile = [ProfileSample::default(); PROFILE_LEN];
-        let len = climbs.profile(&mut profile);
+        let len = climbs.profile(u64::MAX, &mut profile);
         assert!(
             profile[..len]
                 .iter()
@@ -797,7 +796,7 @@ mod tests {
         // 10% for 50 km: 5 km of climbing, beyond the i16 decimetre range.
         ride(&mut climbs, &mut at, 50_000, 5000, |mm| mm as i32 / 1000);
         let mut profile = [ProfileSample::default(); PROFILE_LEN];
-        assert_eq!(climbs.profile(&mut profile), PROFILE_LEN);
+        assert_eq!(climbs.profile(u64::MAX, &mut profile), PROFILE_LEN);
         assert!(profile.iter().all(|s| s.grade_tenths == 100), "{profile:?}");
         let newest = i32::from(profile[PROFILE_LEN - 1].altitude_dm);
         assert_eq!(newest - i32::from(profile[0].altitude_dm), 199 * 20);
@@ -814,7 +813,7 @@ mod tests {
         // Fast steps cross several boundaries; samples interpolate between them.
         ride(&mut climbs, &mut at, 100, 10_000, |mm| mm as i32 / 1000);
         // The first reading, at 10 m, starts the profile.
-        assert_eq!(climbs.profile(&mut profile), 5);
+        assert_eq!(climbs.profile(u64::MAX, &mut profile), 5);
         assert_eq!(profile[0].altitude_dm, 0);
         assert_eq!(profile[1].altitude_dm, 20);
         assert_eq!(profile[4].altitude_dm, 80);
@@ -822,10 +821,24 @@ mod tests {
         assert_eq!(profile[4].grade_tenths, 100);
         assert_eq!(profile[0].grade_tenths, 100);
         ride(&mut climbs, &mut at, 5000, 10_000, |mm| mm as i32 / 1000);
-        assert_eq!(climbs.profile(&mut profile), PROFILE_LEN);
+        assert_eq!(climbs.profile(u64::MAX, &mut profile), PROFILE_LEN);
         let newest = profile[PROFILE_LEN - 1].altitude_dm;
         assert_eq!(newest - profile[0].altitude_dm, 199 * 20);
         assert_eq!(profile[PROFILE_LEN - 1].grade_tenths, 100);
+    }
+
+    #[test]
+    fn a_profile_up_to_a_distance_holds_still_as_later_samples_arrive() {
+        let mut climbs = Climbs::default();
+        let mut at = 0;
+        let mut before = [ProfileSample::default(); PROFILE_LEN];
+        ride(&mut climbs, &mut at, 1000, 10_000, |mm| mm as i32 / 1000);
+        let upto = at;
+        let len = climbs.profile(upto, &mut before);
+        ride(&mut climbs, &mut at, 200, 10_000, |mm| mm as i32 / 200);
+        let mut after = [ProfileSample::default(); PROFILE_LEN];
+        assert_eq!(climbs.profile(upto, &mut after), len);
+        assert_eq!(before[..len], after[..len]);
     }
 
     #[test]

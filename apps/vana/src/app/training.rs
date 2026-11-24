@@ -1,43 +1,40 @@
-//! Structured training in the runtime: the picker, the workout a ride
-//! plays, its beeps, toasts and laps, the FTP sheet and workout uploads.
+//! Structured training in the runtime: today's workout, the workout a ride
+//! plays, its beeps, toasts and laps.
 //!
-//! A ride starts its player when the ride starts, from the workout chosen
-//! on the picker; the player then advances inside `Ride::count` with the
-//! ride totals. Each step that ends closes a lap and announces the next
-//! step; the last three seconds of a timed step beep. While a workout runs,
-//! MARK (TopLeft) ends the step, which also closes the lap.
+//! Home's WORKOUT starts a ride that plays today's workout; the player then
+//! advances inside `Ride::count` with the ride totals. Each step that ends
+//! closes a lap and announces the next step; the last three seconds of a
+//! timed step beep. While a workout runs, MARK (TopLeft) ends the step,
+//! which also closes the lap.
 //!
-//! Uploads are codec files a host puts under `workouts/` on the FILES
-//! volume (`cycling workout-load`), or the phone page does. The library
-//! lists them at boot, each time the picker opens and on `WORKOUT LIST`,
-//! keeping only names and outlines; a ride reads its workout's steps when it starts. A finished
-//! ride's workout outcome is saved beside it (`workout::history`).
+//! Today's workout is one codec file a host puts on the FILES volume
+//! (`cycling workout-load`), or the phone page does (`workout::today`). It
+//! is read at boot, on `WORKOUT LOAD` and after the phone changes it, and
+//! read again every `READ_RETRY_MS` while the medium fails it. A
+//! finished ride's workout outcome is saved beside it (`workout::history`).
 //!
 //! Terminal:
 //!
-//! - `WORKOUT LIST` lists the uploads again and reports the library;
-//!   `WORKOUT STATUS` reports the player.
-//! - `WORKOUT SELECT row` chooses a picker row (0 is free ride) for the
-//!   next ride and opens Ready, as the picker does; `WORKOUT DELETE n`
-//!   deletes upload `n`'s file.
+//! - `WORKOUT LOAD` reads today's workout again and reports it;
+//!   `WORKOUT STATUS` reports the player, or today's workout before a ride.
 //! - `WORKOUT HISTORY INTERNAL|BULK id` reports a saved ride's workout.
 use super::Runtime;
 use super::cues::Cue;
 use super::navigation::To;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
-use crate::screens::kinetic::Kinetic;
-use crate::screens::ride::{Deck, RidePage, Training as Shown, summary};
-use crate::screens::touch::List;
+use crate::screens::ride::{Deck, RidePage, Training as Shown};
 use crate::screens::workout::{Page, Text};
-use crate::screens::workouts::{Choice, Picker};
-use crate::workout::ftp::{Candidates, Question, Source};
 use crate::workout::history;
-use crate::workout::library::{Id, Library, LoadError, Outline};
-use crate::workout::model::{Length, Name, Played};
+use crate::workout::model::{Length, Name, Played, Workout};
 use crate::workout::player::{Event, Events, Player, Summary};
+use crate::workout::today::{self, LoadError};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
+use device_api::input::Role;
+
+/// How long after a read the medium failed today's workout is read again.
+const READ_RETRY_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beep {
@@ -49,24 +46,17 @@ enum Beep {
 
 #[derive(Default)]
 pub(super) struct Training {
-    pub(super) library: Library,
-    /// The workout the next ride plays; `None` rides free.
-    pub(super) selected: Option<Id>,
-    pub(super) free: bool,
-    pub(super) picker_cursor: usize,
-    /// The picker's scroll, which follows the finger.
-    pub(super) picker_scroll: Kinetic,
+    /// Today's workout as FILES held it when last read.
+    pub(super) today: Option<Workout>,
+    /// Why today's workout could not be read the last time.
+    pub(super) read_error: Option<LoadError>,
+    /// Today's workout, or that there is none, was read since boot. A read
+    /// the medium failed is tried again from `retry_at`.
+    read: bool,
+    retry_at: u64,
+    /// The next ride plays today's workout; otherwise it rides free.
+    pub(super) chosen: bool,
     beep: Option<(Beep, u64)>,
-    pub(super) ftp: Candidates,
-    /// The library lists what FILES holds now; cleared at boot and each
-    /// time the picker opens.
-    listed: bool,
-    /// Why the last listing found no uploads, if it failed.
-    pub(super) list_error: Option<LoadError>,
-    /// The picker was open at the last tick.
-    picking: bool,
-    /// The ride just started free: its workout could not be read.
-    pub(super) missing: bool,
     /// The last workout ridden and how it went, once its ride is closed.
     pub(super) last: Option<(Name, Summary)>,
     /// The workout this ride plays, kept after it ends until the rider
@@ -77,16 +67,12 @@ pub(super) struct Training {
 }
 
 state!(Training {
-    library,
-    selected,
-    picker_cursor,
-    picker_scroll,
+    today,
+    read_error,
+    read,
+    retry_at,
+    chosen,
     beep,
-    ftp,
-    listed,
-    list_error,
-    picking,
-    missing,
     last,
     player,
     events,
@@ -101,60 +87,20 @@ impl Training {
         self.beep = Some((beep, now));
     }
 
-    /// The picker rows: free ride, then the library, as `Id`s.
-    fn row(&self, row: usize) -> Option<Option<Id>> {
-        if row == 0 {
-            return Some(None);
-        }
-        self.library.ids().nth(row - 1).map(Some)
+    /// Read today's workout from FILES again. Only a workout or a sure
+    /// "none" settles it; a read the medium failed leaves it to retry.
+    pub(super) fn read_today(&mut self, media: &mut impl ReadWrite) {
+        let read = today::read(media);
+        self.today = read.ok().flatten();
+        self.read_error = read.err();
+        self.read = read.is_ok();
     }
 
-    pub(super) fn rows(&self) -> usize {
-        1 + self.library.ids().count()
+    /// The player for a ride that starts now: today's workout if it was
+    /// chosen, else none.
+    pub(super) fn start(&self) -> Option<Player> {
+        self.today.filter(|_| self.chosen).map(Player::new)
     }
-
-    /// List the uploads again, keeping the chosen one chosen if it is
-    /// still there.
-    pub(super) fn list(&mut self, media: &mut impl ReadWrite) {
-        let chosen = match self.selected {
-            Some(Id::Uploaded(index)) => self
-                .library
-                .uploads()
-                .get(usize::from(index))
-                .map(|upload| upload.file),
-            _ => None,
-        };
-        self.list_error = self.library.refresh(media).err();
-        if let Some(file) = chosen {
-            self.selected = self.library.find(&file);
-        }
-        self.picker_cursor = self.picker_cursor.min(self.rows() - 1);
-        self.listed = true;
-    }
-
-    /// The chosen workout's player, its steps read now: `Ok(None)` rides
-    /// free.
-    pub(super) fn load_chosen(
-        &self,
-        media: &mut impl ReadWrite,
-    ) -> Result<Option<Player>, LoadError> {
-        let Some(id) = self.selected.filter(|_| !self.free) else {
-            return Ok(None);
-        };
-        self.library.load(id, media).map(|w| Some(Player::new(w)))
-    }
-}
-
-/// "52 MIN  12 STEPS", or what an FTP test is.
-fn detail(outline: Outline) -> Text<24> {
-    let mut text = Text::new();
-    let minutes = outline.planned_secs.div_ceil(60);
-    let _ = match outline.test {
-        Some(test) => write!(text, "{}", test.label()),
-        None if outline.untimed => write!(text, "{} STEPS", outline.played),
-        None => write!(text, "{minutes} MIN  {} STEPS", outline.played),
-    };
-    text
 }
 
 /// The toast for a step that began: "WORK 2/5 3:00".
@@ -196,117 +142,42 @@ impl Runtime {
 
     /// The ride screen has a workout page.
     pub(super) fn workout_pages(&self) -> bool {
-        let training = &self.training;
-        training.player.is_some() || (training.selected.is_some() && !training.free)
+        self.training.player.is_some() || self.training.chosen
     }
 
-    /// List the uploads when the library is out of date: at boot and when
-    /// the picker opens, never during a ride.
-    pub(super) fn service_workouts(&mut self, media: &mut impl ReadWrite) {
-        let picking = self.navigation.page() == Page::Workouts;
-        if picking && !self.training.picking {
-            self.training.listed = false;
-        }
-        self.training.picking = picking;
-        if self.training.listed || self.recorder_busy() {
+    /// Read today's workout after boot, and again a while after a read the
+    /// medium failed, as a card that recovers or is formatted reads again;
+    /// never during a ride.
+    pub(super) fn service_workouts(&mut self, media: &mut impl ReadWrite, now: u64) {
+        if self.training.read || now < self.training.retry_at || self.recorder_busy() {
             return;
         }
-        self.training.list(media);
+        self.training.read_today(media);
+        self.training.retry_at = now + READ_RETRY_MS;
         self.display.redraw();
     }
 
-    /// Delete upload `index`'s file. Later uploads move up a place: the
-    /// chosen one stays chosen, unless it is the one deleted.
-    pub(super) fn delete_upload(
-        &mut self,
-        index: usize,
-        media: &mut impl ReadWrite,
-    ) -> Result<(), LoadError> {
-        let id = Id::Uploaded(index as u8);
-        self.training.library.delete(id, media)?;
-        self.training.selected = match self.training.selected {
-            Some(chosen) if chosen == id => None,
-            Some(Id::Uploaded(later)) if usize::from(later) > index => {
-                Some(Id::Uploaded(later - 1))
-            }
-            other => other,
-        };
-        self.training.picker_cursor = self.training.picker_cursor.min(self.training.rows() - 1);
-        self.display.redraw();
-        Ok(())
+    /// Home's WORKOUT: start a ride that plays today's workout, as RIDE
+    /// starts a free one. Without a workout it only says so.
+    pub(super) fn ride_workout(&mut self, held: bool, pressed_at: u64, now: u64) {
+        if self.training.today.is_none() {
+            self.navigation.toast("NO WORKOUT LOADED", Tone::Info, now);
+            return;
+        }
+        self.training.chosen = !self.recorder_busy();
+        self.ride_press(Role::Act, held, pressed_at, now);
+        self.training.chosen &= self.navigation.page() == Page::Ride;
     }
 
-    /// Leaving the ride screen: the workout's summary stays readable, the
-    /// next ride is free unless a workout is chosen again.
+    /// Leaving the ride screen: the workout's summary stays readable, and
+    /// today's workout, once ridden, leaves Home until a new one is loaded.
+    /// The next ride is free unless Home's workout card starts it.
     pub(super) fn leave_workout(&mut self) {
         if let Some(player) = self.training.player.take() {
             self.training.last = Some((player.workout().name, player.summary()));
-            self.training.selected = None;
+            self.training.today = None;
         }
-        self.training.free = false;
-    }
-
-    /// The picker scrolled to `offset`, with the card under a resting finger.
-    pub(super) fn picker(&self, offset: i32, pressed: Option<usize>) -> Picker {
-        let training = &self.training;
-        let chosen = training
-            .selected
-            .and_then(|id| training.library.ids().position(|other| other == id))
-            .map_or(0, |index| index + 1);
-        let mut picker = Picker::new(
-            &self.list_layout(List::Workouts),
-            training.rows(),
-            training.picker_cursor,
-            chosen,
-            offset,
-        );
-        picker.pressed = pressed;
-        let mut free = Text::new();
-        let _ = free.push_str("NO TARGETS");
-        picker.push(Choice {
-            name: Name::new("FREE RIDE"),
-            detail: free,
-        });
-        for id in training.library.ids() {
-            if let Some((name, outline)) = training.library.outline(id) {
-                picker.push(Choice {
-                    name,
-                    detail: detail(outline),
-                });
-            }
-        }
-        picker
-    }
-
-    pub(super) fn choose_workout(&mut self, row: usize) {
-        let Some(id) = self.training.row(row) else {
-            return;
-        };
-        self.training.picker_cursor = row;
-        self.training.selected = id;
-    }
-
-    /// Yes saves a test's FTP, no keeps the one in force.
-    pub(super) fn answer_ftp(&mut self, yes: bool, now: u64) {
-        let Some(Question::Test { ftp, current }) = self.ftp_question() else {
-            return;
-        };
-        match yes {
-            true => {
-                let mut profile = self.preferences.profile;
-                profile.ftp_watts = ftp;
-                self.preferences.set(profile, now);
-                let mut text = Text::<20>::new();
-                let _ = write!(text, "FTP {ftp} W SAVED");
-                self.navigation.toast(text.as_str(), Tone::Good, now);
-            }
-            false => {
-                let mut text = Text::<20>::new();
-                let _ = write!(text, "FTP KEPT {current} W");
-                self.navigation.toast(text.as_str(), Tone::Info, now);
-            }
-        }
-        self.training.ftp.answered(Source::WorkoutTest);
+        self.training.chosen = false;
     }
 
     /// MARK during a workout: the lap the press closed ends the step too.
@@ -373,12 +244,7 @@ impl Runtime {
                         }
                     }
                 }
-                Event::Ftp(ftp) => {
-                    self.training.beep(Beep::Step, now);
-                    if ftp != self.preferences.profile.ftp_watts {
-                        self.training.ftp.set(Source::WorkoutTest, Some(ftp));
-                    }
-                }
+                Event::Ftp(_) => self.training.beep(Beep::Step, now),
             }
         }
         self.display.redraw();
@@ -402,15 +268,7 @@ impl Runtime {
     }
 
     pub(super) fn ride_pages(&self) -> Deck {
-        self.deck_with_course_map().shown(self.workout_pages())
-    }
-
-    pub(super) fn deck_with_course_map(&self) -> Deck {
-        let deck = self.preferences.options.deck;
-        match self.course() {
-            Some(_) => deck.showing(RidePage::Map),
-            None => deck,
-        }
+        Deck::new(self.workout_pages())
     }
 
     pub(super) fn workout_command(
@@ -424,43 +282,16 @@ impl Runtime {
         if words.next().is_some() {
             return "INVALID";
         }
-        let number = |index: usize| arguments.get(index).and_then(|v| v.parse::<usize>().ok());
         let written = match (operation, arguments.len()) {
-            (None | Some("LIST"), 0) => {
-                if !self.recorder_busy() {
-                    self.training.list(media);
-                    self.display.redraw();
-                }
-                self.workout_list(output)
-            }
-            (Some("STATUS"), 0) => self.workout_status(output),
-            (Some("SELECT"), 1) => {
-                let Some(row) = number(0).filter(|&row| row < self.training.rows()) else {
-                    return "INVALID";
-                };
+            (Some("LOAD"), 0) => {
                 if self.recorder_busy() {
                     return "STATE";
                 }
-                self.choose_workout(row);
+                self.training.read_today(media);
                 self.display.redraw();
-                write!(output, "selected={row}")
+                self.write_today(output)
             }
-            (Some("DELETE"), 1) => {
-                let Some(index) = number(0) else {
-                    return "INVALID";
-                };
-                if self.recorder_busy() {
-                    return "STATE";
-                }
-                let Some(upload) = self.training.library.uploads().get(index).copied() else {
-                    return "BOUNDS";
-                };
-                if let Err(error) = self.delete_upload(index, media) {
-                    let _ = write!(output, "error={}", error.name());
-                    return "FAILED";
-                }
-                write!(output, "deleted={}", upload.file.as_str())
-            }
+            (None | Some("STATUS"), 0) => self.workout_status(output),
             (Some("HISTORY"), 2) => {
                 let journal = match arguments[0] {
                     "INTERNAL" => b'i',
@@ -484,41 +315,28 @@ impl Runtime {
         if written.is_err() { "OUTPUT" } else { "OK" }
     }
 
-    fn workout_list(&self, output: &mut impl Write) -> core::fmt::Result {
-        let library = &self.training.library;
-        let selected = self
-            .training
-            .selected
-            .and_then(|id| library.ids().position(|other| other == id))
-            .map_or(0, |index| index + 1);
-        let files = match self.training.list_error {
-            None => "ok",
-            Some(error) => error.name(),
-        };
-        write!(
-            output,
-            "rows={} selected={selected} files={files} uploads={} skipped={}",
-            self.training.rows(),
-            library.uploads().len(),
-            library.skipped
-        )?;
-        for (index, upload) in library.uploads().iter().enumerate() {
-            write!(
+    /// Today's workout as reply fields: "workout=NAME minutes=52 steps=12
+    /// files=ok", or "workout=none files=…".
+    fn write_today(&self, output: &mut impl Write) -> core::fmt::Result {
+        match &self.training.today {
+            Some(workout) => write!(
                 output,
-                " upload{index}={}:{}",
-                upload.file.as_str(),
-                Underscored(upload.name)
-            )?;
+                "workout={} minutes={} steps={}",
+                Underscored(workout.name),
+                workout.planned_secs().div_ceil(60),
+                workout.played_len()
+            )?,
+            None => write!(output, "workout=none")?,
         }
-        Ok(())
+        let files = self.training.read_error.map_or("ok", LoadError::name);
+        write!(output, " files={files}")
     }
 
     fn workout_status(&self, output: &mut impl Write) -> core::fmt::Result {
         let profile = self.preferences.profile;
         let Some(shown) = self.shown_workout(&profile) else {
-            // Chosen, not yet started.
-            return match self.chosen_name() {
-                Some(name) => write!(output, "workout={} running=0", Underscored(name)),
+            return match &self.training.today {
+                Some(workout) => write!(output, "workout={} running=0", Underscored(workout.name)),
                 None => write!(output, "workout=none"),
             };
         };
@@ -556,38 +374,12 @@ impl Runtime {
             .unwrap_or_default();
         write!(
             output,
-            " laps={} skipped={} in_pct={} ftp={} offer={}",
+            " laps={} skipped={} in_pct={} ftp={}",
             self.ride.laps().count(),
             summary.skipped,
             summary.in_target_pct().map_or(-1, i16::from),
-            summary.ftp.unwrap_or(0),
-            self.training.ftp.test().unwrap_or(0)
+            summary.ftp.unwrap_or(0)
         )
-    }
-
-    pub(super) fn ftp_question(&self) -> Option<Question> {
-        let offer_page = self.navigation.page() == Page::Summary
-            && self.navigation.summary_page() == summary::pages(self.has_elevation())
-            && self.ride_saved();
-        self.training
-            .ftp
-            .question(self.preferences.profile.ftp_watts, offer_page)
-    }
-
-    /// The FTP sheet's numbers while it is up.
-    pub(super) fn ftp_sheet(&self) -> Option<(u16, u16)> {
-        match self.ftp_question()? {
-            Question::Test { ftp, current } => Some((ftp, current)),
-            Question::Summary(_) => None,
-        }
-    }
-
-    pub(super) fn chosen_name(&self) -> Option<Name> {
-        Some(self.today()?.0)
-    }
-
-    pub(super) fn today(&self) -> Option<(Name, Outline)> {
-        self.training.library.outline(self.training.selected?)
     }
 }
 

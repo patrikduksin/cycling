@@ -2,23 +2,21 @@
 //! `OPTION NAME VALUE` sets one, with NAME the key in capitals.
 use super::Runtime;
 use super::mode::DisplayMode;
-use super::preferences::{Daylight, Options, Theme, Wheel};
+use super::preferences::{Options, Theme, Wheel};
 use crate::clock::Zone;
 use crate::ride::alerts::Settings;
 use crate::ride::laps::AutoLap;
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use core::fmt::Write;
 
-const BRIGHTNESS: core::ops::RangeInclusive<u8> = 5..=100;
-
-enum Brightness {
-    Auto,
-    Percent(u8),
-}
+/// The backlight percents `OPTION BRIGHTNESS` takes, in steps of
+/// `BRIGHTNESS_STEP`.
+const BRIGHTNESS: core::ops::RangeInclusive<u8> = 10..=100;
+const BRIGHTNESS_STEP: u8 = 10;
 
 enum Change {
     Options(Options),
-    Brightness(Brightness),
+    Brightness(u8),
 }
 
 impl Runtime {
@@ -35,18 +33,14 @@ impl Runtime {
                 let Some(change) = change(self.preferences.options, name, value) else {
                     return "INVALID";
                 };
-                let mut options = self.preferences.options;
                 match change {
-                    Change::Options(changed) => options = changed,
-                    Change::Brightness(Brightness::Auto) => options.auto_brightness = true,
-                    Change::Brightness(Brightness::Percent(percent)) => {
-                        options.auto_brightness = false;
+                    Change::Options(options) => self.set_options(options, now),
+                    Change::Brightness(percent) => {
                         let mut display = self.preferences.display;
                         display.brightness = percent;
                         self.set_display(display, now);
                     }
                 }
-                self.set_options(options, now);
                 self.display.redraw();
             }
             _ => return "INVALID",
@@ -74,7 +68,7 @@ impl Runtime {
         }
         write!(
             output,
-            " wheel={} wheel_mode={} hr_low={} hr_high={} power_low={} power_high={} cadence_low={} fuel={} radar={} sunset={} theme={} daylight={} display=",
+            " wheel={} wheel_mode={} hr_low={} hr_high={} power_low={} power_high={} cadence_low={} fuel={} radar={} theme={} display=",
             options.wheel.size_mm(),
             if options.wheel.manual {
                 "manual"
@@ -88,28 +82,19 @@ impl Runtime {
             alerts.cadence_low_rpm,
             alerts.fuel_every_min,
             on(alerts.radar),
-            on(options.sunset_alert),
             match options.theme {
-                Theme::Dark => "dark",
-                Theme::Light => "light",
-                Theme::Auto => "auto",
-            },
-            match options.daylight {
-                Daylight::Auto => "auto",
-                Daylight::Day => "day",
-                Daylight::Night => "night",
+                Theme::Day => "day",
+                Theme::Night => "night",
             },
         )?;
         for letter in options.mode.policy().name.chars() {
             output.write_char(letter.to_ascii_lowercase())?;
         }
-        write!(output, " brightness=")?;
-        if options.auto_brightness {
-            write!(output, "auto")?;
-        } else {
-            write!(output, "{}", self.preferences.display.brightness)?;
-        }
-        write!(output, " zone=")?;
+        write!(
+            output,
+            " brightness={} zone=",
+            self.preferences.display.brightness
+        )?;
         match options.zone {
             Zone::Chile => write!(output, "chile")?,
             Zone::Fixed(quarters) => {
@@ -140,7 +125,6 @@ fn change(mut options: Options, name: &str, value: &str) -> Option<Change> {
     match name {
         "AUTO_PAUSE" => options.auto_pause = flag()?,
         "SOUNDS" => options.sounds = flag()?,
-        "SUNSET" => options.sunset_alert = flag()?,
         "AUTO_LAP" => {
             options.auto_lap = match value {
                 "OFF" => AutoLap::Off,
@@ -179,28 +163,17 @@ fn change(mut options: Options, name: &str, value: &str) -> Option<Change> {
         }
         "THEME" => {
             options.theme = match value {
-                "DARK" => Theme::Dark,
-                "LIGHT" => Theme::Light,
-                "AUTO" => Theme::Auto,
-                _ => return None,
-            }
-        }
-        "DAYLIGHT" => {
-            options.daylight = match value {
-                "AUTO" => Daylight::Auto,
-                "DAY" => Daylight::Day,
-                "NIGHT" => Daylight::Night,
+                "DAY" => Theme::Day,
+                "NIGHT" => Theme::Night,
                 _ => return None,
             }
         }
         "BRIGHTNESS" => {
-            return match value {
-                "AUTO" => Some(Change::Brightness(Brightness::Auto)),
-                percent => {
-                    let percent = percent.parse().ok().filter(|p| BRIGHTNESS.contains(p))?;
-                    Some(Change::Brightness(Brightness::Percent(percent)))
-                }
-            };
+            let percent = value
+                .parse()
+                .ok()
+                .filter(|p| BRIGHTNESS.contains(p) && p % BRIGHTNESS_STEP == 0)?;
+            return Some(Change::Brightness(percent));
         }
         "ZONE" => {
             options.zone = match value {

@@ -19,7 +19,7 @@ mod host;
 mod tests;
 pub mod workload;
 
-use super::data::{Data, Effort, ListKind, Metric, Nothing};
+use super::data::{Data, Effort, Metric, Nothing};
 use super::reject::Why;
 use super::solve::{Placed, Rect16};
 use super::tile::Forms;
@@ -388,10 +388,6 @@ impl Data for End {
             Self::Low => 1,
             Self::High => effort.zones(),
         })
-    }
-
-    fn list(&self, _: ListKind) -> u16 {
-        0
     }
 
     fn sample(&self, metric: Metric, _: u16) -> Option<i32> {

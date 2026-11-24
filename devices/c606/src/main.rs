@@ -621,7 +621,7 @@ fn traced_pass(
     // Keep USB observations alive while device owners complete the transition.
     if power.ready {
         let position = world.position(trace, now);
-        let (physical, light, fitted) = world.sensed(trace, now);
+        let (physical, _light, fitted) = world.sensed(trace, now);
         let online = device::drivers::wifi::online();
         offer_times(sdk, &position, now);
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
@@ -637,7 +637,6 @@ fn traced_pass(
             sdk,
             system,
             startup,
-            light,
             vana::app::Observations {
                 position: &position,
                 network_time,

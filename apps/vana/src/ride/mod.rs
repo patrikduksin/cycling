@@ -21,14 +21,12 @@ pub mod metrics;
 pub mod power_trace;
 pub mod reclaim;
 pub mod recorder;
-pub mod recovery;
 pub mod replay;
 pub mod rider;
 pub mod settle;
 pub mod storage;
 pub mod thin;
 pub mod totals;
-pub mod turn_back;
 pub mod wheel_size;
 pub mod zones;
 

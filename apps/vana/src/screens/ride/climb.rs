@@ -398,10 +398,7 @@ pub(super) fn frame(view: &View, chart: Rect) -> Frame {
     let mut samples = [ProfileSample::default(); PROFILE_LEN];
     // Only samples the latched odometer has reached, so the summary's
     // words change on the second as the other numbers do.
-    let unseen = lent.climbs.newest_mm().map_or(0, |newest| {
-        newest.saturating_sub(odometer).div_ceil(STEP_MM) as usize
-    });
-    let len = lent.climbs.profile(&mut samples).saturating_sub(unseen);
+    let len = lent.climbs.profile(odometer, &mut samples);
     let window = match situation {
         Situation::Climb(climb) => climb.length_mm,
         _ => FLAT_WINDOW_MM,

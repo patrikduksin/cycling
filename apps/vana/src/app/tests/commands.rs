@@ -186,7 +186,42 @@ fn ride_status_reports_the_page_and_home_selection() {
         runtime.command("RIDE STATUS", &mut journal, &mut MustNotWrite, 0, &mut out),
         "OK"
     );
-    assert!(out.contains(" page=home home_cursor=1 pending=0"), "{out}");
+    // The status widget, then Ride; Home opens on Ride.
+    assert!(
+        out.contains(" page=home home_cursor=1 home_stops=2 home_ride=1 pending=0"),
+        "{out}"
+    );
+    // MOVE past the last of Home's stops comes back to the first.
+    runtime.input_received(
+        Input::Press {
+            role: Role::Move,
+            code: 1,
+        },
+        500,
+        500,
+        &mut radio,
+    );
+    out.clear();
+    runtime.command(
+        "RIDE STATUS",
+        &mut journal,
+        &mut MustNotWrite,
+        500,
+        &mut out,
+    );
+    assert!(out.contains(" home_cursor=0 "), "{out}");
+    // With a workout planned its card comes between: "Just ride" is third.
+    runtime.training.today = Some(crate::workout::fixtures::THRESHOLD);
+    runtime.compose_shown();
+    out.clear();
+    runtime.command(
+        "RIDE STATUS",
+        &mut journal,
+        &mut MustNotWrite,
+        500,
+        &mut out,
+    );
+    assert!(out.contains(" home_stops=3 home_ride=2"), "{out}");
     let mut screen = super::presentation::Screen::new();
     runtime.power(&mut screen.shell, &mut super::power::Switch::new(true), 0);
     // A power sheet covers Home: a harness must not press through it.

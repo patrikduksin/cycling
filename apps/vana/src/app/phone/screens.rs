@@ -11,8 +11,6 @@
 
 use super::{Job, Runtime, Server, TEXT};
 use crate::app::overrides::{Change, NAMED, Named, Saved, named};
-use crate::compose::builtin::Choices;
-use crate::compose::data::ListKind;
 use crate::compose::node::{MAX_DEPTH, MAX_NODES, Node, Size};
 use crate::compose::parse::VERSION;
 use crate::compose::registry;
@@ -286,13 +284,12 @@ impl Runtime {
                 let leaf = Node::leaf(0, 0, Size::CONTENT);
                 let _ = write!(
                     out,
-                    r#"{{"version":{VERSION},"panel":[{},{}],"scale":{},"max_nodes":{MAX_NODES},"max_depth":{MAX_DEPTH},"kinds":{{"row":{},"col":{},"scroll":{},"stack":{},"leaf":{},"hero":{}}},"grow":{},"flags":{{"COURSE":{},"RADAR":{},"WORKOUT":{},"ARRIVED":{}}},"tiles":["#,
+                    r#"{{"version":{VERSION},"panel":[{},{}],"scale":{},"max_nodes":{MAX_NODES},"max_depth":{MAX_DEPTH},"kinds":{{"row":{},"col":{},"stack":{},"leaf":{},"hero":{}}},"grow":{},"flags":{{"COURSE":{},"RADAR":{},"WORKOUT":{},"ARRIVED":{}}},"tiles":["#,
                     at.panel.width,
                     at.panel.height,
                     at.scale.px(4),
                     kind(Node::row(1, Size::CONTENT)),
                     kind(Node::col(1, Size::CONTENT)),
-                    kind(Node::scroll(ListKind::Workouts, Size::CONTENT)),
                     kind(Node::stack(1, Size::CONTENT)),
                     kind(leaf),
                     kind(leaf.hero()) & !kind(leaf),
@@ -319,11 +316,7 @@ impl Runtime {
                     return Step::End;
                 };
                 let changed = overrides.shown().screen(named.key());
-                let choices = Choices {
-                    main_slots: self.preferences.options.main_slots,
-                    ..Choices::default()
-                };
-                let builtin = named.builtin(&choices);
+                let builtin = named.builtin();
                 let nodes = changed.map_or(&builtin[..], |screen| screen.tree().nodes());
                 let _ = write!(
                     out,

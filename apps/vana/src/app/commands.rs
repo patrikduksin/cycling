@@ -421,9 +421,9 @@ impl Runtime {
             }
         }
         let fallback = self.ride.fallback();
-        if write!(
+        let written = write!(
             output,
-            " fallback={} moved={} page={} home_cursor={} pending={}",
+            " fallback={} moved={} page={} home_cursor={} home_stops={} home_ride=",
             u8::from(fallback),
             u8::from(self.ride.moved()),
             if self.power.view().is_some() {
@@ -432,10 +432,14 @@ impl Runtime {
                 self.navigation.page().name()
             },
             self.focus_index(),
-            pending
+            self.focus_stops()
         )
-        .is_err()
-        {
+        .and_then(|()| match self.free_ride_stop() {
+            Some(stop) => write!(output, "{stop}"),
+            None => output.write_char('-'),
+        })
+        .and_then(|()| write!(output, " pending={pending}"));
+        if written.is_err() {
             return "OUTPUT";
         }
         let completed = match self.ride.host() {

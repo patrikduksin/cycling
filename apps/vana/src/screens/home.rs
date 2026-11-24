@@ -4,8 +4,8 @@ use super::theme::Theme;
 use super::workout::Text;
 use crate::clock::Local;
 use crate::ride::zones::TrainingProfile;
-use crate::workout::library::{PIECES, Piece};
 use crate::workout::model::Name;
+use crate::workout::shape::{PIECES, Piece};
 use core::fmt::Write;
 use heapless::Vec;
 

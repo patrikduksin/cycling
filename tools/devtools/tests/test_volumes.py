@@ -344,6 +344,41 @@ class VolumesTests(unittest.TestCase):
                 result = volumes.run(Namespace(action='store', verb='format', confirm=True), 'port')
         self.assertEqual((sent, result), (['STORE FORMAT CONFIRM'], {'status': 'state=ready files=0'}))
 
+    def test_a_files_change_to_todays_workout_has_vana_read_it_again(self):
+        for args, reads in [
+            (Namespace(action='files', verb='format', confirm=True), True),
+            (Namespace(action='files', verb='delete', name='workouts/today.vw'), True),
+            (Namespace(action='files', verb='delete', name='workouts/ftp.json'), False),
+        ]:
+            order = []
+
+            class Connection:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+                def terminal_command(self, command):
+                    order.append(command)
+                    return {'status': 'OK', 'data': 'workout=none files=ok'}
+
+            class Session:
+                def call(self, name, *args, **kwargs):
+                    order.append(name)
+
+            with tempfile.TemporaryDirectory() as directory:
+                with mock.patch.multiple(
+                    volumes,
+                    private_path=lambda _: Path(directory),
+                    UsbConnection=lambda *_: Connection(),
+                    open_session=lambda _: Session(),
+                ):
+                    result = volumes.run(args, 'port')
+            # VANA reads it only once the session has given the card back.
+            self.assertEqual(order[-2:] == ['end', 'WORKOUT LOAD'], reads, (args, order))
+            self.assertEqual('today' in result, reads)
+
     def test_verify_reports_a_differing_pack(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.pack(directory)

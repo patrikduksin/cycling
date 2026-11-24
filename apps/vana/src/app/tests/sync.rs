@@ -262,16 +262,6 @@ fn a_volatile_ride_is_protected_from_its_start_and_never_called_saved() {
 }
 
 #[test]
-fn a_durable_ride_is_saved_and_can_be_discarded() {
-    let mut journal = Journal::erased();
-    let mut radio = Radio::new();
-    let mut runtime = cold(&mut journal, &mut radio);
-    start(&mut runtime, &mut journal, &mut radio, 1_000);
-    assert!(!runtime.holds_unsynced());
-    assert!(runtime.can_discard());
-}
-
-#[test]
 fn turning_off_and_auto_off_wait_until_the_phone_has_every_ride() {
     let mut journal = in_memory();
     let mut radio = Radio::new();
@@ -536,7 +526,7 @@ fn a_volatile_boot_forgets_what_files_kept_about_its_ride_ids() {
         summary: Default::default(),
     };
     for (mut journal, forgets) in [(in_memory(), true), (Journal::erased(), false)] {
-        let mut card = crate::workout::library::tests::formatted();
+        let mut card = crate::workout::today::tests::formatted();
         save(&mut card, &old).unwrap();
         let mut runtime = booted(Profile::HeartRate);
         for now in 0..1_000 {

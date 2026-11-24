@@ -203,15 +203,6 @@ pub fn decode(bytes: &[u8]) -> Result<Workout, DecodeError> {
     Ok(workout)
 }
 
-/// The name field of `bytes` as the upload wrote it, before decoding cut
-/// it to the width a name shows: what its stored file is named by. It
-/// follows the magic, the version and the test byte.
-pub fn written_name(bytes: &[u8]) -> Result<&[u8], DecodeError> {
-    let mut reader = Reader { bytes, at: 4 };
-    let len = usize::from(reader.byte()?);
-    reader.take(len)
-}
-
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -252,7 +243,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workout::library::BUILT_IN;
+    use crate::workout::fixtures::ALL as BUILT_IN;
 
     #[test]
     fn built_ins_round_trip() {
@@ -319,7 +310,7 @@ mod tests {
 
     #[test]
     fn damaged_and_foreign_bytes_are_refused() {
-        let bytes = encode(&crate::workout::library::VO2_MAX);
+        let bytes = encode(&crate::workout::fixtures::VO2_MAX);
         assert_eq!(decode(&bytes[..3]), Err(DecodeError::Length));
         let mut wrong = bytes.clone();
         wrong[0] = b'X';
@@ -352,7 +343,7 @@ mod tests {
 
     #[test]
     fn a_name_wider_than_a_screen_shows_loads_cut_to_fit() {
-        let bytes = encode(&crate::workout::library::VO2_MAX);
+        let bytes = encode(&crate::workout::fixtures::VO2_MAX);
         let (len, body) = (usize::from(bytes[4]), bytes.len() - 4);
         let mut wide = heapless::Vec::<u8, ENCODED_MAX>::new();
         let _ = wide.extend_from_slice(&bytes[..4]);

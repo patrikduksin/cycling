@@ -1,5 +1,5 @@
 use super::*;
-use crate::compose::builtin::{Choices, Laid, ScreenId};
+use crate::compose::builtin::{Laid, ScreenId};
 use crate::compose::kit::profile;
 use crate::compose::registry::{FIELD, ROAD_FIELD, ROAD_PROFILE, RULE, TOP_LINE};
 use crate::ride::climb_ahead::{self, Forecast, tests::ahead};
@@ -283,7 +283,7 @@ fn each_look_colours_the_chart_from_its_own_zones() {
 
 fn laid(device: &'static crate::screens::Device, radar: bool) -> Laid {
     let flags = crate::screens::ride::main_flags(false, radar, false, false);
-    Laid::new(ScreenId::RideClimb, device, Choices::default(), flags, None).unwrap()
+    Laid::new(ScreenId::RideClimb, device, flags, None).unwrap()
 }
 
 #[test]

@@ -267,11 +267,6 @@ impl Default for Readings {
 }
 
 impl Readings {
-    /// The circumference the wheel speed is measured with now, in mm.
-    pub(super) fn speed_wheel_mm(&self) -> u32 {
-        self.speed.wheel_mm()
-    }
-
     fn restart(&mut self, decoded: Decoded) {
         match decoded {
             Decoded::Radar => self.radar.reset(),
@@ -552,17 +547,6 @@ impl Runtime {
         if let Some(level) = ble.take_battery() {
             self.sensors.battery_level(level);
         }
-    }
-
-    /// The live heart rate from ANT+ or BLE, whether or not a ride is open,
-    /// which `sample` withholds from a BLE strap outside one.
-    pub(super) fn live_heart_bpm(&mut self, now: u64) -> Option<u16> {
-        self.readings
-            .heart
-            .filter(|heart| now.saturating_sub(heart.received_ms) <= READING_FRESH_MS)
-            .and_then(|heart| heart.value.bpm)
-            .map(u16::from)
-            .or(self.sensors.snapshot(now).heart_bpm)
     }
 
     pub(super) fn sample(

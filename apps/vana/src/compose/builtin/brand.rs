@@ -1,6 +1,6 @@
 //! The brand reveal VANA starts with: the mark alone, its spare room even
 //! above and below. Any press leaves for the first page.
-use super::{Builtin, Choices, Nodes};
+use super::{Builtin, Nodes};
 use crate::compose::input::{Action, Button, Buttons, OnPage};
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::MARK;
@@ -20,7 +20,7 @@ pub const BUILTIN: &Builtin = &Builtin {
     },
 };
 
-fn tree(_: &Choices) -> Nodes {
+fn tree() -> Nodes {
     [
         Node::col(1, Size::grow(1)),
         Node::leaf(MARK, 0, Size::CONTENT),
@@ -32,7 +32,7 @@ fn tree(_: &Choices) -> Nodes {
 #[cfg(test)]
 mod tests {
     use super::super::{Laid, ScreenId};
-    use crate::compose::data::{Data, Effort, ListKind, Metric, PageData};
+    use crate::compose::data::{Data, Effort, Metric, PageData};
     use crate::compose::node::Flags;
     use crate::screens::brand::DONE;
     use crate::screens::canvas::Canvas;
@@ -50,24 +50,13 @@ mod tests {
             None
         }
 
-        fn list(&self, _: ListKind) -> u16 {
-            0
-        }
-
         fn page(&self) -> PageData<'_> {
             PageData::Brand(self.0)
         }
     }
 
     fn reveal(device: &Device, progress: u16) -> Canvas {
-        let laid = Laid::new(
-            ScreenId::Brand,
-            device,
-            Default::default(),
-            Flags::NONE,
-            None,
-        )
-        .unwrap();
+        let laid = Laid::new(ScreenId::Brand, device, Flags::NONE, None).unwrap();
         let mut canvas = Canvas::default();
         laid.prepare(&Reveal(progress), &mut canvas);
         canvas

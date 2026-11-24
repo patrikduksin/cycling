@@ -1,7 +1,7 @@
 use super::menu::{Mine, SETTLE_MS, View};
 use super::*;
 use crate::compose::Flags;
-use crate::compose::builtin::{Choices, Laid, ScreenId};
+use crate::compose::builtin::{Laid, ScreenId};
 use crate::compose::registry::{
     SENSOR_BACK, SENSOR_FACTS, SENSOR_LIST, SENSOR_SEARCH, SENSOR_TITLE,
 };
@@ -132,7 +132,7 @@ fn cues_on(menu: &Menu, device: &'static Device) -> std::vec::Vec<Cue> {
 }
 
 fn laid(menu: &Menu, device: &'static Device) -> Laid {
-    let laid = Laid::new(menu.screen(), device, Choices::default(), Flags::NONE, None);
+    let laid = Laid::new(menu.screen(), device, Flags::NONE, None);
     laid.expect("each sensor page has a tree")
 }
 

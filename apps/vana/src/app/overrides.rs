@@ -11,7 +11,7 @@
 //! or the journal was read again since the change was made.
 
 use super::Runtime;
-use crate::compose::builtin::{Choices, Nodes, ScreenId};
+use crate::compose::builtin::{Nodes, ScreenId};
 use crate::compose::input::Controls;
 use crate::compose::parse::RECORD;
 use crate::compose::{self, Edit, Reject, Screen, Screens};
@@ -33,9 +33,9 @@ impl Named {
         self.id.key()
     }
 
-    /// The tree it shows unchanged, for the rider's `choices`.
-    pub fn builtin(&self, choices: &Choices) -> Nodes {
-        (self.id.builtin().tree)(choices)
+    /// The tree it shows unchanged.
+    pub fn builtin(&self) -> Nodes {
+        (self.id.builtin().tree)()
     }
 }
 

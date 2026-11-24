@@ -74,7 +74,6 @@ pub struct Product {
 
 pub mod clock;
 pub mod compose;
-pub mod daylight;
 pub mod kept;
 pub mod ride;
 pub mod screens;

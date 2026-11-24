@@ -1,5 +1,4 @@
 use super::Runtime;
-use super::climb_page::{Follow, press_undone};
 use super::cues::Cue;
 use super::input::HOLD_GAP_MS;
 use super::navigation::{Navigation, Pause, Restore, To};
@@ -127,9 +126,8 @@ enum Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct View {
     page: Page,
-    ride: (RidePage, Follow),
+    ride: RidePage,
     pause: Pause,
-    summary_page: usize,
     /// The focus on the screen shown, such as Home's card.
     focus: Focus,
 }
@@ -230,7 +228,6 @@ impl Runtime {
         self.navigation.go(To::Restore(Restore {
             ride: restore.ride,
             pause: restore.pause,
-            summary_page: restore.summary_page,
         }));
         self.composed_focus(restore.focus);
         match move_hold {
@@ -265,24 +262,23 @@ impl View {
     fn of(navigation: &Navigation, focus: Focus) -> Self {
         Self {
             page: navigation.page(),
-            ride: (navigation.ride_page(), navigation.climb()),
+            ride: navigation.ride_page(),
             pause: Pause {
                 hidden: navigation.pause_hidden(),
                 wrapped: navigation.pause_wrapped(),
             },
-            summary_page: navigation.summary_page(),
             focus,
         }
     }
 
     fn marks(self) -> bool {
-        matches!(self.page, Page::Ride | Page::Summary | Page::Home)
+        matches!(self.page, Page::Ride | Page::Home)
     }
 }
 
 /// `now` with what the press changed put back, part by part, leaving each
-/// part something else changed since: a pause shows the paused screen, and a
-/// climb its page, whatever the press did.
+/// part something else changed since: a pause shows the paused screen,
+/// whatever the press did.
 fn undone(press: Press, now: View) -> View {
     let (before, after) = (press.before, press.after);
     if before.page != after.page || now.page != after.page {
@@ -290,9 +286,8 @@ fn undone(press: Press, now: View) -> View {
     }
     View {
         page: now.page,
-        ride: press_undone(before.ride, after.ride, now.ride),
+        ride: put_back(now.ride, before.ride, after.ride),
         pause: put_back(now.pause, before.pause, after.pause),
-        summary_page: put_back(now.summary_page, before.summary_page, after.summary_page),
         focus: put_back(now.focus, before.focus, after.focus),
     }
 }
@@ -307,20 +302,19 @@ mod tests {
 
     const RIDE: View = View {
         page: Page::Ride,
-        ride: (RidePage::Main, Follow::Idle),
+        ride: RidePage::Main,
         pause: Pause {
             hidden: false,
             wrapped: false,
         },
-        summary_page: 0,
         focus: Focus::Screen,
     };
     const NEXT: View = View {
-        ride: (RidePage::Climb, Follow::Idle),
+        ride: RidePage::Climb,
         ..RIDE
     };
-    const SETTINGS: View = View {
-        page: Page::Settings,
+    const SENSORS: View = View {
+        page: Page::Sensors,
         ..RIDE
     };
 
@@ -453,14 +447,14 @@ mod tests {
             (
                 "a press on a page that never marks acts",
                 Hold::Idle,
-                report(false, 1_000, SETTINGS),
+                report(false, 1_000, SENSORS),
                 Hold::Idle,
                 Effect::Press,
             ),
             (
                 "a repeat on a page that never marks acts and ends the hold",
                 holding(1_000, 2_400),
-                report(true, 2_500, SETTINGS),
+                report(true, 2_500, SENSORS),
                 Hold::Idle,
                 Effect::Press,
             ),
@@ -516,8 +510,8 @@ mod tests {
                 "another page leaves what is shown",
                 RIDE,
                 NEXT,
-                SETTINGS,
-                SETTINGS,
+                SENSORS,
+                SENSORS,
             ),
             (
                 "the Home cursor goes back",

@@ -5,7 +5,7 @@ use super::canvas::Canvas;
 use super::chrome::{BLACK, Battery, Row};
 use super::cue::Cue;
 use crate::compose::builtin::{Laid, ScreenId};
-use crate::compose::data::{Count, Data, Effort, ListKind, Metric};
+use crate::compose::data::{Count, Data, Effort, Metric};
 
 /// The idle warning's ring is full at this many seconds.
 pub const WARNING_SECONDS: u64 = crate::compose::tiles::power::WARNING_SECONDS as u64;
@@ -70,10 +70,6 @@ impl Data for Sheet {
         None
     }
 
-    fn list(&self, _: ListKind) -> u16 {
-        0
-    }
-
     fn count(&self, count: Count) -> Option<i32> {
         match (*self, count) {
             (Self::Confirm { unsaved }, Count::Unsaved) => Some(i32::from(unsaved)),
@@ -120,14 +116,7 @@ mod tests {
     use crate::screens::{C606, panels};
 
     fn laid(sheet: Sheet, device: &Device) -> Laid {
-        Laid::new(
-            sheet.screen(),
-            device,
-            Default::default(),
-            Default::default(),
-            None,
-        )
-        .expect("every sheet has a tree")
+        Laid::new(sheet.screen(), device, Default::default(), None).expect("every sheet has a tree")
     }
 
     fn canvas(sheet: Sheet, device: &Device) -> Canvas {

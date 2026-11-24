@@ -682,15 +682,14 @@ class StructureTests(unittest.TestCase):
         state.original_settings = {}
         self.assertEqual([name for name, _ in runner.restorations(state)], ['sound', 'gnss', 'ble', 'wifi'])
 
-    def test_restoring_preferences_brings_back_auto_or_reports_a_mismatch(self):
+    def test_restoring_preferences_brings_back_the_brightness_or_reports_a_mismatch(self):
         from cycling_devtools.harness import runner
 
         class Device:
-            def __init__(self, honours_auto):
-                self.honours_auto = honours_auto
+            def __init__(self, honours_brightness):
+                self.honours_brightness = honours_brightness
                 self.settings = {
                     'brightness': '100',
-                    'auto': 'false',
                     'timezone': '0',
                     'dim_timeout': '30',
                     'dim_brightness': '10',
@@ -700,21 +699,17 @@ class StructureTests(unittest.TestCase):
                 return dict(self.settings)
 
             def command(self, line):
-                if line == 'BRIGHTNESS AUTO':
-                    if self.honours_auto:
-                        self.settings['auto'] = 'true'
-                elif line.startswith('BRIGHTNESS '):
-                    self.settings.update(brightness=line.split()[1], auto='false')
+                if line.startswith('BRIGHTNESS ') and self.honours_brightness:
+                    self.settings.update(brightness=line.split()[1])
                 return dict(self.settings)
 
-        original = {'brightness': '50', 'auto': 'true', 'timezone': '0', 'dim_timeout': '30', 'dim_brightness': '10'}
+        original = {'brightness': '50', 'timezone': '0', 'dim_timeout': '30', 'dim_brightness': '10'}
         state = SimpleNamespace(original_settings=original)
-        with patch.object(runner.time, 'sleep'):
-            restored = Device(honours_auto=True)
-            self.assertEqual(runner.restore_preferences(restored, state, {}), 'verified')
-            self.assertEqual(restored.settings, original)
-            with self.assertRaisesRegex(RuntimeError, 'preference restoration mismatch: auto'):
-                runner.restore_preferences(Device(honours_auto=False), state, {})
+        restored = Device(honours_brightness=True)
+        self.assertEqual(runner.restore_preferences(restored, state, {}), 'verified')
+        self.assertEqual(restored.settings, original)
+        with self.assertRaisesRegex(RuntimeError, 'preference restoration mismatch: brightness'):
+            runner.restore_preferences(Device(honours_brightness=False), state, {})
 
 
 class WorkerIdentityTests(unittest.TestCase):

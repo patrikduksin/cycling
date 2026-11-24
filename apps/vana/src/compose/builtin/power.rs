@@ -6,7 +6,7 @@
 //! confirmed it says to sync them first and no button turns it off. Any
 //! button keeps VANA on through the warning.
 use super::question::{answer, block, gap, panel, say};
-use super::{Builtin, Choices, Nodes, ScreenId};
+use super::{Builtin, Nodes, ScreenId};
 use crate::compose::input::{Action, Button, Buttons, OnPage};
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::POWER_RING;
@@ -34,7 +34,7 @@ const RETURN: Option<Button> = Some(Button {
 });
 
 pub const TURN_OFF: &Builtin = &Builtin {
-    tree: |_: &Choices| question(Say::RidesSaved).into_iter().collect::<Nodes>(),
+    tree: || question(Say::RidesSaved).into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Check),
         back: answer(false, Icon::Back),
@@ -44,7 +44,7 @@ pub const TURN_OFF: &Builtin = &Builtin {
 };
 
 pub const SYNC_FIRST: &Builtin = &Builtin {
-    tree: |_: &Choices| question(Say::SyncFirst).into_iter().collect::<Nodes>(),
+    tree: || question(Say::SyncFirst).into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: RETURN,
         back: answer(false, Icon::Back),
@@ -54,7 +54,7 @@ pub const SYNC_FIRST: &Builtin = &Builtin {
 };
 
 pub const AUTO_OFF: &Builtin = &Builtin {
-    tree: |_: &Choices| WARNING.into_iter().collect::<Nodes>(),
+    tree: || WARNING.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: RETURN,
         back: RETURN,
@@ -64,7 +64,7 @@ pub const AUTO_OFF: &Builtin = &Builtin {
 };
 
 pub const TURNING_OFF: &Builtin = &Builtin {
-    tree: |_: &Choices| {
+    tree: || {
         [panel(1), ring(Ring::Farewell)]
             .into_iter()
             .collect::<Nodes>()
@@ -73,7 +73,7 @@ pub const TURNING_OFF: &Builtin = &Builtin {
 };
 
 pub const CHARGING: &Builtin = &Builtin {
-    tree: |_: &Choices| CHARGE.into_iter().collect::<Nodes>(),
+    tree: || CHARGE.into_iter().collect::<Nodes>(),
     buttons: Buttons::FREE,
 };
 

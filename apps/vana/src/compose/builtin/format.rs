@@ -2,14 +2,14 @@
 //! formatting takes. ACT (trash) formats, BACK declines. While storage is
 //! checked the wait shows alone and the buttons rest.
 use super::question::{answer, block, gap, panel, say};
-use super::{Builtin, Choices, Nodes};
+use super::{Builtin, Nodes};
 use crate::compose::input::Buttons;
 use crate::compose::node::Node;
 use crate::compose::tiles::line::Say;
 use crate::screens::cue::Icon;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| QUESTION.into_iter().collect::<Nodes>(),
+    tree: || QUESTION.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Trash),
         back: answer(false, Icon::Back),
@@ -19,7 +19,7 @@ pub const BUILTIN: &Builtin = &Builtin {
 };
 
 pub const WAIT: &Builtin = &Builtin {
-    tree: |_: &Choices| {
+    tree: || {
         [panel(1), say(Say::FormatWait)]
             .into_iter()
             .collect::<Nodes>()

@@ -5,7 +5,7 @@ rider sees and when, the order of screens and pages, timing, sounds and what
 each button does. [UI](ui.md) owns how each screen looks (type, colour,
 geometry and motion), and [ride recording](ride-recording.md) owns what is
 stored. The simulator scenario
-`the_ride_lifecycle_walks_from_ready_to_the_summary` walks this flow and keeps
+`the_ride_lifecycle_walks_from_home_to_ride_done` walks this flow and keeps
 a screenshot of each step.
 
 ## Words
@@ -28,17 +28,14 @@ Home ── RIDE or roll off ──> Ride pages (recording)
                                                   │ ACT          ^
                                                   v              │ ACT (resume)
                                             Paused screen ───────┘
-                                              │ MOVE: ride pages, and back
-                                              │ BACK
+                                              │ swipe: ride pages, and back
+                                              │ MOVE or BACK
                                               v
-                                          END RIDE? ── BACK ──> Paused screen
-                                              │ ACT      │ MOVE
-                                              │          v
-                                              │      DISCARD RIDE? ── ACT ──> Home (RIDE DISCARDED)
-                                              │          │ BACK: END RIDE?
+                                          END RIDE? ── MOVE or BACK ──> Paused screen
+                                              │ ACT
                                               v
-                                         Saving ──> Ride saved summary (3 or 4 pages, one more with an FTP offer)
-                                                       │ ACT (Done) or BACK
+                                         SAVING ──> RIDE SAVED ── ride on ──> Ride pages (a new free ride)
+                                                       │ any key or a tap
                                                        v
                                                       Home
 ```
@@ -98,7 +95,7 @@ show cues: the buttons keep fixed roles. Holding MOVE for 1.5 s marks the
 moment in the session trace ([Buttons](#buttons)) and leaves the page as it
 was; `cycling trace pull` lists the marks.
 
-Settings RIDE has AUTO LAP: OFF, EVERY 1, 2, 5 or 10 KM, or AT START, which
+`OPTION AUTO_LAP` takes OFF, a number of kilometres, or START, which
 takes a lap each time the rider rides past where the ride began, for loops
 and repeats. It shows the same lap toast. The start is where the rider first
 moves, so a car park off the road does not matter. A pass is within 40 m of
@@ -325,12 +322,11 @@ course keeps the main page with the large speed.
 
 - **At rest** (following, no turn near), main shows a chip under the time: the
   next turn's arrow on a blue square and how far it is (`6.4 KM`), or a flag
-  and the distance to the end after the last turn. Stats and climb show
-  nothing.
+  and the distance to the end after the last turn. Climb shows nothing.
 - **Turn ahead.** When the rising beeps sound, a blue banner covers the
-  sign's band on main, stats and climb: the turn's arrow and its distance in large
-  digits (`120 M`). The time and grade under it are hidden, and on stats and
-  climb so are the readings it covers; nothing moves. The banner always shows
+  sign's band on main and climb: the turn's arrow and its distance in large
+  digits (`120 M`). The time and grade under it are hidden, and on climb so
+  are the readings it covers; nothing moves. The banner always shows
   the next turn: past a turn it shows the one after, and it stays up for 40 m
   past the turn before the next turn's own distance decides.
 - **Off course**, the banner turns amber with a U-turn arrow, the straight-line
@@ -338,187 +334,57 @@ course keeps the main page with the large speed.
   clears it.
 - **Turn around.** Before following starts, riding against the course beside
   it turns the banner amber with the U-turn arrow and TURN over AROUND, on
-  main, stats and climb, and as the map's badge. It sounds nothing.
+  main and climb, and as the map's badge. It sounds nothing.
 - **Arrived.** For 60 s after the end, the banner is green with a flag and
   ARRIVED, and main shows the ride's totals instead of live readings:
   DISTANCE, RIDE TIME, then AVG KM/H, AVG W and AVG BPM. Then the sign is
   gone.
 
-Tapping the banner or the chip opens the map page. While a course is loaded,
-the map page is in the MOVE cycle even if the rider turned it off, so the tap
-always has a page to open and the page dots stay true. With a radar paired
+Tapping the banner or the chip opens the map page. With a radar paired
 the sign moves right with the page body, and the radar always keeps its
 columns.
 
-### Workouts from the phone
+### Today's workout
 
-The phone page has a Workouts card beside the Course card: the workouts added
-from the phone, each with its length and steps and a Delete button, and Add a
-workout. The card takes the workout JSON `cycling workout-load` takes (or a
-`.vw` file made by it) and shows what it could not accept in words: not a
-workout, damaged, one VANA cannot ride, no card or no room. VANA holds 8
-workouts, so a ninth is refused with "VANA holds 8 workouts. Delete one to add
-another." rather than dropping one. Adding a workout with the name of one
-already there replaces it, and a refused or cut-off upload leaves the stored
-workouts as they were. The page opens only while no ride is recording, so a
-workout cannot be added or deleted during a ride. A file in the workouts folder that VANA cannot read (or
-that the card holds beyond the eighth) shows on the card as "Not listed on the
-device" with a Delete button, since it takes one of the 8 places. A workout
-loaded over USB and the same one added here are two workouts in the picker. An added workout is under
-TRAIN at once, after the built-ins and in name order with the ones loaded over
-USB; it reads the same as one of those, and a workout the rider chose stays
-chosen when the list changes.
-
-### Choosing the main page's readings
-
-Settings has a MAIN PAGE section with LOWER LEFT and LOWER RIGHT, the two readings
-on the main page's last line. They start as CADENCE on the left and DISTANCE
-on the right. ACT on a row steps it through CADENCE, DISTANCE, NP, AVG POWER,
-AVG HR, AVG SPEED, KCAL, WORK and ASCENT, and wraps, so a rider without a
-cadence sensor can put another reading in its place. The page shows `--` for
-a reading that has no data yet. The choice is read when the ride screen
-opens, applies to every ride and survives a reboot. [UI](ui.md#main-page-readings)
-gives each reading's unit and colour.
-
-### Choosing the ride pages
-
-Settings has a RIDE PAGES section with an ON or OFF row for each page a rider
-may not need: STATS, CLIMB and MAP. All are ON by default. MAIN
-is always on, and so is the WORKOUT page while a workout is chosen. MOVE and
-swipes step through the pages that are on, wrapping from the last to the
-first, and the page dots count only those. While a course is loaded, MAP is
-on whatever its row says (see Course). With every optional page off, MOVE
-has only MAIN, and with a workout only WORKOUT and MAIN. When a workout
-ends, a rider on the WORKOUT page moves to MAIN; the FTP ramp test ends with
-its last step, so the NEW FTP sheet shows over MAIN.
-
-CLIMB OFF also ends the climb page's habit of coming up by itself: neither the
-ride's own climb detection nor a climb ahead on the map switches the page. A
-climb raises no toast either: the rider declined the page, and a toast
-would cover the readings they chose to look at. The CLIMB row's note
-says NO CLIMB POP-UP while it is off. The choice is read when the ride screen
-opens and applies to the next ride page the rider sees; it cannot change under
-them, since Settings is not reachable during a ride.
-
-### Sunset
-
-Dusk catches riders out, so VANA works out the sunset (the sun's centre at
--0.833 degrees) from the last fixed position and the GPS or network time, at
-most once a minute. While recording, with Settings ALERTS SUNSET on (the
-default), an amber toast and the ride-alert cue ([Sounds](#sounds)) say
-SUNSET IN 30 MIN, once per ride, when
-30 to 20 minutes remain, and SUNSET - LIGHTS ON once when the sun sets. The
-alerts follow the SOUNDS setting for the cue and show on the ride pages;
-one due while another page is up waits for the rider's return. They need a
-known position and time. A ride that starts after sunset says nothing: the
-rider can see it is dark. A ride that starts less than 20 minutes before
-sunset skips the warning and gives only LIGHTS ON. A ride recovered after a restart, already more than two
-minutes old, never repeats the warning either. A pause across the
-30-minute mark gives the warning on resume, if 20 minutes or more remain.
-Polar day and night have no sunset and no alert.
-
-A second amber toast with the same cue, TURN BACK BY 17:40 in local time,
-says when to start home to be there by sunset. It speaks once per ride, on
-the ride pages, when less than 15 minutes remain before that time; if the time
-has already passed it says TURN BACK NOW. The time home is the straight
-distance to the start, plus 30% for winding roads, at the ride's moving
-average speed, but never more than the track ridden, which is always a way
-back: exact on a straight out-and-back, and on a loop the track is no guide, as
-it is far longer than the way home. Following a course does not silence it, since
-its end need not be home; only heading for the start does. On very winding roads, or across a river or valley,
-the straight line plus 30% underestimates, so the alert can come late. The
-estimate waits for 5 minutes of moving and for 5 km/h or more.
-The alert is part of ALERTS SUNSET, with no setting of its own. It says nothing
-in polar day or night, after sunset, without a position or time, while paused,
-at the start, or on a recovered ride until its track has been read back. It
-also says nothing when riding towards the start (heading within a quarter
-turn of it, on a course too), and holds while the
-heading is unknown, as after a stop, until the rider moves again. It rarely
-repeats: only after the margin has stayed above 30 minutes for 10 minutes.
+VANA holds one workout, today's: `cycling workout-load` puts it there over
+USB, or the phone page's Today's workout card does from the same JSON (or a
+`.vw` file made by it). Each replaces the one before. Home's WORKOUT starts a
+ride that plays it; with none loaded it shows NO WORKOUT LOADED and stays on
+Home. The phone card shows the workout with its length and steps and a
+Remove button, and says in words what it could not accept: not a workout,
+damaged, one VANA cannot ride, no card or no room. A refused or cut-off
+upload leaves the workout as it was. The page opens only while no ride is
+recording, so the workout cannot change during a ride.
 
 ### Paused
 
 A pause, by ACT or by auto-pause, fills the screen: two amber bars, PAUSED or
 AUTO PAUSED, how long the pause has lasted, the ride time and the distance.
-With a course placed, an automatic pause leaves the ride page up instead,
-with the AUTO PAUSED toast, so a rider standing at the start still sees which
-way to go; the paused screen is past the last ride page.
 The pause chime plays once. An automatic pause adds RIDE ON TO RESUME, and
-rolling on resumes it with AUTO RESUME. ACT on an automatic pause keeps the
-ride paused as a pause by ACT, so rolling on no longer resumes it. ACT on a
-pause by ACT resumes (RESUMED toast and the start chime). Riding on after a pause by ACT never resumes the ride, but VANA
+rolling on resumes it with AUTO RESUME. ACT resumes either pause (RESUMED
+toast and the start chime). Riding on after a pause by ACT never resumes the ride, but VANA
 plays a rising three-note reminder once the bike has held start speed (6 km/h
 on a wheel sensor, 10 km/h on GPS) for a few seconds, then at most once every 30 s
 of that pause while the rider keeps riding, however often they stop and go. It
 stops when the rider presses ACT. It sounds on any page, follows the SOUNDS setting
 and plays with AUTO PAUSE off too, since every pause is then the rider's.
 
-MOVE shows the ride pages from the page the rider was on, with PAUSED in the
-status bar; paging past the last page comes back to the paused screen. Swipes
-do the same.
+A swipe shows the ride pages from the page the rider was on, with PAUSED in
+the status bar; paging past the last page comes back to the paused screen.
+While paused, the keys never page.
 
 ### End ride
 
-BACK while paused asks END RIDE? with the ride time and distance. This
-follows the same pattern as TURN OFF: BACK asks, ACT answers yes, BACK answers
-no. The question never times out. Answering yes finishes the ride, shows
-SAVING (keep VANA on) while the last samples are written, then the summary.
-
-A red trash cue sits beside MOVE. MOVE asks DISCARD RIDE? with the same
-time and distance and IT WILL NOT BE SAVED. ACT (red trash cue) answers it,
-BACK returns to END RIDE?. Nothing hides a saved ride any more, so the ride
-is kept as any other and Home says NOT DISCARDED. A ride kept in memory that
-the phone has not saved ([Rides kept in memory](#rides-kept-in-memory)) has
-no trash cue and cannot be discarded.
+MOVE or BACK while paused asks END RIDE? with the ride time and distance.
+ACT answers yes; MOVE or BACK answers no. The question never times out.
+Answering yes finishes the ride, shows SAVING while the last samples are
+written, then RIDE SAVED. Ending always saves, a ride of no distance too.
 
 ### Ride saved
 
-The summary opens with a green check and RIDE SAVED, and pages through:
-
-1. Time, distance, average speed, ascent, average power and average heart
-   rate.
-2. Normalized and maximum power, work in kJ, KCAL (the work again, as
-   calories: 24 % efficient muscle makes kJ and kcal nearly equal; for the
-   seconds without power, such as after a meter dies, the heart-rate estimate
-   by the Keytel formula is added once Settings, BODY holds weight, age and
-   sex, and nothing until then), average and maximum heart rate, power and
-   heart-rate zone bars, and HR RECOVERY: the fall in heart rate over the
-   minute after the ride stopped recording. A ride is paused before it ends,
-   so it counts from that pause, with MEASURING and a countdown until the
-   minute is up, then the fall (-28 BPM). A rider who waits more than five
-   seconds past the minute before ending the ride, a sensor that is silent at
-   either moment (ANT+ or BLE, ride open or not), or leaving the summary
-   before the minute is up shows nothing.
-3. Elevation, only for a ride that recorded altitude: ASCENT M, DESCENT M,
-   MIN M and MAX M in amber over a filled chart of altitude across the whole
-   distance, each stretch in its climb steepness colour. A ride without
-   altitude has no such page.
-4. Best power over 5 s, 1, 5 and 20 min as bars against the best of them,
-   then climbs and laps. Without an elevation page this is page 3.
-
-MOVE or a swipe turns the page, wrapping. The page dots count the pages:
-three, or four with an elevation page, and one more with the FTP offer
-below. ACT (Done) or BACK goes Home. If the last
-write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED. A
-ride kept in memory that the phone has not saved says SYNC TO SAVE in amber
-instead, with no check.
-
-**FTP offer.** When the ride's 20 min best times 0.95 is at least 3% above
-the stored FTP, the summary gets one more, last page: the fourth, or the
-fifth after an elevation page. It shows `FTP 245 W?`, over the
-20 min best it comes from and `NOW 215 W`. It is a page, not a sheet, so the
-other pages keep their buttons: ACT and BACK still go Home. Like END
-RIDE?, it shows without the status bar, which would cut its back cue. On the
-offer, ACT (check cue) takes it (`FTP 245 W SAVED`) and BACK (back cue) keeps
-the FTP in force (`FTP KEPT 215 W`); both then go Home. Pressing Done on an
-earlier page declines it, and the offer is never shown again for that ride.
-The extra page dot shows that it is there. It is reached only going forward
-(MOVE from the last page): a swipe back from the first page lands on the
-best-power page before it, where ACT is Done as everywhere else. It is dropped when the suggestion no
-longer beats the FTP in force by 3%.
-
-The 5 s and 1 min bests are exact. The 5 and 20 min bests use 10 s buckets, so
-they can read slightly low but never high.
+Ending a ride saves it and goes Home, where the toast says RIDE SAVED. A ride
+kept in memory that the phone has not saved says SYNC TO SAVE in amber
+instead.
 
 ## Rides kept in memory
 
@@ -531,14 +397,13 @@ ride is protected:
 
 - Home's status line says NOT SAVED, and the ride pages show a NOT SAVED
   toast. A low-storage toast takes its place while one shows.
-- The summary says SYNC TO SAVE in place of RIDE SAVED, and so does a toast
-  that would say RIDE SAVED.
+- RIDE SAVED says SYNC TO SAVE in its place, and so does a toast that would
+  say RIDE SAVED.
 - The TURN OFF sheet says SYNC RIDE FIRST, or SYNC RIDES FIRST for more than
   one, in place of RIDES ARE SAVED, and shows no ACT corner. Every button
   closes the sheet, and the device stays on.
 - The idle timer never turns the device off. It refuses with no message,
   because Home already says NOT SAVED.
-- END RIDE? offers no discard.
 
 A ride counts as saved once the phone page confirms it, and the ride then
 shows as on any other device. The rider loses a protected ride only by
@@ -561,7 +426,7 @@ keeps every ride, refuses the CLEAR and returns Home.
 ## Sensors
 
 ```text
-Home or Settings ──> SENSORS ── ACT on ADD SENSOR ──> NEARBY (searches)
+Home ──> SENSORS ── ACT on ADD SENSOR ──────────────> NEARBY (searches)
    (straight to NEARBY              │ ACT on a sensor     ^          │ ACT on a sensor: connect it and
     when nothing is saved)          v                     │ BACK     │ stay; BACK: SENSORS, on it
                                Sensor's page ─────────────┘
@@ -611,7 +476,7 @@ sensor is never connected again until it is chosen on NEARBY.
 The terminal's `PHONE START` opens a phone session on VANA's own Wi-Fi
 (`PHONE START HOME` on the home network), and `PHONE STOP` ends it. The
 phone's page lists the rides, downloads them as FIT files and loads a course
-or a workout (see Course and Workouts from the phone). The session also ends
+or a workout (see Course and Today's workout). The session also ends
 after 10 minutes without a request from the phone, or when a ride starts. A
 device without Wi-Fi has no phone feature.
 
@@ -646,16 +511,16 @@ Three buttons control everything, and each keeps one role on every screen:
 BottomRight is ACT, BottomLeft is MOVE and TopLeft is BACK. Touch is a
 shortcut for navigation only; [UI](ui.md#input) gives the gestures.
 
-| Button | Home | Sensors | Settings | Workouts | Ride |
-| --- | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Start the focused workout | Pause, resume; on the NEW FTP sheet, save it |
-| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n), except on the workout page during a running step, where it extends the step (+1 MIN, +0.5 KM), and on the map while following a course, where it stops following (COURSE OFF) |
-| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms, on a device that can turn off | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
+| Button | Home | Sensors | Ride |
+| --- | --- | --- | --- |
+| BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Pause, resume; on the NEW FTP sheet, save it |
+| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n), except on the workout page during a running step, where it extends the step (+1 MIN, +0.5 KM), and on the map while following a course, where it stops following (COURSE OFF) |
+| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms, on a device that can turn off | Back a page: SENSORS, then where Sensors opened from | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
-| Button | End ride? | Summary |
+| Button | End ride? | Ride saved |
 | --- | --- | --- |
-| BottomRight (ACT) | End and save it | Done: Home |
-| BottomLeft (MOVE) | Ask DISCARD RIDE?, when the ride can be discarded | Next page (wraps); held 1.5 s: mark the moment (MARK n) |
+| BottomRight (ACT) | End and save it | Home |
+| BottomLeft (MOVE) | Keep the ride, paused | Home |
 | TopLeft (BACK) | Keep the ride, paused | Home |
 
 The rider's mark writes the moment into the session trace, so whoever reads
@@ -665,7 +530,7 @@ and a `MARK n` toast that counts the marks since power-on, so it confirms with
 SOUNDS OFF too. The hold's first report is an ordinary MOVE; the mark puts
 back the page or focus it changed, and the repeats before it change nothing.
 The mark names the time of that first report and the page shown before it.
-Lists and Settings keep their own held MOVE, so nothing marks there. Two
+Lists keep their own held MOVE, so nothing marks there. Two
 ride pages give the hold the job touch does there: on the workout page during
 a running step it extends the step, and on the map while a course is
 followed it stops following. Both put the page back as a mark does, and mark
@@ -695,7 +560,7 @@ it for every note. Rising runs mean go, falling ones stop.
 | Battery low or critical, and BATTERY n LEFT | low, low |
 | Workout step's last three seconds | low, once a second |
 | Workout step begins, workout ends or a test measures FTP (in place of the lap chime) | high, high |
-| A limit broken (HR, power or cadence), and the sunset and TURN BACK alerts | high, high |
+| A limit broken (HR, power or cadence) | high, high |
 | EAT AND DRINK | middle, middle |
 | Following a course, or back on it | low, high |
 | A course's turn 300 m ahead | low, middle |

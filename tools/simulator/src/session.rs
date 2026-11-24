@@ -1536,7 +1536,6 @@ impl Session {
             use vana::compose::builtin::{Laids, ScreenId};
             let mut laids = Laids::new(
                 model.device,
-                Default::default(),
                 vana::compose::Flags::NONE,
                 &vana::compose::Screens::EMPTY,
             );
@@ -2130,7 +2129,7 @@ impl Session {
             }
         };
         let record: &RefCell<TraceRecorder> = &self.trace.recorder;
-        let (physical, light, fitted) = {
+        let (physical, _light, fitted) = {
             use device_api::sensors::Sensors as _;
             let sensed = Sensed {
                 startup,
@@ -2185,7 +2184,6 @@ impl Session {
             &mut self.sdk,
             &mut self.shell,
             startup,
-            light,
             vana::app::Observations {
                 position: &position,
                 network_time,

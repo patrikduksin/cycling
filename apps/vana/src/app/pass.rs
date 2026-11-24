@@ -4,10 +4,9 @@ use device_api::ble_transport::Ble;
 use device_api::bulk::ReadWrite;
 use device_api::display::Display;
 use device_api::input::{InputObservation, InputSource};
-use device_api::observation::Observation;
 use device_api::positioning::Positioning;
 use device_api::power::{Power, PowerControl};
-use device_api::sensors::{Light, Startup};
+use device_api::sensors::Startup;
 use device_api::server::{AccessPoint, Server};
 use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
@@ -45,7 +44,6 @@ pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
     app: &mut Runtime,
     shell: &mut Shell<D, I, P, B>,
     startup: Startup,
-    light: Observation<Light>,
     seen: Observations<'_, Pos, In>,
     now: u64,
     handles: Handles<A, Bl, Bu, Ap, Sv, So, Pc>,
@@ -77,7 +75,6 @@ pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
     let position = seen.position;
     app.set_startup_status(startup);
     shell.set_app_active(app.input_active());
-    shell.observe_light(light);
     shell.tick(now);
     at(Point::InputsReady, shell);
     for _ in 0..16 {

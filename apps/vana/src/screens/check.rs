@@ -30,13 +30,6 @@ pub(super) struct Placed {
     pub region: usize,
 }
 
-pub(super) const fn scrolling_bounds(panel: Rect) -> Rect {
-    Rect {
-        bottom: usize::MAX,
-        ..panel
-    }
-}
-
 pub(super) const fn inside(rect: Rect, bounds: Rect) -> bool {
     rect.left >= bounds.left
         && rect.top >= bounds.top

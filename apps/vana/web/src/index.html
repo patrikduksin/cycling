@@ -736,7 +736,6 @@ function showCourse(course) {
   if (old) old.replaceWith(card); else $('list').prepend(card);
 }
 
-// ---- Workouts: structured workouts for the TRAIN picker, kept on the memory card.
 // The device takes the workout file `cycling workout-load` writes (codec
 // version 1, apps/vana/src/workout/codec.rs); this page builds it from the
 // same JSON, as tools/devtools/src/cycling_devtools/workouts/load.py does.
@@ -744,11 +743,10 @@ const WORKOUT_ERRORS = {
   format: 'This is not a VANA workout. Choose a workout JSON file.',
   damaged: 'This workout file is cut short or damaged.',
   invalid: 'VANA cannot ride this workout. Check its steps and targets.',
-  full: 'VANA holds 8 workouts. Delete one to add another.',
   nospace: 'The memory card has no room for the workout.',
   unavailable: 'VANA keeps workouts on its memory card, and it has no formatted card.',
   storage: 'The memory card did not take the workout. Try again.',
-  ride: 'A ride is recording. Add workouts before you start.',
+  ride: 'A ride is recording. Set the workout before you start.',
   empty: 'This file is empty.',
   too_large: 'This file is too large for a workout.',
 };
@@ -864,32 +862,26 @@ async function workoutFile(file) {
   catch (error) { throw new Error(error instanceof SyntaxError ? 'This file is not a workout. Choose a workout JSON file.' : error.message); }
 }
 
-function workoutsCard(list) {
+function workoutsCard(today) {
   const note = el('div', { class: 'note' });
   const input = el('input', { type: 'file', accept: '.json,.vw,application/json', style: 'display:none' });
-  const row = (title, detail, file) => el('div', { class: 'row', style: 'justify-content:space-between;flex-wrap:nowrap;margin-top:8px' },
+  const workout = today.workout;
+  const shown = workout ? [el('div', { class: 'row', style: 'justify-content:space-between;flex-wrap:nowrap;margin-top:8px' },
     el('div', { style: 'min-width:0' },
-      el('div', { class: 'ride-date', style: 'overflow-wrap:anywhere' }, title),
-      el('div', { class: 'note', style: 'margin:0' }, detail)),
+      el('div', { class: 'ride-date', style: 'overflow-wrap:anywhere' }, workout.name),
+      el('div', { class: 'note', style: 'margin:0' }, workout.minutes ? `${workout.minutes} min · ${workout.steps} steps` : `${workout.steps} steps`)),
     el('button', {
       type: 'button',
       onclick: async () => {
-        note.textContent = 'Deleting…';
-        try { await api(`/api/workouts?file=${encodeURIComponent(file)}`, { method: 'DELETE' }); showWorkouts(await api('/api/workouts')); } catch (error) { note.textContent = error.message; }
+        note.textContent = 'Removing…';
+        try { await api('/api/workouts', { method: 'DELETE' }); showWorkouts(await api('/api/workouts')); } catch (error) { note.textContent = error.message; }
       },
-    }, 'Delete'));
-  const listed = list.uploads.map((workout) => row(workout.name,
-    workout.minutes ? `${workout.minutes} min · ${workout.steps} steps` : `${workout.steps} steps`, workout.file));
-  // Files in the workouts folder the device cannot list: unreadable, or past the eighth.
-  const unlisted = (list.unlisted || []).map((workout) => row(workout.file, 'Not listed on the device. Delete it to make room.', workout.file));
-  const rows = [...listed, ...unlisted];
-  const full = rows.length >= list.max;
-  const empty = listed.length ? [] : [el('div', { class: 'note' }, list.store === 'ok'
-    ? 'No workouts added. Add a workout file to find it under TRAIN on the device.'
-    : WORKOUT_ERRORS.unavailable)];
+    }, 'Remove'))] : [el('div', { class: 'note' }, {
+    ok: 'No workout set. Set one to start it with WORKOUT on the device.',
+    decode: 'The workout on the device cannot be read. Set another to replace it.',
+  }[today.store] || WORKOUT_ERRORS.unavailable)];
   const actions = el('div', { class: 'row', style: 'margin-top:8px' },
-    el('button', { type: 'button', class: 'primary', ...(full ? { disabled: '' } : {}), onclick: () => input.click() }, 'Add a workout'));
-  if (full) note.textContent = WORKOUT_ERRORS.full;
+    el('button', { type: 'button', class: 'primary', onclick: () => input.click() }, workout ? 'Replace the workout' : 'Set a workout'));
   input.addEventListener('change', async () => {
     const file = input.files[0];
     input.value = '';
@@ -908,11 +900,11 @@ function workoutsCard(list) {
       showWorkouts(reply);
     } catch (error) { note.textContent = error.message; }
   });
-  return el('div', { class: 'card', id: 'workouts' }, el('div', { class: 'caption' }, `Workouts · ${listed.length} of ${list.max}`), ...rows, ...empty, actions, input, note);
+  return el('div', { class: 'card', id: 'workouts' }, el('div', { class: 'caption' }, "Today's workout"), ...shown, actions, input, note);
 }
 
-function showWorkouts(list) {
-  const card = workoutsCard(list);
+function showWorkouts(today) {
+  const card = workoutsCard(today);
   const old = $('workouts');
   const course = $('course');
   if (old) old.replaceWith(card); else if (course) course.after(card); else $('list').prepend(card);

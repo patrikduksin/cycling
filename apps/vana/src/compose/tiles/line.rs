@@ -2,16 +2,16 @@
 //! a title, a note. Each line names its faces, best first, its colour and
 //! its side; a line that states a number reads it through `Data::count`.
 //! Its looks are sized by the widest text it can show.
-use crate::compose::data::{Count, Data, Metric};
+use crate::compose::data::{Count, Data};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Arg, Form, Forms, Tile};
 use crate::screens::canvas::Canvas;
-use crate::screens::chrome::{AMBER, Align, GREEN, POWER, SECONDARY, WHITE};
+use crate::screens::chrome::{AMBER, Align, GREEN, SECONDARY, WHITE};
 use crate::screens::format::Goes;
 use crate::screens::scaled::Scaled;
 use crate::screens::workout::Text;
 use core::fmt::Write;
-use firmware_shell::rendering::font::FaceRole::{self, Body, Caption, Hero, Large, Title, Value};
+use firmware_shell::rendering::font::FaceRole::{self, Body, Caption, Title};
 use firmware_shell::rendering::font::SPILL;
 
 pub struct Line;
@@ -40,13 +40,6 @@ says! {
     FormatMade,
     FormatGoes,
     FormatWait,
-    DiscardTitle,
-    RideTime,
-    RideDistance,
-    DiscardLine,
-    NewFtp,
-    FtpNow,
-    FtpSave,
     TurnOff,
     RidesSaved,
     SyncFirst,
@@ -75,19 +68,13 @@ impl Say {
     const fn look(self) -> Look {
         use Say::*;
         match self {
-            LoseCount | LoseRides | FormatTitle | DiscardTitle | FtpSave | TurnOff => {
-                look(&[Title, Body], WHITE)
-            }
+            LoseCount | LoseRides | FormatTitle | TurnOff => look(&[Title, Body], WHITE),
             RidesSaved | PressAny | StayOn => look(&[Body, Caption], SECONDARY),
             SyncFirst => look(&[Body, Caption], AMBER),
             TurningOffIn => look(&[Body], AMBER),
             ChargeState => look(&[Body], GREEN),
             FormatMade | FormatWait => look(&[Body, Caption], WHITE),
-            FormatGoes | LoseLine | DiscardLine => look(&[Caption], SECONDARY),
-            RideTime => look(&[Large, Value], WHITE),
-            RideDistance => look(&[Body], WHITE),
-            NewFtp => look(&[Body], SECONDARY),
-            FtpNow => look(&[Body, Caption], SECONDARY),
+            FormatGoes | LoseLine => look(&[Caption], SECONDARY),
         }
     }
 
@@ -109,20 +96,6 @@ impl Say {
             FormatGoes => Goes::ALL
                 .get(usize::try_from(count(Count::Goes)?).ok()?)?
                 .text(),
-            RideTime | RideDistance => {
-                let mut value = Text::<12>::new();
-                let metric = self.metric();
-                metric.write(data.metric(metric), &mut value);
-                let _ = out.push_str(value.as_str());
-                if self == RideDistance {
-                    let _ = out.push_str(" KM");
-                }
-                return Some(());
-            }
-            FtpNow => {
-                let _ = write!(out, "NOW {} W", count(Count::FtpOld)?.clamp(0, FTP_END));
-                return Some(());
-            }
             SyncFirst if plural() => "SYNC RIDES FIRST",
             SyncFirst => "SYNC RIDE FIRST",
             ChargeState => match (count(Count::Charging) == Some(1), count(Count::Charge)) {
@@ -145,13 +118,6 @@ impl Say {
         }
     }
 
-    const fn metric(self) -> Metric {
-        match self {
-            Self::RideDistance => Metric::Distance,
-            _ => Metric::Elapsed,
-        }
-    }
-
     /// The words of a line that never changes.
     const fn fixed(self) -> &'static str {
         use Say::*;
@@ -159,10 +125,6 @@ impl Say {
             FormatTitle => "FORMAT STORAGE?",
             FormatMade => "MADE BY ANOTHER VERSION",
             FormatWait => "CHECKING STORAGE",
-            DiscardTitle => "DISCARD RIDE?",
-            DiscardLine => "IT WILL NOT BE SAVED",
-            NewFtp => "NEW FTP",
-            FtpSave => "SAVE?",
             TurnOff => "TURN OFF",
             RidesSaved => "RIDES ARE SAVED",
             TurningOffIn => "TURNING OFF IN",
@@ -182,17 +144,6 @@ impl Say {
             FormatGoes => Goes::ALL
                 .iter()
                 .for_each(|goes| each(goes.text().as_bytes())),
-            RideTime | RideDistance => {
-                for value in self.metric().extremes() {
-                    let mut text = Words::new();
-                    let _ = text.push_str(value.as_str());
-                    if self == RideDistance {
-                        let _ = text.push_str(" KM");
-                    }
-                    each(text.as_bytes());
-                }
-            }
-            FtpNow => each(b"NOW 9999 W"),
             SyncFirst => each(b"SYNC RIDES FIRST"),
             ChargeState => ["CHARGED", "CHARGING", "ON USB POWER"]
                 .iter()
@@ -269,60 +220,4 @@ impl Tile for Line {
 /// Columns before a line `drawn` wide centred in `width`.
 const fn centred(drawn: usize, width: usize) -> usize {
     width.saturating_sub(drawn) / 2
-}
-
-/// The FTP a sheet offers, in the hero face, with its unit after it.
-pub struct FtpHero;
-
-/// An FTP shows up to 9999 W.
-const FTP_END: i32 = 9999;
-
-/// Columns between the number and its unit.
-const UNIT_GAP_UNITS: u16 = 6;
-
-impl Tile for FtpHero {
-    type Arg = ();
-    const NAME: &'static str = "ftp";
-
-    fn forms((): (), at: &Scaled) -> Forms {
-        let (hero, caption) = (at.face(Hero), at.face(Caption));
-        let number = Form::text(hero, b"9999");
-        let unit = Form::text(caption, b"W");
-        let gap = at.unit(usize::from(UNIT_GAP_UNITS)) as u16;
-        crate::compose::tile::forms(&[Form {
-            width: 2 * (unit.width + gap) + number.width,
-            runs: 2,
-            ..number
-        }])
-    }
-
-    fn prepare((): (), placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
-        let mut value = Text::<12>::new();
-        if let Some(watts) = data.count(Count::FtpNew) {
-            let _ = write!(value, "{}", watts.clamp(0, FTP_END));
-        }
-        let rect = placed.rect;
-        let (base, width) = (usize::from(rect.bottom), usize::from(rect.width()));
-        let hero = at.face(Hero);
-        let left = usize::from(rect.left) + centred(hero.fit_width(value.as_bytes()), width);
-        let hero = out.fit(
-            &[hero],
-            value.as_bytes(),
-            width,
-            left,
-            base,
-            Align::Left,
-            POWER,
-        );
-        let gap = at.unit(usize::from(UNIT_GAP_UNITS));
-        out.fit(
-            &[at.face(Caption)],
-            b"W",
-            usize::from(rect.right).saturating_sub(hero.right() + gap),
-            hero.right() + gap,
-            base,
-            Align::Left,
-            SECONDARY,
-        );
-    }
 }

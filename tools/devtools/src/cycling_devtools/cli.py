@@ -282,7 +282,7 @@ TASKS = [
     ),
     task(
         'workout-load',
-        "Put a workout JSON file on the device's FILES volume for the workout picker (--dry-run prints the file)",
+        "Put a workout JSON file on the device as today's workout, which Home's WORKOUT starts (--dry-run prints the file)",
         f'{DEV}workouts.load',
     ),
     task(

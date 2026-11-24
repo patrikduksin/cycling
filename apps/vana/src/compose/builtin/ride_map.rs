@@ -11,7 +11,7 @@ use crate::screens::ride::map::{BAR_UNITS, FOOT_UNITS};
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_| TREE.into_iter().collect::<Nodes>(),
+    tree: || TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Ride(Role::Act),

@@ -360,7 +360,7 @@ mod tests {
     use crate::screens::ride::RidePage;
     use crate::screens::theme::{DARK, LIGHT};
     use crate::screens::workout::{Page, View};
-    use crate::workout::library::{BUILT_IN, FTP_RAMP, FTP_TWENTY, VO2_MAX};
+    use crate::workout::fixtures::{ALL as BUILT_IN, FTP_RAMP, FTP_TWENTY, VO2_MAX};
     use crate::workout::model::{Block, Intensity, Step};
     use std::string::String;
     use std::vec::Vec;

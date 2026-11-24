@@ -3,8 +3,6 @@
 //! A kit tile reads every colour from the theme in force (`Data::theme`)
 //! and every gap, radius and face from `LAYOUT`, and never names one
 //! itself, so both looks run one code path and solve to the same boxes.
-//! Legacy painters still take main's palette in `chrome` through the light
-//! transform of `look`.
 mod dark;
 mod layout;
 mod light;

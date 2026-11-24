@@ -611,8 +611,6 @@ impl Scene<'_> {
 impl Scene<'_> {
     fn canvas_breaks(&self, page: RidePage) -> std::vec::Vec<std::string::String> {
         if self.theme.is_some() {
-            // A kit page has no status bar: its tree owns the whole panel,
-            // the radar strip's room included.
             return self.breaks_within(std::vec![("page", self.device.scaled.screen())], 0);
         }
         let mut regions = std::vec::Vec::new();
@@ -1708,10 +1706,9 @@ mod tests {
             &view(RidePage::Main, 120, 60),
             &view(RidePage::Main, 120, 61),
         );
-        // Stats keeps its top line above the banner: only the time sends.
         assert!(
             !ticked.is_empty() && ticked.iter().all(|&y| y < 24),
-            "{ticked:?}"
+            "only the top line's time sends above the banner: {ticked:?}"
         );
     }
 

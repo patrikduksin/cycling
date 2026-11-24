@@ -1,4 +1,4 @@
-//! Night: main's palette, numbers and titles in their metric colours.
+//! Night: white on black, numbers and titles in their metric colours.
 use super::{Theme, rgb};
 
 const GREY: u16 = rgb(0x8e, 0x8e, 0x93);

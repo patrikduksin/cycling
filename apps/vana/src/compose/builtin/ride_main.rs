@@ -1,4 +1,4 @@
-//! The Stats ride page (#517), still named `ride/main`: the top line, then
+//! The Stats ride page: the top line, then
 //! an even grid of two columns and four rows, power and heart rate filled
 //! with their zones on top. The radar strip, while one is paired, takes
 //! its room at the left and the grid shares what is left.

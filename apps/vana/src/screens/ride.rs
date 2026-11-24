@@ -625,8 +625,6 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
     let look = scene.look();
     let black = look.ink(chrome::BLACK);
     if let Some(theme) = scene.theme() {
-        // A kit page: the radar through the look on the theme's background,
-        // the tiles unmapped over both.
         let under = match &scene.radar {
             Some(radar) if radar.columns().contains(&x) => {
                 match reference_radar_pixel(radar, x, y) {
@@ -1024,18 +1022,7 @@ mod tests {
         view.pause_screen = page.is_none();
         view.compose(slots::Slots::default());
         view.prepare();
-        let runs: std::vec::Vec<std::string::String> = view
-            .canvas()
-            .runs
-            .iter()
-            .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
-            .collect();
-        // A field draws a grade's % as a run of its own after the number.
-        let mut texts = runs.clone();
-        texts.extend(
-            runs.windows(2)
-                .map(|pair| std::format!("{}{}", pair[0], pair[1])),
-        );
+        let texts = runs_and_neighbour_pairs(view.canvas());
         let mut line = std::string::String::new();
         shown(
             &mut line,
@@ -1047,18 +1034,34 @@ mod tests {
         READINGS
             .into_iter()
             .zip(line.split(' '))
-            .filter(|(_, pair)| {
+            .filter(|(reading, pair)| {
                 let value = pair.split_once('=').unwrap().1;
-                // Stats writes the distance to a tenth.
-                let shorter = |word: &str| {
-                    word.contains('.') && value.len() == word.len() + 1 && value.starts_with(word)
+                let distance_in_tenths = |word: &str| {
+                    *reading == "dist" && value.len() == word.len() + 1 && value.starts_with(word)
                 };
-                texts
-                    .iter()
-                    .any(|text| text.split(' ').any(|word| word == value || shorter(word)))
+                texts.iter().any(|text| {
+                    text.split(' ')
+                        .any(|word| word == value || distance_in_tenths(word))
+                })
             })
             .map(|(reading, _)| reading)
             .collect()
+    }
+
+    /// Each run's text, then each two neighbouring runs joined, as a grade
+    /// and its `%` draw.
+    fn runs_and_neighbour_pairs(
+        canvas: &crate::screens::canvas::Canvas,
+    ) -> std::vec::Vec<std::string::String> {
+        let runs: std::vec::Vec<std::string::String> = canvas
+            .runs
+            .iter()
+            .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
+            .collect();
+        let pairs = runs
+            .windows(2)
+            .map(|pair| std::format!("{}{}", pair[0], pair[1]));
+        runs.iter().cloned().chain(pairs).collect()
     }
 
     #[test]

@@ -902,8 +902,8 @@ impl Sim {
     }
 
     /// Wi-Fi time synchronization succeeds now with this UTC, in ms since
-    /// 1970, over a station that is online; the device keeps it until it
-    /// reboots.
+    /// 1970, over a station that is online; the device keeps it through a
+    /// restart, not a power loss.
     pub fn sync_network_time(&mut self, unix_ms: u64) {
         self.note(
             NoteKind::World,
@@ -912,10 +912,11 @@ impl Sim {
         let now = self.device.now;
         let sim = self.device.sim_mut();
         sim.wifi.online = true;
-        sim.network_time = Some(firmware_services::network_time::Anchor {
+        sim.network_time = Some(firmware_services::network_time::Anchor::new(
+            firmware_services::network_time::Source::Sntp,
             unix_ms,
-            uptime_ms: now,
-        });
+            now,
+        ));
     }
 
     /// The raw Battery Level (0x2A19) the BLE heart strap reports on its next

@@ -913,6 +913,15 @@ fn absent() -> &'static mut Absent {
 impl Simulated {
     fn carry_into(&mut self, next: &mut Simulated, power: bool, uptime: u64) {
         next.world = core::mem::take(&mut self.world);
+        // RTC memory keeps the clock through a reset, not a power loss; the
+        // next boot's uptime starts at zero.
+        next.network_time = (!power)
+            .then(|| self.network_time.map(|anchor| anchor.at(uptime)))
+            .flatten()
+            .map(|anchor| firmware_services::network_time::Anchor {
+                uptime_ms: 0,
+                ..anchor
+            });
         let ready = self.ant_ready_availability();
         core::mem::swap(&mut next.ant, &mut self.ant);
         if power {
@@ -2097,8 +2106,17 @@ impl Session {
     ) {
         let now = self.now;
         let model = self.model.fitted.sensors;
+        let set = self.sdk.take_clock_set();
         let (physical, light, network_time, fitted) = match &mut self.devices {
             Devices::Simulated(sim) => {
+                use firmware_services::network_time::{Anchor, Source, offered};
+                if let Some(set) = set {
+                    sim.network_time = offered(sim.network_time, set);
+                }
+                if let Some(utc_ms) = position.snapshot.and_then(|fix| fix.gps.utc_ms) {
+                    sim.network_time =
+                        offered(sim.network_time, Anchor::new(Source::Gnss, utc_ms, now));
+                }
                 let mut physical = sim.physical(now);
                 if !model.barometer {
                     physical.pressure = Observation::Unavailable;

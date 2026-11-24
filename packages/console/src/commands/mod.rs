@@ -77,7 +77,7 @@ pub trait Board<System> {
 
 const ORDINARY: &str = "HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,VOLUME,TERRAIN,FILES,STORE,STORAGE,DISPLAY,RESTART";
 const DOMAIN: &str = ",RIDE,EXPORT,RADAR,PROFILE,WORKOUT,PHONE";
-const HELP: &str = "MMC OWNED TEST relative_sector expected_crc_hex fill_hex; MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; FORMAT [CONFIRM] (SDK); VOLUME [STATUS|INIT|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; STORE [STATUS|FORMAT CONFIRM|LIST index]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|AUTO|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|PROFILE [FTP watts|LTHR bpm|WEIGHT kg|AGE years|SEX M/F/-] (SDK)|PHONE [START [HOME]|STOP] (SDK)|STORAGE|FITTED|DISPLAY rgb565hex|RESTART|CRASH [CLEAR]|TEST n";
+const HELP: &str = "MMC OWNED TEST relative_sector expected_crc_hex fill_hex; MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; FORMAT [CONFIRM] (SDK); VOLUME [STATUS|INIT|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; STORE [STATUS|FORMAT CONFIRM|LIST index]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME [SET unix_seconds]|SETTINGS|BRIGHTNESS n|AUTO|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|PROFILE [FTP watts|LTHR bpm|WEIGHT kg|AGE years|SEX M/F/-] (SDK)|PHONE [START [HOME]|STOP] (SDK)|STORAGE|FITTED|DISPLAY rgb565hex|RESTART|CRASH [CLEAR]|TEST n";
 
 /// Answer one ordinary command: its status, with its reply text in `out`.
 pub fn execute<D: Display, I: InputSource, P: Power, F: OwnedFlash, B: Board<Shell<D, I, P, F>>>(
@@ -226,10 +226,15 @@ pub fn execute<D: Display, I: InputSource, P: Power, F: OwnedFlash, B: Board<She
             None => status = "UNAVAILABLE",
         },
         Command::Time => {
-            let time = board
-                .clock()
-                .snapshot(now, system.settings.timezone_minutes, wifi.online());
-            let _ = write!(out, "{time:?}");
+            let clock = board.clock();
+            let time = clock.snapshot(now, system.settings.timezone_minutes, wifi.online());
+            let source = clock.source().map_or("none", |source| source.name());
+            let _ = write!(out, "{time:?} source={source}");
+        }
+        Command::SetTime(seconds) => {
+            // The parser admitted only settable seconds.
+            let _ = sdk.set_clock(u64::from(seconds) * 1_000, now);
+            let _ = write!(out, "unix_seconds={seconds}");
         }
         Command::Wifi => {
             let control = wifi.control();

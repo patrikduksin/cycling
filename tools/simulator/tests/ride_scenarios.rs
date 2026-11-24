@@ -8716,6 +8716,73 @@ fn a_two_hour_ride_with_a_pause_replays_exactly() {
 
 const WIFI_UTC_MS: u64 = 1_793_521_800_000;
 
+const SET_UTC_S: u64 = 1_793_521_800;
+
+fn a_clock_set_from_the_host(sim: &mut Sim) {
+    sim.advance(seconds(2));
+    sim.expect_text("--:--");
+    assert_eq!(
+        sim.command(&format!("TIME SET {SET_UTC_S}")),
+        ("OK", format!("unix_seconds={SET_UTC_S}"))
+    );
+    sim.advance(seconds(1));
+    sim.expect_text("5:30");
+    sim.checkpoint("home shows the set clock");
+}
+
+#[test]
+fn a_clock_set_from_the_host_shows_on_home_and_outlives_a_crash() {
+    let mut sim = hashed().boot();
+    a_clock_set_from_the_host(&mut sim);
+    sim.crash();
+    sim.wait_usable();
+    sim.expect_text("5:30");
+    let (status, time) = sim.command("TIME");
+    assert_eq!(status, "OK");
+    assert!(
+        time.contains("source=set"),
+        "a crash keeps the clock: {time}"
+    );
+    let shown = time
+        .split("unix_seconds: Some(")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next());
+    let shown: u64 = shown.and_then(|seconds| seconds.parse().ok()).expect(&time);
+    assert!((SET_UTC_S..SET_UTC_S + 60).contains(&shown), "{time}");
+    sim.power_loss();
+    sim.expect_text("--:--");
+    let (_, time) = sim.command("TIME");
+    assert!(time.contains("source=none"), "power loss: {time}");
+}
+
+#[test]
+fn a_clock_set_from_the_host_replays_exactly() {
+    let mut sim = hashed().boot();
+    a_clock_set_from_the_host(&mut sim);
+    let capture = sim.capture();
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{report}");
+    if let Some(difference) = shell_simulator::replay::first_difference(&capture, &replayed.trace())
+    {
+        panic!("the replay read or showed something else: {difference}");
+    }
+    assert_eq!(sim.frame_hashes(), replayed.frame_hashes());
+}
+
+#[test]
+fn the_receiver_overrules_a_set_clock() {
+    let mut sim = rider();
+    sim.advance(seconds(5));
+    sim.expect_text("7:00");
+    sim.command(&format!("TIME SET {SET_UTC_S}"));
+    sim.advance(seconds(2));
+    let (_, time) = sim.command("TIME");
+    assert!(time.contains("source=gnss"), "{time}");
+    sim.expect_text("7:00");
+    sim.expect_no_text("5:30");
+}
+
 fn a_ride_dated_by_wifi(sim: &mut Sim) {
     sim.sync_network_time(WIFI_UTC_MS);
     let synced = sim.now();
@@ -8733,15 +8800,8 @@ fn a_ride_dated_by_wifi(sim: &mut Sim) {
 
 #[test]
 fn a_ride_dated_by_wifi_replays_exactly_whatever_the_process_clock_holds() {
-    use firmware_services::network_time::{Timestamp, update};
-    update(
-        Timestamp {
-            unix_seconds: (WIFI_UTC_MS / 1000 + 365 * 86_400) as u32,
-            millis: 0,
-            stratum: 2,
-        },
-        0,
-    );
+    use firmware_services::network_time::{Anchor, Source, offer};
+    offer(Anchor::new(Source::Sntp, WIFI_UTC_MS + 365 * 86_400_000, 0));
     let capture = assert_replays_exactly(equip(hashed().boot()), a_ride_dated_by_wifi, false);
     let (_, events) = firmware_services::trace::decode(&capture).unwrap();
     let synced = events

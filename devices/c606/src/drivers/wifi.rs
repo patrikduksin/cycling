@@ -976,7 +976,13 @@ pub async fn time_sync(stack: Stack<'static>) {
             match result {
                 Ok(Ok((timestamp, rtt_ms))) if current => {
                     let now = Instant::now().as_millis();
-                    firmware_services::network_time::update(timestamp, now);
+                    firmware_services::network_time::offer(
+                        firmware_services::network_time::Anchor::new(
+                            firmware_services::network_time::Source::Sntp,
+                            timestamp.unix_ms(),
+                            now,
+                        ),
+                    );
                     failures = 0;
                     log::info!(target: "wifi",
                         "CYCLING_TIME synced unix={} stratum={} rtt_ms={}",

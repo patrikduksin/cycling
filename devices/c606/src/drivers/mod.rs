@@ -4,6 +4,8 @@ pub mod bluetooth;
 pub mod boot_slot;
 #[cfg(all(feature = "hardware", feature = "bulk-maintenance"))]
 pub mod bulk_maintenance;
+#[cfg(feature = "hardware")]
+pub mod clock_rtc;
 pub mod companion;
 pub mod companion_sensors;
 pub mod companion_startup;

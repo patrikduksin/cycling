@@ -303,6 +303,44 @@ fn a_phone_on_home_wifi_lists_and_downloads_a_ride() {
 }
 
 #[test]
+fn the_phone_sets_the_device_clock() {
+    let mut journal = Journal::erased();
+    let mut radio = super::Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    attach(&mut runtime);
+    runtime.open_phone(PhoneMode::Home);
+    let mut phone = Phone {
+        runtime: &mut runtime,
+        journal: &mut journal,
+        transport: Transport::default(),
+        radio: Radio2::default(),
+        now: 1_000,
+    };
+    phone.step();
+    let token = phone.token();
+    let (head, _) = phone.get(Method::Put, "/api/time", "unix_ms=1793521800250", "stale");
+    assert!(head.starts_with("HTTP/1.1 401"), "{head}");
+    for query in [
+        "unix_ms=soon",
+        "unix_ms=18446744073709551615",
+        "unix_ms=1700000000000",
+    ] {
+        let (head, _) = phone.get(Method::Put, "/api/time", query, &token);
+        assert!(head.starts_with("HTTP/1.1 400"), "{query}: {head}");
+    }
+    assert_eq!(phone.runtime.take_clock_set(), None);
+    let (head, _) = phone.get(Method::Put, "/api/time", "unix_ms=1793521800250", &token);
+    assert!(head.starts_with("HTTP/1.1 204"), "{head}");
+    let set = phone
+        .runtime
+        .take_clock_set()
+        .expect("the device clock is offered a time");
+    assert_eq!(set.source, firmware_services::network_time::Source::Set);
+    assert_eq!(set.unix_ms, 1_793_521_800_250);
+    assert!(set.uptime_ms <= phone.now, "true when the request arrived");
+}
+
+#[test]
 fn the_access_point_runs_for_the_session_and_stops_after_idle() {
     let mut journal = Journal::erased();
     let (mut runtime, _, now) = saved_ride(&mut journal);

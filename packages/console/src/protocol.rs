@@ -53,6 +53,8 @@ pub enum Command {
     Input,
     Battery,
     Time,
+    /// UTC in whole seconds since 1970, from a host.
+    SetTime(u32),
     Settings,
     SetBrightness(Brightness),
     SetTimezone(i16),
@@ -324,7 +326,22 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
         "POSITION" => Command::Position,
         "INPUT" => Command::Input,
         "BATTERY" => Command::Battery,
-        "TIME" => Command::Time,
+        "TIME" => match words.next() {
+            None => Command::Time,
+            Some("SET") => {
+                let seconds = words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse::<u32>()
+                    .map_err(|_| Error::Invalid)?;
+                let settable = firmware_services::network_time::PLAUSIBLE_MS;
+                if !settable.contains(&(u64::from(seconds) * 1_000)) {
+                    return Err(Error::Invalid);
+                }
+                Command::SetTime(seconds)
+            }
+            _ => return Err(Error::Invalid),
+        },
         "SETTINGS" => Command::Settings,
         "SAVE" => Command::Save,
         "ACTIVITY" => Command::Activity,
@@ -614,12 +631,21 @@ mod tests {
             "CMD -1 SAVE",
             "CMD 1 WIFI RECONNECT extra",
             "CMD 1 TIMEZONE 841",
+            "CMD 1 TIME SET",
+            "CMD 1 TIME SET 1767225599",
+            "CMD 1 TIME SET 4102444800",
+            "CMD 1 TIME SET 1793521800 extra",
+            "CMD 1 TIME NOW",
             "CMD 1 DISPLAY 10000",
             "SAVE",
             "CMD 1 BLE nope",
         ] {
             assert_eq!(parse(line.as_bytes()), Err(Error::Invalid), "{line}");
         }
+        assert_eq!(
+            parse(b"CMD 7 TIME SET 1793521800").map(|request| request.command),
+            Ok(Command::SetTime(1_793_521_800))
+        );
         assert_eq!(
             parse(b"CMD 42 WIFI RECONNECT"),
             Ok(Request {

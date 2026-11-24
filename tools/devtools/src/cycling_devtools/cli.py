@@ -276,6 +276,11 @@ TASKS = [
         f'{DEV}rides.clear',
     ),
     task(
+        'time-sync',
+        "Set the device clock from this machine's clock and read it back (flash does this after it boots)",
+        f'{DEV}terminal.time_sync',
+    ),
+    task(
         'workout-load',
         "Put a workout JSON file on the device's FILES volume for the workout picker (--dry-run prints the file)",
         f'{DEV}workouts.load',

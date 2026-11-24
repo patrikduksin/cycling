@@ -337,15 +337,7 @@ impl Runtime {
         let navigation = &self.navigation;
         let page = navigation.page();
         let zone = self.preferences.options.zone;
-        let local = match self.shown.live().utc_ms {
-            Some(ms) => Some(zone.local(ms / 1000)),
-            None => gps.and_then(|p| p.gps.utc).map(|v| {
-                zone.local_of_day(
-                    u64::from((v[0] - b'0') * 10 + v[1] - b'0') * 3600
-                        + u64::from((v[2] - b'0') * 10 + v[3] - b'0') * 60,
-                )
-            }),
-        };
+        let local = self.shown.live().utc_ms.map(|ms| zone.local(ms / 1000));
         let mut view = navigation.view(local);
         view.device = self.device;
         view.now_ms = now;

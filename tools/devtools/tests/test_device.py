@@ -109,6 +109,7 @@ class Workspace(unittest.TestCase):
         self.consoles = 0
 
         self.protocols = []
+        self.clocks = 0
 
         def console(resolve, seconds, log, maintenance=False):
             self.consoles += 1
@@ -120,6 +121,7 @@ class Workspace(unittest.TestCase):
             ('LOCAL', self.local),
             ('flasher_for', lambda port, resolve, log_dir: self.flasher),
             ('console_info', console),
+            ('set_clock', lambda resolve, log: setattr(self, 'clocks', self.clocks + 1)),
         ):
             patcher = patch.object(device, target, value)
             patcher.start()
@@ -404,6 +406,7 @@ class AbFlashTests(Workspace):
         self.assertEqual(self.slot(0, len(self.stock)), self.stock)
         self.assertIn('Slot A (stock) is selected; writing slot B', output)
         self.assertIn('Running slot B per INFO', output)
+        self.assertEqual(self.clocks, 1, 'a booted image gets the clock')
 
         second = self.candidate(image(marker=2))
         output = self.main('flash')

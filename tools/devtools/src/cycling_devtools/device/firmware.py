@@ -24,6 +24,7 @@ from cycling_devtools.device import mmc_maintenance
 from cycling_devtools.device.flasher import EsptoolFlasher, Flasher, monitor
 from cycling_devtools.device.page_flasher import PageFlasher
 from cycling_devtools.device.port import add_port_argument, select_port, selected_port
+from cycling_devtools.terminal import time_sync
 from cycling_devtools.terminal.usb import UsbConnection, acquire_lock, open_no_reset, reply_fields
 from cycling_devtools.workspace import DEVICE_LOCAL, ROOT
 
@@ -256,6 +257,23 @@ def console_info(resolve, seconds, log, maintenance=False):
     return None
 
 
+def set_clock(resolve, log):
+    fd = None
+    try:
+        port = resolve()
+        fd = open_no_reset(port)
+        connection = UsbConnection(port, log)
+        connection.fd, connection.request_id = fd, secrets.randbelow(1 << 30) + 1
+        with open(log, 'ab') as connection.log:
+            reply = time_sync.sync(connection)
+        print(f'Clock set from this machine: {reply["data"]}', flush=True)
+    except (OSError, RuntimeError, TimeoutError, ValueError, termios.error) as error:
+        print(f'Clock not set ({error}); run cycling time-sync', flush=True)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def flasher_for(port, resolve, log_dir, environ=os.environ, chip='esp32s3') -> Flasher:
     """The visitor's page only for the bridged port, so a second, local device in a bridged command stays local.
 
@@ -432,6 +450,8 @@ class Device:
             detail = ' '.join(f'{key}={info[key]}' for key in ('commit', 'protocol') if key in info)
             source = 'INFO' if reported else 'OTA selection (the maintenance image does not report its slot)'
             print(f'Running slot {NAMES[slot]} per {source}; {detail}')
+            if not maintenance:
+                set_clock(resolve, LOCAL / f'{time.time_ns()}-clock.log')
             return info
         problem = (
             f'did not answer INFO within {seconds} s'

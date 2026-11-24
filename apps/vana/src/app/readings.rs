@@ -667,17 +667,13 @@ impl Runtime {
     }
 }
 
-/// UTC now: Wi-Fi SNTP when it has synced since boot or sleep, else the
-/// receiver clock. SNTP goes first because it is there from a ride's start or
-/// not at all, while GNSS time shows up in nearly every outdoor ride. The
-/// source then changes mid-ride only if Wi-Fi appears mid-ride.
-fn utc_ms(network: network_time::Snapshot, receiver: Option<u64>) -> Option<u64> {
-    network
+fn utc_ms(clock: network_time::Snapshot, receiver: Option<u64>) -> Option<u64> {
+    clock
         .unix_seconds
         .and_then(|seconds| {
             seconds
                 .checked_mul(1_000)?
-                .checked_add(u64::from(network.millis))
+                .checked_add(u64::from(clock.millis))
         })
         .or(receiver)
 }
@@ -729,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn sntp_wins_and_the_receiver_fills_in() {
+    fn the_clock_wins_and_the_receiver_fills_in() {
         let synced = network_time::Snapshot {
             unix_seconds: Some(1_792_000_000),
             millis: 250,
@@ -738,9 +734,9 @@ mod tests {
         let receiver = Some(1_792_000_009_000);
         assert_eq!(utc_ms(synced, receiver), Some(1_792_000_000_250));
         assert_eq!(utc_ms(synced, None), Some(1_792_000_000_250));
-        let offline = network_time::Snapshot::default();
-        assert_eq!(utc_ms(offline, receiver), receiver);
-        assert_eq!(utc_ms(offline, None), None);
+        let unset = network_time::Snapshot::default();
+        assert_eq!(utc_ms(unset, receiver), receiver);
+        assert_eq!(utc_ms(unset, None), None);
     }
 
     #[test]

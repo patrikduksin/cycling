@@ -84,7 +84,6 @@ pub use power::{
 /// Observations recorded with each ride sample, beyond the radios VANA drives.
 pub struct Observations<'a, P, I> {
     pub position: &'a P,
-    /// UTC from Wi-Fi time synchronization, as the device clock reads now.
     pub network_time: firmware_services::network_time::Snapshot,
     /// Battery level source.
     pub input: &'a I,
@@ -144,6 +143,7 @@ pub struct Runtime {
     latency_clock: Option<fn() -> u64>,
     composition: composition::Composition,
     device: &'static crate::screens::Device,
+    clock_set: Option<firmware_services::network_time::Anchor>,
 }
 
 #[cfg(not(target_os = "none"))]
@@ -249,7 +249,24 @@ impl Runtime {
             latency_clock: None,
             composition: composition::Composition::new(device),
             device,
+            clock_set: None,
         }
+    }
+
+    /// UTC in ms is `unix_ms` at `now`, as a host or the phone says;
+    /// composition offers it to the device clock before the next pass.
+    /// False, and nothing set, outside `network_time::PLAUSIBLE_MS`.
+    pub fn set_clock(&mut self, unix_ms: u64, now: u64) -> bool {
+        use firmware_services::network_time::{Anchor, PLAUSIBLE_MS, Source};
+        let settable = PLAUSIBLE_MS.contains(&unix_ms);
+        if settable {
+            self.clock_set = Some(Anchor::new(Source::Set, unix_ms, now));
+        }
+        settable
+    }
+
+    pub fn take_clock_set(&mut self) -> Option<firmware_services::network_time::Anchor> {
+        self.clock_set.take()
     }
 
     /// The rider's alert choices, from the preferences record; the defaults

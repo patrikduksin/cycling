@@ -1,4 +1,6 @@
-//! Portable SNTP validation and a UTC anchor advanced from monotonic time.
+//! Portable SNTP validation and the device clock: a UTC anchor advanced from
+//! monotonic time, fed by SNTP, the receiver and a set time, and kept across
+//! resets as RTC ticks.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -10,6 +12,12 @@ pub struct Timestamp {
     pub unix_seconds: u32,
     pub millis: u16,
     pub stratum: u8,
+}
+
+impl Timestamp {
+    pub fn unix_ms(self) -> u64 {
+        u64::from(self.unix_seconds) * 1_000 + u64::from(self.millis)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,44 +155,276 @@ impl Default for Snapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Source {
+    /// A host or the phone said what time it is.
+    Set,
+    Gnss,
+    Sntp,
+}
+
+impl Source {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Set => "set",
+            Self::Gnss => "gnss",
+            Self::Sntp => "sntp",
+        }
+    }
+
+    const fn code(self) -> u32 {
+        match self {
+            Self::Set => 1,
+            Self::Gnss => 2,
+            Self::Sntp => 3,
+        }
+    }
+
+    const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            1 => Some(Self::Set),
+            2 => Some(Self::Gnss),
+            3 => Some(Self::Sntp),
+            _ => None,
+        }
+    }
+}
+
+/// UTC as a source gave it, the uptime it was true at, and how long ago the
+/// source gave it then: a resumed anchor is older than this boot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Anchor {
+    pub unix_ms: u64,
+    pub uptime_ms: u64,
+    pub age_ms: u64,
+    pub source: Source,
+}
+
+/// UTC from 2026 up to 2100, in ms: a set time or a kept copy outside it
+/// is a wrong clock or corrupt memory.
+pub const PLAUSIBLE_MS: core::ops::Range<u64> = 1_767_225_600_000..4_102_444_800_000;
+
+impl Anchor {
+    pub const fn new(source: Source, unix_ms: u64, uptime_ms: u64) -> Self {
+        Self {
+            unix_ms,
+            uptime_ms,
+            age_ms: 0,
+            source,
+        }
+    }
+
+    /// The same clock, anchored at `now_ms` of uptime.
+    pub fn at(self, now_ms: u64) -> Self {
+        let elapsed_ms = now_ms.saturating_sub(self.uptime_ms);
+        Self {
+            unix_ms: self.unix_ms.saturating_add(elapsed_ms),
+            uptime_ms: now_ms,
+            age_ms: self.age_ms.saturating_add(elapsed_ms),
+            source: self.source,
+        }
+    }
+
+    pub fn snapshot(self, now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
+        let now = self.at(now_ms);
+        let current_seconds = now.unix_ms / 1_000;
+        let local_minutes = ((current_seconds / 60) as i64 + i64::from(timezone_minutes))
+            .rem_euclid(24 * 60) as u16;
+        Snapshot {
+            unix_seconds: Some(current_seconds),
+            millis: (now.unix_ms % 1_000) as u16,
+            local_minutes: Some(local_minutes),
+            age_ms: Some(now.age_ms),
+            status: if now.age_ms >= STALE_AFTER_MS {
+                Status::Stale
+            } else if !online {
+                Status::Offline
+            } else {
+                Status::Fresh
+            },
+        }
+    }
+}
+
+/// How far a receiver's time may differ from the anchor it gave before it
+/// replaces it: its time is whole NMEA seconds stamped on arrival, so it
+/// wanders by a fraction of a second from one sentence to the next.
+const RECEIVER_TOLERANCE_MS: u64 = 1_000;
+
+/// The anchor to keep once `offer` arrives. A set time and SNTP always win:
+/// someone asked for the one, and the other is the best clock there is. A
+/// receiver's time replaces a set time, a stale anchor, or its own when it
+/// moved; it never overrules fresh SNTP.
+pub fn offered(current: Option<Anchor>, offer: Anchor) -> Option<Anchor> {
+    let takes = match (current, offer.source) {
+        (None, _) | (_, Source::Set | Source::Sntp) => true,
+        (Some(held), Source::Gnss) => {
+            let held = held.at(offer.uptime_ms);
+            match held.source {
+                Source::Set => true,
+                _ if held.age_ms >= STALE_AFTER_MS => true,
+                Source::Sntp => false,
+                Source::Gnss => held.unix_ms.abs_diff(offer.unix_ms) > RECEIVER_TOLERANCE_MS,
+            }
+        }
+    };
+    if takes { Some(offer) } else { current }
+}
+
+/// The RTC timer's ticks as microseconds, for a calibrated slow-clock
+/// `period` in microseconds with 19 fractional bits. Split so the product
+/// cannot overflow however long the timer has run.
+pub fn ticks_to_us(ticks: u64, period: u32) -> u64 {
+    const FRACTION: u32 = 19;
+    const MASK: u64 = (1 << FRACTION) - 1;
+    let period = u64::from(period);
+    (ticks >> FRACTION) * period + (((ticks & MASK) * period) >> FRACTION)
+}
+
+/// An anchor as RTC memory keeps it across a reset: UTC and its age at a
+/// reading of the RTC timer, which counts from power-on through resets and
+/// sleep. Kept as ticks, not microseconds, because each boot calibrates the
+/// slow clock again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Retained {
+    pub unix_ms: u64,
+    pub age_ms: u64,
+    pub source: Source,
+    pub rtc_ticks: u64,
+}
+
+pub const RETAINED_WORDS: usize = 8;
+const RETAINED_MAGIC: u32 = 0x434c_4b31;
+
+fn checksum(words: &[u32]) -> u32 {
+    words.iter().fold(0x811c_9dc5, |hash, word| {
+        (hash ^ word).wrapping_mul(0x0100_0193)
+    })
+}
+
+impl Retained {
+    /// The words to write; the last is the checksum, written last.
+    pub fn encode(self) -> [u32; RETAINED_WORDS] {
+        let mut words = [
+            RETAINED_MAGIC,
+            self.unix_ms as u32,
+            (self.unix_ms >> 32) as u32,
+            self.rtc_ticks as u32,
+            (self.rtc_ticks >> 32) as u32,
+            self.age_ms.min(u64::from(u32::MAX)) as u32,
+            self.source.code(),
+            0,
+        ];
+        words[RETAINED_WORDS - 1] = checksum(&words[..RETAINED_WORDS - 1]);
+        words
+    }
+
+    /// None for memory a power-on left, or a record torn by a reset.
+    pub fn decode(words: &[u32; RETAINED_WORDS]) -> Option<Self> {
+        if words[0] != RETAINED_MAGIC
+            || words[RETAINED_WORDS - 1] != checksum(&words[..RETAINED_WORDS - 1])
+        {
+            return None;
+        }
+        let unix_ms = u64::from(words[1]) | u64::from(words[2]) << 32;
+        if !PLAUSIBLE_MS.contains(&unix_ms) {
+            return None;
+        }
+        Some(Self {
+            unix_ms,
+            rtc_ticks: u64::from(words[3]) | u64::from(words[4]) << 32,
+            age_ms: u64::from(words[5]),
+            source: Source::from_code(words[6])?,
+        })
+    }
+
+    /// The anchor at `now_ms` of this boot's uptime, the RTC timer reading
+    /// `rtc_ticks` at a slow-clock `period`. None when the timer is behind
+    /// the record: power-on or an RTC-module reset restarted it.
+    pub fn resume(self, rtc_ticks: u64, period: u32, now_ms: u64) -> Option<Anchor> {
+        let elapsed_ms = ticks_to_us(rtc_ticks.checked_sub(self.rtc_ticks)?, period) / 1_000;
+        Some(Anchor {
+            unix_ms: self.unix_ms.saturating_add(elapsed_ms),
+            uptime_ms: now_ms,
+            age_ms: self.age_ms.saturating_add(elapsed_ms),
+            source: self.source,
+        })
+    }
+}
+
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
-static UTC_SECONDS: AtomicU32 = AtomicU32::new(0);
-static UTC_MILLIS: AtomicU32 = AtomicU32::new(0);
-static MONO_SECONDS: AtomicU32 = AtomicU32::new(0);
-static MONO_MILLIS: AtomicU32 = AtomicU32::new(0);
-static AVAILABLE: AtomicBool = AtomicBool::new(false);
+static UNIX_LOW: AtomicU32 = AtomicU32::new(0);
+static UNIX_HIGH: AtomicU32 = AtomicU32::new(0);
+static UPTIME_LOW: AtomicU32 = AtomicU32::new(0);
+static UPTIME_HIGH: AtomicU32 = AtomicU32::new(0);
+static AGE_MS: AtomicU32 = AtomicU32::new(0);
+static SOURCE: AtomicU32 = AtomicU32::new(0);
 static SYNCING: AtomicBool = AtomicBool::new(false);
 
 pub fn set_syncing(syncing: bool) {
     SYNCING.store(syncing, Ordering::Relaxed);
 }
 
-/// Notify the clock owner after a device interval that stopped monotonic time.
-///
-/// An RTC duration is evidence of missing elapsed time, not a new network time
-/// synchronization. Invalidate the old anchor instead of publishing UTC that is
-/// behind by the sleep interval. A later validated SNTP response restores UTC.
-/// Call once before readmitting consumers and serialize with `update`, as for
-/// other anchor writes on the device's single executor.
-pub fn sleep_elapsed(rtc_elapsed_us: u64, uptime_elapsed_us: u64) {
-    if rtc_elapsed_us <= uptime_elapsed_us {
-        return;
-    }
+/// Changes with every anchor write, for an owner that copies the anchor out.
+pub fn generation() -> u32 {
+    SEQUENCE.load(Ordering::Acquire)
+}
+
+fn store(anchor: Anchor) {
     SEQUENCE.fetch_add(1, Ordering::AcqRel);
-    AVAILABLE.store(false, Ordering::Relaxed);
-    SYNCING.store(false, Ordering::Relaxed);
+    UNIX_LOW.store(anchor.unix_ms as u32, Ordering::Relaxed);
+    UNIX_HIGH.store((anchor.unix_ms >> 32) as u32, Ordering::Relaxed);
+    UPTIME_LOW.store(anchor.uptime_ms as u32, Ordering::Relaxed);
+    UPTIME_HIGH.store((anchor.uptime_ms >> 32) as u32, Ordering::Relaxed);
+    AGE_MS.store(
+        anchor.age_ms.min(u64::from(u32::MAX)) as u32,
+        Ordering::Relaxed,
+    );
+    SOURCE.store(anchor.source.code(), Ordering::Relaxed);
     SEQUENCE.fetch_add(1, Ordering::Release);
 }
 
-pub fn update(timestamp: Timestamp, now_ms: u64) {
-    SEQUENCE.fetch_add(1, Ordering::AcqRel);
-    UTC_SECONDS.store(timestamp.unix_seconds, Ordering::Relaxed);
-    UTC_MILLIS.store(u32::from(timestamp.millis), Ordering::Relaxed);
-    MONO_SECONDS.store((now_ms / 1_000) as u32, Ordering::Relaxed);
-    MONO_MILLIS.store((now_ms % 1_000) as u32, Ordering::Relaxed);
-    AVAILABLE.store(true, Ordering::Relaxed);
-    SEQUENCE.fetch_add(1, Ordering::Release);
-    SYNCING.store(false, Ordering::Relaxed);
+fn held() -> Option<Anchor> {
+    match clock() {
+        Clock::Anchored(anchor) => Some(anchor),
+        Clock::Unsynced { .. } => None,
+    }
+}
+
+pub fn offer(time: Anchor) {
+    let current = held();
+    if let Some(next) = offered(current, time)
+        && Some(next) != current
+    {
+        store(next);
+    }
+    if time.source == Source::Sntp {
+        SYNCING.store(false, Ordering::Relaxed);
+    }
+}
+
+/// The anchor a reset kept in RTC memory, before any source has spoken.
+pub fn resume(anchor: Anchor) {
+    if held().is_none() {
+        store(anchor);
+    }
+}
+
+/// Carry the anchor across a device interval that stopped monotonic time:
+/// the RTC kept counting, so UTC moves on by the time uptime missed. Call
+/// once before readmitting consumers.
+pub fn sleep_elapsed(rtc_elapsed_us: u64, uptime_elapsed_us: u64) {
+    let Some(anchor) = held() else {
+        return;
+    };
+    let missed_ms = rtc_elapsed_us.saturating_sub(uptime_elapsed_us) / 1_000;
+    if missed_ms > 0 {
+        store(Anchor {
+            unix_ms: anchor.unix_ms.saturating_add(missed_ms),
+            age_ms: anchor.age_ms.saturating_add(missed_ms),
+            ..anchor
+        });
+    }
 }
 
 pub fn snapshot(now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
@@ -192,37 +432,40 @@ pub fn snapshot(now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
 }
 
 pub fn clock() -> Clock {
-    let (utc_seconds, utc_millis, mono_seconds, mono_millis, available) = loop {
+    let (unix_low, unix_high, uptime_low, uptime_high, age_ms, source) = loop {
         let before = SEQUENCE.load(Ordering::Acquire);
         if before & 1 != 0 {
             core::hint::spin_loop();
             continue;
         }
         let values = (
-            UTC_SECONDS.load(Ordering::Relaxed),
-            UTC_MILLIS.load(Ordering::Relaxed),
-            MONO_SECONDS.load(Ordering::Relaxed),
-            MONO_MILLIS.load(Ordering::Relaxed),
-            AVAILABLE.load(Ordering::Relaxed),
+            UNIX_LOW.load(Ordering::Relaxed),
+            UNIX_HIGH.load(Ordering::Relaxed),
+            UPTIME_LOW.load(Ordering::Relaxed),
+            UPTIME_HIGH.load(Ordering::Relaxed),
+            AGE_MS.load(Ordering::Relaxed),
+            SOURCE.load(Ordering::Relaxed),
         );
         if before == SEQUENCE.load(Ordering::Acquire) {
             break values;
         }
     };
-    if !available {
+    let Some(source) = Source::from_code(source) else {
         return Clock::Unsynced {
             syncing: SYNCING.load(Ordering::Relaxed),
         };
-    }
+    };
     Clock::Anchored(Anchor {
-        unix_ms: u64::from(utc_seconds) * 1_000 + u64::from(utc_millis),
-        uptime_ms: u64::from(mono_seconds) * 1_000 + u64::from(mono_millis),
+        unix_ms: u64::from(unix_low) | u64::from(unix_high) << 32,
+        uptime_ms: u64::from(uptime_low) | u64::from(uptime_high) << 32,
+        age_ms: u64::from(age_ms),
+        source,
     })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Clock {
-    /// Never synchronized, or invalidated by a sleep.
+    /// Never given a time since power-on.
     Unsynced {
         syncing: bool,
     },
@@ -236,10 +479,16 @@ impl Clock {
             Self::Anchored(anchor) => anchor.snapshot(now_ms, timezone_minutes, online),
         }
     }
+
+    pub fn source(self) -> Option<Source> {
+        match self {
+            Self::Unsynced { .. } => None,
+            Self::Anchored(anchor) => Some(anchor.source),
+        }
+    }
 }
 
 impl Snapshot {
-    /// No UTC: never synchronized, or invalidated by a sleep.
     pub fn unsynced(syncing: bool) -> Self {
         Self {
             status: if syncing {
@@ -248,37 +497,6 @@ impl Snapshot {
                 Status::Unavailable
             },
             ..Self::default()
-        }
-    }
-}
-
-/// UTC as a synchronization found it, and the uptime it was taken at.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Anchor {
-    pub unix_ms: u64,
-    pub uptime_ms: u64,
-}
-
-impl Anchor {
-    /// UTC at `now_ms` of uptime, advanced from the anchor by monotonic time.
-    pub fn snapshot(self, now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
-        let elapsed_ms = now_ms.saturating_sub(self.uptime_ms);
-        let total_ms = self.unix_ms + elapsed_ms;
-        let current_seconds = total_ms / 1_000;
-        let local_minutes = ((current_seconds / 60) as i64 + i64::from(timezone_minutes))
-            .rem_euclid(24 * 60) as u16;
-        Snapshot {
-            unix_seconds: Some(current_seconds),
-            millis: (total_ms % 1_000) as u16,
-            local_minutes: Some(local_minutes),
-            age_ms: Some(elapsed_ms),
-            status: if elapsed_ms >= STALE_AFTER_MS {
-                Status::Stale
-            } else if !online {
-                Status::Offline
-            } else {
-                Status::Fresh
-            },
         }
     }
 }
@@ -389,14 +607,7 @@ mod tests {
     #[test]
     fn advances_utc_offline_and_marks_old_anchor_stale() {
         let _guard = CLOCK_TEST.lock().unwrap();
-        update(
-            Timestamp {
-                unix_seconds: 1_700_000_000,
-                millis: 250,
-                stratum: 2,
-            },
-            9_900,
-        );
+        offer(Anchor::new(Source::Sntp, 1_700_000_000_250, 9_900));
         let fresh = snapshot(11_150, -180, true);
         assert_eq!(fresh.unix_seconds, Some(1_700_000_001));
         assert_eq!(fresh.millis, 500);
@@ -410,57 +621,182 @@ mod tests {
     }
 
     #[test]
-    fn sleep_gap_invalidates_utc_until_a_new_validated_anchor() {
+    fn a_sleep_moves_utc_on_by_the_time_uptime_missed() {
         let _guard = CLOCK_TEST.lock().unwrap();
-        let timestamp = Timestamp {
-            unix_seconds: 1_700_000_000,
-            millis: 250,
-            stratum: 2,
-        };
-        update(timestamp, 1_000);
-        set_syncing(true);
-        sleep_elapsed(10_000_000, 500);
-        for online in [false, true] {
-            let clock = snapshot(1_001, 0, online);
-            assert_eq!(clock.status, Status::Unavailable);
-            assert_eq!(clock.unix_seconds, None);
-            assert_eq!(clock.local_minutes, None);
-            assert_eq!(clock.age_ms, None);
-        }
-        // Connectivity alone cannot make the old UTC anchor valid again.
-        set_syncing(true);
-        assert_eq!(snapshot(2_000, 0, true).status, Status::Syncing);
-        update(
-            Timestamp {
-                unix_seconds: timestamp.unix_seconds + 10,
-                ..timestamp
-            },
-            2_000,
-        );
-        let clock = snapshot(3_000, 0, true);
+        offer(Anchor::new(Source::Sntp, 1_700_000_000_250, 1_000));
+        sleep_elapsed(10_000_000, 500_000);
+        let clock = snapshot(1_000, 0, true);
+        assert_eq!(clock.unix_seconds, Some(1_700_000_009));
+        assert_eq!(clock.millis, 750);
+        assert_eq!(clock.age_ms, Some(9_500));
         assert_eq!(clock.status, Status::Fresh);
-        assert_eq!(clock.unix_seconds, Some(1_700_000_011));
-        assert_eq!(clock.millis, 250);
-        assert_eq!(clock.age_ms, Some(1_000));
     }
 
     #[test]
-    fn entry_without_a_missing_uptime_interval_keeps_the_anchor() {
+    fn a_sleep_that_uptime_kept_up_with_leaves_the_anchor() {
         let _guard = CLOCK_TEST.lock().unwrap();
-        update(
-            Timestamp {
-                unix_seconds: 100,
-                millis: 0,
-                stratum: 2,
-            },
-            5_000,
-        );
+        offer(Anchor::new(Source::Sntp, 100_000, 5_000));
         for (rtc, uptime) in [(0, 0), (500, 500), (400, 500)] {
             sleep_elapsed(rtc, uptime);
             let clock = snapshot(6_000, 0, true);
             assert_eq!(clock.unix_seconds, Some(101));
             assert_eq!(clock.age_ms, Some(1_000));
-            assert_eq!(clock.status, Status::Fresh);
         }
+    }
+
+    #[test]
+    fn a_set_time_yields_to_the_receiver_and_sntp_but_not_back() {
+        let set = Anchor::new(Source::Set, 1_000_000, 0);
+        let gnss = Anchor::new(Source::Gnss, 2_000_000, 1_000);
+        let sntp = Anchor::new(Source::Sntp, 3_000_000, 2_000);
+        assert_eq!(offered(None, set), Some(set));
+        assert_eq!(
+            offered(Some(set), gnss),
+            Some(gnss),
+            "receiver over a set time"
+        );
+        assert_eq!(
+            offered(Some(gnss), sntp),
+            Some(sntp),
+            "SNTP over the receiver"
+        );
+        let later = Anchor::new(Source::Gnss, 4_000_000, 3_000);
+        assert_eq!(
+            offered(Some(sntp), later),
+            Some(sntp),
+            "the receiver never overrules SNTP"
+        );
+        assert_eq!(offered(Some(sntp), set), Some(set), "someone asked");
+    }
+
+    #[test]
+    fn the_receiver_replaces_its_own_anchor_only_when_it_moved() {
+        let gnss = Anchor::new(Source::Gnss, 2_000_000, 1_000);
+        let agrees = Anchor::new(Source::Gnss, 2_060_400, 61_000);
+        assert_eq!(offered(Some(gnss), agrees), Some(gnss), "no write each fix");
+        let a_week_on = Anchor::new(Source::Gnss, 2_000_000 + 7 * 86_400_000, 61_000);
+        assert_eq!(offered(Some(gnss), a_week_on), Some(a_week_on));
+    }
+
+    #[test]
+    fn the_receiver_replaces_a_stale_anchor() {
+        let sntp = Anchor::new(Source::Sntp, 3_000_000, 0);
+        let fix = Anchor::new(Source::Gnss, 9_000_000, STALE_AFTER_MS);
+        assert_eq!(offered(Some(sntp), fix), Some(fix));
+        let resumed = Anchor {
+            age_ms: STALE_AFTER_MS,
+            ..Anchor::new(Source::Gnss, 3_000_000, 0)
+        };
+        let fix = Anchor::new(Source::Gnss, 3_000_100, 100);
+        assert_eq!(
+            offered(Some(resumed), fix),
+            Some(fix),
+            "age before the reset counts"
+        );
+    }
+
+    #[test]
+    fn the_global_clock_applies_the_same_precedence() {
+        let _guard = CLOCK_TEST.lock().unwrap();
+        offer(Anchor::new(Source::Set, 1_000_000, 0));
+        offer(Anchor::new(Source::Gnss, 5_000_000, 0));
+        assert_eq!(clock().source(), Some(Source::Gnss));
+        assert_eq!(snapshot(0, 0, true).unix_seconds, Some(5_000));
+        let before = generation();
+        offer(Anchor::new(Source::Gnss, 5_001_200, 1_000));
+        assert_eq!(generation(), before, "an ignored fix writes nothing");
+        resume(Anchor::new(Source::Set, 1, 0));
+        assert_eq!(
+            clock().source(),
+            Some(Source::Gnss),
+            "a source beat the reset's copy"
+        );
+    }
+
+    #[test]
+    fn rtc_ticks_convert_at_the_calibrated_period_without_overflow() {
+        let period = (7.352_941 * f64::from(1 << 19)) as u32;
+        assert_eq!(ticks_to_us(136_000, period) / 1_000, 999);
+        let years: u64 = 32_768 * 10 * 365 * 86_400;
+        assert!(years.checked_mul(16_000_000).is_none());
+        assert_eq!(
+            ticks_to_us(years, 16_000_000),
+            10 * 365 * 86_400 * 1_000_000
+        );
+    }
+
+    #[test]
+    fn a_retained_anchor_resumes_with_the_rtc_time_since_it_was_kept() {
+        let period = 8 << 19;
+        let kept = Retained {
+            unix_ms: 1_793_521_800_000,
+            age_ms: 60_000,
+            source: Source::Sntp,
+            rtc_ticks: 1_000_000,
+        };
+        let decoded = Retained::decode(&kept.encode()).unwrap();
+        assert_eq!(decoded, kept);
+        let anchor = decoded.resume(1_250_000, period, 700).unwrap();
+        assert_eq!(
+            anchor,
+            Anchor {
+                unix_ms: 1_793_521_802_000,
+                uptime_ms: 700,
+                age_ms: 62_000,
+                source: Source::Sntp,
+            }
+        );
+        assert_eq!(
+            anchor.snapshot(1_700, 0, true).unix_seconds,
+            Some(1_793_521_803)
+        );
+    }
+
+    #[test]
+    fn the_largest_anchor_saturates_instead_of_overflowing() {
+        let end = Anchor {
+            age_ms: u64::MAX,
+            ..Anchor::new(Source::Gnss, u64::MAX, 0)
+        };
+        assert_eq!(end.at(1).unix_ms, u64::MAX);
+        assert_eq!(end.snapshot(1, 0, true).age_ms, Some(u64::MAX));
+    }
+
+    #[test]
+    fn a_power_loss_leaves_nothing_to_resume() {
+        let kept = Retained {
+            unix_ms: 1_793_521_800_000,
+            age_ms: 0,
+            source: Source::Set,
+            rtc_ticks: 5_000_000,
+        };
+        assert_eq!(
+            kept.resume(4_999_999, 8 << 19, 0),
+            None,
+            "the timer restarted"
+        );
+        let words = kept.encode();
+        for index in 0..RETAINED_WORDS {
+            let mut torn = words;
+            torn[index] ^= 1 << 7;
+            assert_eq!(Retained::decode(&torn), None, "word {index}");
+        }
+        assert_eq!(Retained::decode(&[0; RETAINED_WORDS]), None);
+        let mut dropped = words;
+        dropped[RETAINED_WORDS - 1] = 0;
+        assert_eq!(
+            Retained::decode(&dropped),
+            None,
+            "a dropped copy stays dropped"
+        );
+        let corrupt = Retained {
+            unix_ms: u64::MAX - 1,
+            ..kept
+        };
+        assert_eq!(
+            Retained::decode(&corrupt.encode()),
+            None,
+            "nothing to resume into a boot loop"
+        );
     }
 }

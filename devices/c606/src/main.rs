@@ -110,6 +110,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     device::stack::paint();
     device::activity::name_current(Task::Main).await;
     let board = device::board::start(spawner).await;
+    device::drivers::clock_rtc::restore(embassy_time::Instant::now().as_millis());
     let boot = esp_hal::rng::Rng::new().random();
     logging::init(boot);
     logging::metadata(false);
@@ -485,6 +486,7 @@ async fn console(
         device::activity::pass_began();
         device::capabilities::io::pass_began();
         let now = embassy_time::Instant::now().as_millis();
+        device::drivers::clock_rtc::keep(now);
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         bringup.poll(now, world.ble_mut());
         stage_ended(Stage::Bringup);
@@ -647,6 +649,7 @@ fn traced_pass(
         let position = world.position(trace, now);
         let (physical, light, fitted) = world.sensed(trace, now);
         let online = device::drivers::wifi::online();
+        offer_times(sdk, &position, now);
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
         trace.network_time(network_time, now);
         let token = sdk.phone_status().map(|status| status.token);
@@ -724,6 +727,20 @@ fn traced_pass(
 /// What a host call may take of the main stack below WAMR's last check of
 /// it: a script call stops rather than go nearer the stack's end.
 const SCRIPT_STACK_GUARD: usize = 4096;
+
+fn offer_times(
+    sdk: &mut vana::app::Runtime,
+    position: &impl device_api::positioning::Positioning,
+    now: u64,
+) {
+    use firmware_services::network_time::{Anchor, Source, offer};
+    if let Some(set) = sdk.take_clock_set() {
+        offer(set);
+    }
+    if let Some(utc_ms) = position.snapshot(now).and_then(|fix| fix.gps.utc_ms) {
+        offer(Anchor::new(Source::Gnss, utc_ms, now));
+    }
+}
 
 /// Script tiles' runtime (#496): WAMR's pool and a 64 KB page for each
 /// instance, in PSRAM. Without them no script tile is accepted, and the

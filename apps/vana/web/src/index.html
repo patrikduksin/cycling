@@ -950,9 +950,14 @@ function clearRow() {
 }
 
 let rides = [];
+let clockSent = false;
 async function load() {
   try {
     // One request at a time: the device serves one connection.
+    if (!clockSent) {
+      clockSent = true;
+      await api(`/api/time?unix_ms=${Date.now()}`, { method: 'PUT' }).catch(() => {});
+    }
     const status = await api('/api/status');
     const list = await api('/api/activities');
     const course = await api('/api/course').catch(() => null);

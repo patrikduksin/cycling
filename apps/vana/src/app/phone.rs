@@ -20,7 +20,8 @@
 //! lists the uploads and `DELETE ?file=` removes one. On a volatile internal
 //! journal, a FIT file of a ride `app::sync` protects carries an `X-Receipt`;
 //! `POST /api/synced` quotes it with the file's CRC to confirm the ride, and
-//! `DELETE /api/activities` clears the journal. Each service step
+//! `DELETE /api/activities` clears the journal. `PUT /api/time?unix_ms=` sets
+//! the device clock from the phone's. Each service step
 //! does a bounded amount of media reads, reads at most `UPLOAD_READS` pieces
 //! of a body and never writes more output than the transport has room for.
 
@@ -656,7 +657,7 @@ impl Runtime {
                 session.last_request_ms = now;
                 session.status.requests += 1;
             }
-            self.route(&request, ap, bulk);
+            self.route(&request, ap, bulk, now);
         }
         self.progress(server, store, bulk, now);
     }
@@ -682,7 +683,13 @@ impl Runtime {
         work.job = Job::Text { id, at: 0 };
     }
 
-    fn route(&mut self, request: &Request, ap: &mut impl AccessPoint, bulk: &mut impl ReadWrite) {
+    fn route(
+        &mut self,
+        request: &Request,
+        ap: &mut impl AccessPoint,
+        bulk: &mut impl ReadWrite,
+        now: u64,
+    ) {
         let id = request.id;
         let path = request.path.as_str();
         match (request.method, path) {
@@ -743,6 +750,7 @@ impl Runtime {
             (Method::Put | Method::Post, "/api/workouts") => self.start_workout(request),
             (Method::Delete, "/api/workouts") => self.delete_workout(request, bulk),
             (Method::Post, "/api/synced") => self.synced(request),
+            (Method::Put | Method::Post, "/api/time") => self.set_time(request, now),
             _ if path == "/api/screens" || path.starts_with("/api/screens/") => {
                 self.route_screens(request);
             }
@@ -777,6 +785,15 @@ impl Runtime {
             }
             (Method::Options, _) => self.reply(id, 204, None),
             _ => self.reply(id, 404, Some(r#"{"error":"not_found"}"#)),
+        }
+    }
+
+    fn set_time(&mut self, request: &Request, now: u64) {
+        let unix_ms = query_value(&request.query, "unix_ms").and_then(|v| v.parse::<u64>().ok());
+        if unix_ms.is_some_and(|unix_ms| self.set_clock(unix_ms, now)) {
+            self.reply(request.id, 204, None);
+        } else {
+            self.reply(request.id, 400, Some(r#"{"error":"unix_ms"}"#));
         }
     }
 

@@ -152,6 +152,7 @@ def test_an_unsaved_ride_is_kept_once_and_then_downloads_plainly():
     run = page(VOLATILE, [ride(unsaved=True)], click=2)
     assert run['shown'] == [{'tag': 'BUTTON', 'href': None, 'download': None}]
     assert [r for r in run['requests'] if not r.startswith('GET')] == [
+        'PUT /api/time',
         'FETCH /api/activities/i1-1.fit',
         'POST /api/synced',
     ], 'the second download is not acknowledged again'

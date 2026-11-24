@@ -484,7 +484,7 @@ impl Runtime {
             Row::AutoLap => options.auto_lap = after(&AUTO_LAP, options.auto_lap),
             Row::TimeZone => options.zone = after(&ZONES, options.zone),
             Row::WheelMode => options.wheel.manual = !options.wheel.manual,
-            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap => {
+            Row::PageLap | Row::PageClimb | Row::PageMap => {
                 if let Some(page) = row.ride_page() {
                     options.deck = options.deck.toggled(page);
                 }

@@ -919,7 +919,6 @@ mod tests {
 
     #[test]
     fn the_page_reads_the_steps_target() {
-        let slots = crate::screens::ride::slots::Slots::default();
-        assert_eq!(RidePage::Workout.readings(slots), None);
+        assert_eq!(RidePage::Workout.readings(), None);
     }
 }

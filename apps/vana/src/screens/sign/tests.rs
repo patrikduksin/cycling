@@ -42,11 +42,21 @@ fn signs() -> [Sign; 10] {
 
 const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
 
-/// The chip's box on the main page of `device`, on a course.
+/// The box the old main page's tree gave the chip on `device`; the
+/// Stats page has no chip tile yet, so the chip is placed here alone.
 fn main_chip(radar: bool, device: &Device) -> Rect {
-    let flags = crate::screens::ride::main_flags(true, radar, false, false);
-    let main = crate::screens::ride::main_laid(device, Default::default(), flags);
-    crate::screens::ride::main_chip(&main).unwrap()
+    let at = &device.scaled;
+    let left = if radar {
+        crate::screens::ride::radar_columns(at).right
+    } else {
+        0
+    } + at.unit(10);
+    Rect {
+        left,
+        top: at.unit(71),
+        right: at.panel.width - at.unit(8),
+        bottom: at.unit(99),
+    }
 }
 
 fn placed(sign: Sign, form: SignForm, radar: bool, device: &Device) -> Option<Placed> {
@@ -193,7 +203,7 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
     let at_rest = chip(Glyph::Right, 900);
     let banner = turn(Glyph::Right, 120);
     assert_eq!(form(RidePage::Main, at_rest), Some(SignForm::Chip));
-    for page in [RidePage::Main, RidePage::Stats, RidePage::Climb] {
+    for page in [RidePage::Main, RidePage::Climb] {
         assert_eq!(form(page, banner), Some(SignForm::Banner), "{page:?}");
         assert_eq!(form(page, off(80)), Some(SignForm::Banner), "{page:?}");
         assert_eq!(
@@ -203,7 +213,7 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
         );
         assert_eq!(form(page, Sign::None), None, "{page:?}");
     }
-    for page in [RidePage::Stats, RidePage::Climb, RidePage::Lap] {
+    for page in [RidePage::Climb, RidePage::Lap] {
         assert_eq!(form(page, at_rest), None, "{page:?}");
     }
     assert_eq!(form(RidePage::Lap, banner), None);
@@ -245,7 +255,7 @@ fn painted_signs_match_the_per_pixel_reference() {
 
 #[test]
 fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
-    for page in [RidePage::Main, RidePage::Stats, RidePage::Climb] {
+    for page in [RidePage::Main, RidePage::Climb] {
         assert_eq!(
             form(page, Sign::TurnAround),
             Some(SignForm::Banner),
@@ -282,12 +292,7 @@ fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
 fn every_ride_page_keeps_its_layout_under_a_sign_on_every_panel() {
     for device in ALL {
         for radar in [false, true] {
-            for page in [
-                RidePage::Main,
-                RidePage::Stats,
-                RidePage::Climb,
-                RidePage::Map,
-            ] {
+            for page in [RidePage::Main, RidePage::Climb, RidePage::Map] {
                 for sign in signs() {
                     let mut view = View::new(Page::Ride, 0, None);
                     view.device = device;

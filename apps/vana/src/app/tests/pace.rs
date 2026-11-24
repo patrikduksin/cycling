@@ -7,9 +7,7 @@ use crate::app::cues::Cue;
 use crate::app::navigation::To;
 use crate::app::pace::{BUSY_REST_MS, STILL_REST_MS};
 use crate::app::presentation::MOTION_FRAME_MS;
-use crate::compose::data::Metric as Reading;
 use crate::ride::log::Status;
-use crate::screens::ride::slots::Slots;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, POWER};
 use device_api::input::Point;
@@ -108,7 +106,7 @@ fn a_recording_ride_rests_until_its_next_frame() {
 }
 
 #[test]
-fn readings_gliding_on_the_ride_page_rest_until_the_next_glide_frame() {
+fn a_new_reading_on_the_stats_page_jumps_and_asks_for_no_glide_frame() {
     let (mut runtime, mut screen, mut radio, mut journal) = ride_drawn(NOW + 100);
     let mut heart = |runtime: &mut Runtime, screen: &mut Screen, bpm, now| {
         radio.data(HEART_RATE, [0, 0, 0, 0, 0, 0, 0, bpm], now);
@@ -117,14 +115,11 @@ fn readings_gliding_on_the_ride_page_rest_until_the_next_glide_frame() {
     };
     heart(&mut runtime, &mut screen, 140, NOW + 150);
     heart(&mut runtime, &mut screen, 160, NOW + 400);
-    let glide = (NOW + 400..NOW + 500)
-        .find(|&now| screen.present(&mut runtime, &radio, now))
-        .expect("a glide frame");
-    assert_eq!(
-        rest(&runtime, &screen, glide),
-        MOTION_FRAME_MS,
-        "the heart rate glides to its sample"
+    assert!(
+        (NOW + 401..NOW + 500).all(|now| !screen.present(&mut runtime, &radio, now)),
+        "numbers never glide"
     );
+    assert_ne!(rest(&runtime, &screen, NOW + 450), MOTION_FRAME_MS);
 }
 
 #[test]
@@ -132,11 +127,10 @@ fn a_new_number_the_page_does_not_show_asks_for_no_more_frames() {
     let (mut journal, mut radio, mut screen) = (Journal::erased(), Radio::new(), Screen::new());
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     radio.connected(POWER, NOW - 1000);
-    runtime.preferences.options.main_slots = Slots {
-        left: Reading::Distance,
-        right: Reading::Kcal,
-    };
     runtime.navigation.go(To::Page(Page::Ride));
+    runtime
+        .navigation
+        .go(To::RidePage(crate::screens::ride::RidePage::Lap));
     let mut power = |runtime: &mut Runtime, screen: &mut Screen, event, rpm, now| {
         radio.data(POWER, [0x10, event, 0xff, rpm, 0, 0, 200, 0], now);
         tick(runtime, &mut journal, &mut radio, now);

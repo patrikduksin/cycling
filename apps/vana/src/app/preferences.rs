@@ -16,7 +16,7 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::{AppPreferences, Source};
 use firmware_shell::shell::{BrightnessChoice, Shell};
 
-const VERSION: u8 = 13;
+const VERSION: u8 = 14;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
@@ -1005,15 +1005,12 @@ mod tests {
                 .sunset_alert
         );
         assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        let stats_and_lap = Deck::default()
-            .toggled(RidePage::Stats)
-            .toggled(RidePage::Lap);
         let hidden = Options {
-            deck: stats_and_lap,
+            deck: Deck::default().toggled(RidePage::Lap),
             ..Options::default()
         };
         assert_eq!(hidden.encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [3, 5, 0xff, 0xff]);
+        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [2, 4, 0xff]);
         assert_eq!(Options::decode(&hidden.encode()), Some(hidden));
         const FLAGS: usize = 0;
         const AUTO_LAP: usize = 1;

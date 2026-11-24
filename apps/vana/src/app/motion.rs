@@ -328,19 +328,28 @@ mod tests {
         }
     }
 
+    /// Where the gliding graphics land on a page of the two zone gauges.
     fn on_screen(graphics: &Graphics) -> Pixels {
-        static MAIN: std::sync::LazyLock<crate::compose::builtin::Laid> =
+        use crate::compose::data::Effort;
+        use crate::compose::input::Controls;
+        use crate::compose::node::{Flags, Node, Size};
+        use crate::compose::registry::EFFORT;
+        static GAUGES: std::sync::LazyLock<crate::compose::builtin::Laids> =
             std::sync::LazyLock::new(|| {
-                crate::screens::ride::main_laid(
-                    &crate::screens::C606,
-                    crate::screens::ride::slots::Slots::default(),
-                    crate::compose::Flags::NONE,
-                )
+                let nodes = [
+                    Node::col(2, Size::grow(1)),
+                    Node::leaf(EFFORT, Effort::Power.id(), Size::CONTENT),
+                    Node::leaf(EFFORT, Effort::Heart.id(), Size::CONTENT),
+                ];
+                let bytes: std::vec::Vec<u8> = nodes.iter().flat_map(|node| node.bytes()).collect();
+                let at = &crate::screens::C606.scaled;
+                let screen = crate::compose::Screen::parse(0, &bytes, at, Controls::FREE).unwrap();
+                crate::compose::builtin::Laids::with_main(screen, Flags::NONE)
             });
         pixels(
             graphics,
             &TrainingProfile::default(),
-            Some(&MAIN),
+            Some(GAUGES.main()),
             &crate::screens::C606,
         )
     }

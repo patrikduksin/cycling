@@ -9912,7 +9912,7 @@ fn a_ride_paged_by_the_harness(sim: &mut Sim) {
         );
     }
     sim.advance(seconds(1));
-    expect_page(sim, "ride/stats");
+    expect_page(sim, "ride/lap");
     sim.advance(seconds(30));
     sim.stop_ride();
     sim.done();
@@ -9933,7 +9933,7 @@ fn a_ride_paged_by_a_press(sim: &mut Sim) {
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
     sim.advance(seconds(30));
     sim.press(Role::Move);
-    expect_page(sim, "ride/stats");
+    expect_page(sim, "ride/lap");
     sim.advance(seconds(30));
     sim.stop_ride();
     sim.done();

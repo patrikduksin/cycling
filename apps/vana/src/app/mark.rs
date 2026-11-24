@@ -319,7 +319,7 @@ mod tests {
         focus: Focus::Screen,
     };
     const NEXT: View = View {
-        ride: (RidePage::Stats, Follow::Idle),
+        ride: (RidePage::Lap, Follow::Idle),
         ..RIDE
     };
     const SETTINGS: View = View {

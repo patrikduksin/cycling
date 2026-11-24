@@ -1149,11 +1149,6 @@ const ZONE_ORANGE: u16 = ZONES[4];
 const ZONE_RED: u16 = ZONES[5];
 const ZONE_PURPLE: u16 = ZONES[6];
 
-fn pixel(sim: &Sim, x: usize, y: usize) -> u16 {
-    let screen = sim.screen();
-    screen.pixels[y * screen.width + x]
-}
-
 /// The main page's power (first) or heart rate (second) zone label, such as
 /// "Z4", and the zone colour filling its field.
 #[track_caller]

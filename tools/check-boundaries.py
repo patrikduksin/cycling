@@ -74,6 +74,16 @@ CONSOLE_RULE = ("device_api::console is the terminal task's byte pipe, outside t
                 'VANA and the shell reach the console only through commands')
 ALIAS_RULE = 'write `device_api::` in full in VANA and the shell: an alias hides a reach to the console'
 
+LINE_LIMIT = 2000
+GENERATED = 'Do not edit by hand.'
+LINE_CEILINGS = {
+    'tools/simulator/tests/ride_scenarios.rs': 8377,
+    'tools/simulator/tests/lifted_scenarios.rs': 6286,
+    'tools/simulator/src/session.rs': 2776,
+    'apps/vana/src/screens/ride/map/tests.rs': 2242,
+    'apps/vana/src/app/tests/recording.rs': 2111,
+}
+
 
 # A Rust lifetime is not a character literal; do not blank code between two
 # lifetimes such as &'a and &'b when scanning an import or qualified expression.
@@ -474,6 +484,22 @@ LINK = re.compile(r'\]\(([^)#\s]+)(?:#[^)]*)?\)')
 CODE_PATH = re.compile(r'`([\w.-]+/[\w./-]+)(?::[\d,-]+)?`')
 
 
+def oversized(text, path, ceilings=LINE_CEILINGS):
+    if GENERATED in text[:400]:
+        return []
+    lines = text.count('\n')
+    ceiling = ceilings.get(path)
+    if ceiling is None:
+        reason = f'over the {LINE_LIMIT}-line limit: split it by what each part owns' if lines > LINE_LIMIT else None
+    elif lines > ceiling:
+        reason = f'past its ceiling of {ceiling}: put the addition in a file of its own'
+    elif lines <= LINE_LIMIT:
+        reason = f'under the {LINE_LIMIT}-line limit: delete its LINE_CEILINGS entry'
+    else:
+        reason = None
+    return [(lines, f'{lines} lines, {reason}')] if reason else []
+
+
 def missing_references(text, path, exists):
     """Paths a document names that are not in the repository.
 
@@ -678,6 +704,11 @@ ui = { package = "firmware-shell", path = "../shell" }
                 '\n```\n[example](example.md)\n```')
     assert missing_references(document, 'docs/architecture.md', present) == [
         (1, 'links to gone.md, which does not exist'), (1, 'names apps/vana/src/gone.rs, which does not exist')]
+    long, listed = 'fn f() {}\n' * (LINE_LIMIT + 1), {'a.rs': LINE_LIMIT + 1}
+    assert oversized(long, 'a.rs', {}) and oversized(long + '\n', 'a.rs', listed), 'over the limit, past a ceiling'
+    assert not oversized(long, 'a.rs', listed) and not oversized('//! ' + GENERATED + '\n' + long, 'a.rs', {})
+    assert oversized('fn f() {}\n', 'a.rs', listed), 'a stale ceiling'
+    assert not oversized('fn f() {}\n' * LINE_LIMIT, 'a.rs', {})
 
 
 def main():
@@ -709,9 +740,12 @@ def main():
                             for line, reason in layer_findings(path.read_text(), path.relative_to(ROOT).as_posix()))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_stack_waits(path.read_text(), path.relative_to(ROOT).as_posix()))
-            for check in (unmarked_capabilities, console_reach, owner_reach, pixel_rects):
+            for check in (unmarked_capabilities, console_reach, owner_reach, pixel_rects, oversized):
                 failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                                 for line, reason in check(path.read_text(), path.relative_to(ROOT).as_posix()))
+    scanned = {path.relative_to(ROOT).as_posix() for path in paths}
+    failures.extend(f'{name}: LINE_CEILINGS names a file this check does not scan: delete its entry'
+                    for name in sorted(LINE_CEILINGS.keys() - scanned))
     tracked = set(subprocess.run(['git', 'ls-files'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines())
     tracked |= {parent.as_posix() for name in tracked for parent in Path(name).parents}
 
@@ -724,7 +758,7 @@ def main():
                         for line, reason in missing_references(path.read_text(), path.relative_to(ROOT).as_posix(), exists))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Boundaries, layers, the stack waiter, capabilities, the console, the device owners, laid-out screens and document references passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, layers, the stack waiter, capabilities, the console, the device owners, laid-out screens, file sizes and document references passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

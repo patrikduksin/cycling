@@ -8,7 +8,10 @@ Per-role model overrides for pstack skills. Each pstack SKILL.md names its defau
 
 `thermos reviewers` and `no-comments reviewer` list two models: run every reviewer those skills spawn once per listed model, in parallel, and merge the findings. Thermos is then four reviewers (bug/security and code quality, each on opus and on gpt-6.1-sol); no-comments is two.
 
+`mechanical worker` is this repository's own role. A nested worker whose task is a recipe runs on it, not on the `feature, refactoring` line: fixing tests after a rebase or a deletion, deleting code that is already named, trimming docs, converting call sites to a pattern that is already decided.
+
 feature, refactoring: opus @medium (opus @high when the task is hard)
+mechanical worker: opus @low
 bug-fix: opus @high
 perf-issue: opus @high
 hillclimb: opus @high

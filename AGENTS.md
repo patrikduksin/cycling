@@ -81,3 +81,24 @@ access or device tests. It owns the procedure; these rules always apply:
 - Autonomous issue or queue delivery: [deliver](.agents/skills/deliver/SKILL.md).
 - A rider's account of a ride problem, a battery that drains too fast, or a
   `.trace` file: [ride-trace](.agents/skills/ride-trace/SKILL.md).
+
+## Spending tokens
+
+Every tool call sends the whole conversation again, so a session costs its
+number of calls times its size.
+
+- Batch lookups. Send related searches and reads as parallel calls in one
+  message, or chain them in one command when one feeds the next. Do not spend
+  a turn on each `grep`.
+- Keep an agent to one slice: a unit a fresh agent finishes in about 100 tool
+  calls. Past that, commit, and hand the rest to a fresh agent with the
+  brief, the branch and what is left.
+- A long hunt through code you will not edit goes to an explore agent. Keep
+  its answer, not its output.
+- An owner that only waits on its workers reports and returns. Wait on a
+  build with a background command, not a `sleep` loop.
+- Merge what other streams build on first: a shared kit, and deletions. Then
+  fan out, four streams at most. A stream that needs an open PR stacks on its
+  branch.
+- New simulator scenarios go in a file per screen. `cycling check-boundaries`
+  holds the large files at their size.

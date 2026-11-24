@@ -4,6 +4,7 @@
 use super::tile::Component;
 
 mod climb_workout;
+mod kit;
 mod map_summary;
 mod primitive;
 mod ride;
@@ -14,7 +15,7 @@ mod statics;
 
 #[allow(unused_imports)]
 pub use {
-    climb_workout::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*, sensors::*,
+    climb_workout::*, kit::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*, sensors::*,
     statics::*,
 };
 
@@ -47,6 +48,7 @@ const FAMILIES: &[Family] = &[
     family(76, 80, scroll::SENSORS),
     family(80, 96, script::TILES),
     family(96, 112, sensors::TILES),
+    family(kit::FIELD, 124, kit::TILES),
 ];
 
 const _: () = {

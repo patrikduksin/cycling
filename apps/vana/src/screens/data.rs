@@ -183,6 +183,21 @@ impl Data for View<'_> {
         self.state == crate::ride::log::Status::Recording
     }
 
+    fn theme(&self) -> &'static super::theme::Theme {
+        if self.light {
+            &super::theme::LIGHT
+        } else {
+            &super::theme::DARK
+        }
+    }
+
+    fn status(&self) -> crate::compose::data::Status {
+        crate::compose::data::Status {
+            gps: self.gps,
+            battery: self.battery,
+        }
+    }
+
     fn page(&self) -> PageData<'_> {
         use super::workout::Page;
         match self.page {

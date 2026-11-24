@@ -16,6 +16,47 @@ paused screen, End ride, the ride summary, Settings, Connect phone, the brand
 reveal, the power sheets and the charge shown while the device is off on USB
 power. None draws in the 5 × 7 bitmap font.
 
+## The kit and its two looks
+
+#517 rebuilds every screen from one small set of tiles, the kit
+(`apps/vana/src/compose/kit`), drawn in one of two looks. The Stats ride
+page (`ride/main`) is the first screen built this way. Screens not yet
+rebuilt keep the rules in the rest of this document.
+
+- **Looks are data.** `screens/theme` holds one `Theme` of colours by role.
+  `DARK` (night) is main's palette. `LIGHT` (day) writes every word and
+  number black on white, and only bars, charts and zone or steepness fills
+  carry colour. `LAYOUT` holds the gaps, radii and faces that both looks
+  share, so a screen solves to the same boxes in both. The look in force
+  follows `Runtime::light()`.
+- **Tiles never name a value.** A kit tile reads its colours from
+  `data.theme()` in `prepare`, by role or by `Tone`. It reads every gap,
+  radius and face from `LAYOUT`.
+- **Kit pages paint unmapped.** A screen that `ScreenId::themed` names
+  fills the theme's background and paints its tiles without the light
+  transform of `look.rs`. The radar strip, the course sign, toasts and cues
+  still paint through the transform until they are rebuilt.
+- **A tile's setting byte names a spec.** Each kit tile has a spec table:
+  an enum with one fixed id per entry, whose `spec()` says what the entry
+  draws. A tree reads as data, for example `field(Field::Pwr)`. Each screen
+  family owns a block of ids in each table, and two entries with one id do
+  not compile.
+- **Tiles in the kit.** `field` is a ride-grid cell: a capital title that
+  carries the unit, with an optional symbol and zone tag, over 40 px
+  tabular digits, filled by zone or steepness with black ink, and a `%` at
+  two-thirds size on the baseline. `top line` shows the recording dot and
+  time, and the satellite and battery coloured by state. `rule` is a 1 px
+  line in the rule colour. `text` is one line of words or a metric, in
+  sentence case where the face has lowercase. `symbol` is one icon in a
+  tone. `item` is an Apple-Watch-style rounded button with a focus ring and
+  an action. `bar` shows zone segments or a level. `facts` is an
+  inset-grouped list. `kit::grid` lays out rows of cells with rules between
+  them that line up. Chart, slider, sheet, toast and cue come with the
+  screens that need them, in the same pattern.
+- **Faces.** `TAG` (800, 11 px capitals), `NOTE` (700, 13 px), `LABEL` (800,
+  15 px) and `HEADING` (800, 21 px) have lowercase. `DIGITS_40`, `DIGITS_26`
+  and `DIGITS_15` (700) are tabular numbers.
+
 ## Principles
 
 1. **Black is the layout.** There are no boxes, grid lines or dividers. Space

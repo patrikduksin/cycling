@@ -1096,7 +1096,7 @@ impl Runtime {
             }
             Row::MainLeft => write!(value, "{}", options.main_slots.left.name()),
             Row::MainRight => write!(value, "{}", options.main_slots.right.name()),
-            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap => {
+            Row::PageLap | Row::PageClimb | Row::PageMap => {
                 let shown = row.ride_page().is_none_or(|page| options.deck.shows(page));
                 if row == Row::PageClimb && !shown {
                     let _ = write!(note, "NO CLIMB POP-UP");

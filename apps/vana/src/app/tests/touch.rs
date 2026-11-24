@@ -51,7 +51,7 @@ fn swipes_change_ride_pages_and_touch_never_controls_the_ride() {
         &[(200, 150), (140, 152), (60, 155)],
         2000,
     );
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Stats);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Lap);
     touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], 3000);
     assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
     touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], 4000);

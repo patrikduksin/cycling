@@ -60,7 +60,7 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::{AppPreferences, Source};
 use firmware_shell::shell::{BrightnessChoice, Shell};
 
-const VERSION: u8 = 12;
+const VERSION: u8 = 13;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
@@ -793,8 +793,8 @@ mod tests {
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                12, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1
+                13, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 1, 0, 1
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -833,7 +833,7 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                12, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b110, 10, 2, 3, 1, 2, 5,
+                13, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b110, 10, 2, 3, 1, 4,
                 0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6,
                 2, 1, 0
             ]
@@ -846,7 +846,7 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 76);
+        assert_eq!(bytes.len(), 75);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
     }
@@ -1049,15 +1049,12 @@ mod tests {
                 .sunset_alert
         );
         assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        let stats_and_lap = Deck::default()
-            .toggled(RidePage::Stats)
-            .toggled(RidePage::Lap);
         let hidden = Options {
-            deck: stats_and_lap,
+            deck: Deck::default().toggled(RidePage::Lap),
             ..Options::default()
         };
         assert_eq!(hidden.encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [3, 5, 0xff, 0xff]);
+        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [2, 4, 0xff]);
         assert_eq!(Options::decode(&hidden.encode()), Some(hidden));
         const FLAGS: usize = 0;
         const AUTO_LAP: usize = 1;

@@ -1025,7 +1025,7 @@ mod tests {
     #[test]
     fn the_page_reads_grade_power_and_heart_rate() {
         let readings = crate::screens::ride::RidePage::Climb
-            .readings(crate::screens::ride::slots::Slots::default())
+            .readings()
             .unwrap();
         assert_eq!(readings.to_vec(), ["power", "hr", "grade"]);
     }

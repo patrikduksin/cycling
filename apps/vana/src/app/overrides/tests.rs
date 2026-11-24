@@ -437,7 +437,7 @@ fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
     let mut overrides = boot(&mut flash);
     let initial = Choices::default();
     let mut laids = Laids::new(&C606, initial, Flags::NONE, overrides.shown());
-    let identical: Vec<_> = main_tree(initial.main_slots)
+    let identical: Vec<_> = main_tree()
         .into_iter()
         .flat_map(|node| node.bytes())
         .collect();
@@ -476,6 +476,6 @@ fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
     laids.update(choices, Flags::NONE, overrides.shown());
     assert_eq!(
         laids.main().screen().tree().nodes(),
-        main_tree(choices.main_slots).as_slice()
+        main_tree().as_slice()
     );
 }

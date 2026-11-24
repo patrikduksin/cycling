@@ -18,7 +18,7 @@ use crate::screens::scaled::Scaled;
 use core::num::NonZeroU8;
 use core::ops::Range;
 
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 pub const RECORD: usize = firmware_services::storage::CAPACITY;
 pub const MAX_SCREENS: usize = 32;
 pub const MAX_LAYERS: usize = 8;

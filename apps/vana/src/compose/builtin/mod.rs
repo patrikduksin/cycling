@@ -40,7 +40,6 @@ mod ride_lap;
 mod ride_main;
 mod ride_map;
 mod ride_paused;
-mod ride_stats;
 mod ride_workout;
 mod sensors;
 mod settings;
@@ -61,7 +60,6 @@ pub use ride_main::{GLIDES, tree as main_tree};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ScreenId {
     RideMain,
-    RideStats,
     RideLap,
     RideClimb,
     RideWorkout,
@@ -125,10 +123,9 @@ pub enum Asks {
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 50;
+    pub const COUNT: usize = 49;
     pub const ALL: [Self; Self::COUNT] = [
         Self::RideMain,
-        Self::RideStats,
         Self::RideLap,
         Self::RideClimb,
         Self::RideWorkout,
@@ -200,7 +197,6 @@ impl ScreenId {
             Page::Ride if paused => Self::RidePaused,
             Page::Ride => match ride {
                 RidePage::Main => Self::RideMain,
-                RidePage::Stats => Self::RideStats,
                 RidePage::Lap => Self::RideLap,
                 RidePage::Climb => Self::RideClimb,
                 RidePage::Workout => Self::RideWorkout,
@@ -260,12 +256,17 @@ impl ScreenId {
         }
     }
 
+    /// The screens drawn from the kit, which paint in the theme's colours
+    /// rather than through the light transform.
+    pub const fn themed(self) -> bool {
+        matches!(self, Self::RideMain)
+    }
+
     /// The pages whose built-in must set MOVE to `Go::Next`.
     pub const fn deck(self) -> bool {
         matches!(
             self,
             Self::RideMain
-                | Self::RideStats
                 | Self::RideLap
                 | Self::RideClimb
                 | Self::RideWorkout
@@ -288,8 +289,6 @@ impl ScreenId {
     pub const fn builtin(self) -> &'static Builtin {
         match self {
             Self::RideMain => ride_main::BUILTIN,
-
-            Self::RideStats => ride_stats::BUILTIN,
 
             Self::RideLap => ride_lap::BUILTIN,
 

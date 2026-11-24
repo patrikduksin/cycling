@@ -25,6 +25,7 @@ pub mod sensors;
 pub mod settings;
 pub mod setup;
 pub mod sign;
+pub mod theme;
 pub mod touch;
 pub mod workout;
 pub mod workouts;

@@ -66,7 +66,7 @@ fn panels(view: &View) -> std::vec::Vec<(Rect, u16)> {
 
 #[test]
 fn rows_walk_every_section_in_order() {
-    for (sections, fields) in [(Sections::All, 36), (Sections::NoPhone, 35)] {
+    for (sections, fields) in [(Sections::All, 35), (Sections::NoPhone, 34)] {
         assert_eq!(sections.fields(), fields);
         for index in 0..fields {
             assert_eq!(sections.field(sections.row(index)), Some(index));

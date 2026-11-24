@@ -1,5 +1,8 @@
 use crate::ride::week::{DAYS, Weeks};
-use crate::screens::chrome::{ACCENT, CADENCE, GRADE, HEART, POWER, SECONDARY, SPEED, WHITE};
+use crate::screens::chrome::{
+    ACCENT, Battery, CADENCE, GRADE, Gps, HEART, POWER, SECONDARY, SPEED, WHITE,
+};
+use crate::screens::theme::{self, Theme};
 use crate::screens::ride::{self, ClimbRoad as Road, LapBar, Training};
 use crate::screens::workout::Text;
 use core::fmt::Write;
@@ -99,6 +102,21 @@ pub trait Data {
     fn page(&self) -> PageData<'_> {
         PageData::None
     }
+    /// The look in force, whose colours a kit tile draws in.
+    fn theme(&self) -> &'static Theme {
+        &theme::DARK
+    }
+    /// The fix and the battery, as a ride page's top line shows them.
+    fn status(&self) -> Status {
+        Status::default()
+    }
+}
+
+/// The fix and the battery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Status {
+    pub gps: Gps,
+    pub battery: Option<Battery>,
 }
 
 /// What a tile reads, for a trace's shown line: a metric, or whatever the

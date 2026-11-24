@@ -1746,7 +1746,10 @@ mod tests {
             &view(RidePage::Main, 120, 61),
         );
         assert!(
-            !ticked.is_empty() && ticked.iter().all(|&y| y < 24),
+            !ticked.is_empty()
+                && ticked
+                    .iter()
+                    .all(|&y| y < usize::from(crate::screens::theme::LAYOUT.space.top_line)),
             "only the top line's time sends above the banner: {ticked:?}"
         );
     }

@@ -18,10 +18,10 @@ power. None draws in the 5 × 7 bitmap font.
 
 ## The kit and its two looks
 
-#517 rebuilds every screen from one small set of tiles, the kit
+Kit screens are built from one small set of tiles, the kit
 (`apps/vana/src/compose/kit`), drawn in one of two looks. The Stats ride
-page (`ride/main`) is the first screen built this way. Screens not yet
-rebuilt keep the rules in the rest of this document.
+page (`ride/main`) is one. Other screens follow the rules in the rest of
+this document.
 
 - **Looks are data.** `screens/theme` holds one `Theme` of colours by role.
   `DARK` (night) is main's palette. `LIGHT` (day) writes every word and
@@ -51,9 +51,7 @@ rebuilt keep the rules in the rest of this document.
   tone. `item` is an Apple-Watch-style rounded button with a focus ring and
   an action. `bar` shows zone segments or a level. `facts` is an
   inset-grouped list. `kit::grid` lays out rows of cells with rules between
-  them that line up. Chart, slider, sheet, toast and cue come with the
-  screens that need them, in the same pattern. The kit's faces are under
-  Type scale below.
+  them that line up. The kit's faces are under Type scale below.
 
 ## Principles
 
@@ -129,7 +127,7 @@ draw and holding only the characters it shows: `SIGN_50`, `SIGN_32`,
 sign, `TOTAL_60`, `TOTAL_30` (700) and `TOTAL_11` (900) for the totals, and
 `FOOT_20` (700) for the distance in the map's footer. See Course sign below.
 
-The #517 kit adds its own faces. `NOTE` (700, 13 px), `LABEL` (800, 15 px) and
+The kit has its own faces. `NOTE` (700, 13 px), `LABEL` (800, 15 px) and
 `HEADING` (800, 21 px) hold printable ASCII, lowercase included, for
 sentence-case subtitles and list labels, list values and button labels, and
 a phone-style screen's title. `TAG` (800, 11 px, capitals) is for ride-page

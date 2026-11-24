@@ -47,7 +47,7 @@ fn note(runtime: &Runtime) -> Option<CalibrationNote> {
 #[test]
 fn a_zero_request_is_sent_once_and_the_offset_is_shown() {
     let (mut runtime, mut radio) = live();
-    runtime.calibrate(&mut radio, 200);
+    runtime.calibrate(power_meter(), &mut radio, 200);
     assert_eq!(note(&runtime), Some(CalibrationNote::Calibrating));
     run(&mut runtime, &mut radio, 200, 400);
     assert_eq!(sends(&radio), 1);
@@ -62,7 +62,7 @@ fn a_zero_request_is_sent_once_and_the_offset_is_shown() {
 #[test]
 fn power_pages_keep_flowing_while_it_waits() {
     let (mut runtime, mut radio) = live();
-    runtime.calibrate(&mut radio, 200);
+    runtime.calibrate(power_meter(), &mut radio, 200);
     radio.data(POWER, [0x10, 2, 0xff, 80, 0, 0, 210, 0], 250);
     run(&mut runtime, &mut radio, 200, 300);
     assert_eq!(note(&runtime), Some(CalibrationNote::Calibrating));
@@ -71,7 +71,7 @@ fn power_pages_keep_flowing_while_it_waits() {
 #[test]
 fn a_failure_page_ends_it() {
     let (mut runtime, mut radio) = live();
-    runtime.calibrate(&mut radio, 200);
+    runtime.calibrate(power_meter(), &mut radio, 200);
     run(&mut runtime, &mut radio, 200, 400);
     radio.data(POWER, [0x01, 0xaf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], 400);
     run(&mut runtime, &mut radio, 400, 500);
@@ -81,7 +81,7 @@ fn a_failure_page_ends_it() {
 #[test]
 fn silence_ends_in_a_failure_after_the_bound() {
     let (mut runtime, mut radio) = live();
-    runtime.calibrate(&mut radio, 200);
+    runtime.calibrate(power_meter(), &mut radio, 200);
     for now in (200..10_100).step_by(10) {
         radio.channels.tick(now);
         if now % 250 == 0 {
@@ -109,11 +109,42 @@ fn an_answer_with_nothing_asked_is_ignored() {
 }
 
 #[test]
+fn the_other_bikes_power_meter_is_not_zeroed_through_the_live_one() {
+    let spare = Identity {
+        device_number: 5151,
+        ..power_meter()
+    };
+    let mut runtime = restored(&[spare, power_meter()]);
+    let mut radio = Radio::new();
+    run(&mut runtime, &mut radio, 0, 100);
+    radio.data(POWER, [0x10, 1, 0xff, 80, 0, 0, 200, 0], 100);
+    run(&mut runtime, &mut radio, 100, 200);
+    runtime.calibrate(spare, &mut radio, 200);
+    assert_eq!(note(&runtime), Some(CalibrationNote::NotConnected));
+    run(&mut runtime, &mut radio, 200, 300);
+    assert_eq!(sends(&radio), 0);
+    // The note belongs to the spare's page, not the live meter's.
+    let mut now = 1_000;
+    runtime.open_sensors(false, &mut radio, now);
+    while runtime.menu.diagnostics().focus != Some(power_meter()) {
+        assert!(now < 10_000, "the live meter has a row");
+        runtime.input_received(press(Role::Move), now, now, &mut radio);
+        now += 400;
+    }
+    runtime.input_received(press(Role::Act), now, now, &mut radio);
+    assert_eq!(
+        runtime.menu.shown().map(|s| s.identity),
+        Some(power_meter())
+    );
+    assert_eq!(runtime.menu.calibration(), None);
+}
+
+#[test]
 fn without_a_live_power_meter_nothing_is_sent() {
     let mut runtime = restored(&[power_meter()]);
     let mut radio = Radio::new();
     run(&mut runtime, &mut radio, 0, 100);
-    runtime.calibrate(&mut radio, 100);
+    runtime.calibrate(power_meter(), &mut radio, 100);
     assert_eq!(note(&runtime), Some(CalibrationNote::NotConnected));
     run(&mut runtime, &mut radio, 100, 300);
     assert_eq!(sends(&radio), 0);
@@ -122,7 +153,7 @@ fn without_a_live_power_meter_nothing_is_sent() {
 #[test]
 fn a_bridge_that_rejects_the_message_fails_it() {
     let (mut runtime, mut radio) = live();
-    runtime.calibrate(&mut radio, 200);
+    runtime.calibrate(power_meter(), &mut radio, 200);
     let (id, _, _) = radio.channels.pending_send().unwrap();
     radio.channels.send_submitted(id, 300);
     radio.channels.send_reply(id, false, 310);
@@ -155,7 +186,7 @@ fn a_request_held_by_a_busy_radio_never_goes_out_once_a_ride_records() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
     radio.reject = Some(device_api::ant::Error::Busy);
-    runtime.calibrate(&mut radio, 23_800);
+    runtime.calibrate(power_meter(), &mut radio, 23_800);
     assert_eq!(note(&runtime), Some(CalibrationNote::WaitingForRadio));
     feed(&mut runtime, &mut journal, &mut radio, 24_000, 27_000);
     runtime
@@ -188,7 +219,7 @@ fn leaving_the_sensor_page_drops_a_request_the_radio_has_not_taken() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
     radio.reject = Some(device_api::ant::Error::Busy);
-    runtime.calibrate(&mut radio, 200);
+    runtime.calibrate(power_meter(), &mut radio, 200);
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
@@ -206,7 +237,7 @@ fn a_radio_stuck_on_an_earlier_message_asks_for_a_restart() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
     radio.reject = Some(device_api::ant::Error::Uncertain);
-    runtime.calibrate(&mut radio, 200);
+    runtime.calibrate(power_meter(), &mut radio, 200);
     let note = note(&runtime).unwrap();
     assert_eq!(note, CalibrationNote::NeedsRestart);
     assert_eq!(note.text().as_str(), "RESTART TO CALIBRATE");

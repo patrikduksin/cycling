@@ -222,6 +222,81 @@ impl Battery {
     }
 }
 
+/// The ANT+ common Manufacturer's Information page.
+pub const COMMON_MANUFACTURER_PAGE: u8 = 0x50;
+/// The heart-rate profile's own manufacturer and product pages, without
+/// their toggle bit.
+const HEART_RATE_MANUFACTURER_PAGE: u8 = 0x02;
+const HEART_RATE_PRODUCT_PAGE: u8 = 0x03;
+
+/// Who made a sensor and which of their models it is, as far as its pages
+/// said. Model numbers are the maker's own; only makers have names here.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Product {
+    /// The ANT+ manufacturer ID (the FIT `manufacturer` enum).
+    pub manufacturer: Option<u16>,
+    pub model: Option<u16>,
+}
+
+impl Product {
+    /// Learn from a page: common page 0x50 from a paged sensor, or a
+    /// heart-rate strap's pages 2 (maker, low byte only) and 3 (model).
+    pub fn note(&mut self, kind: u8, data: [u8; 8]) {
+        let page = if kind == device_type::HEART_RATE {
+            data[0] & 0x7f
+        } else {
+            data[0]
+        };
+        match page {
+            COMMON_MANUFACTURER_PAGE if has_pages(kind) => {
+                self.manufacturer = Some(u16::from_le_bytes([data[4], data[5]]));
+                self.model = Some(u16::from_le_bytes([data[6], data[7]]));
+            }
+            HEART_RATE_MANUFACTURER_PAGE if kind == device_type::HEART_RATE => {
+                self.manufacturer = Some(u16::from(data[1]));
+            }
+            HEART_RATE_PRODUCT_PAGE if kind == device_type::HEART_RATE => {
+                self.model = Some(u16::from(data[3]));
+            }
+            _ => {}
+        }
+    }
+
+    pub const fn maker(self) -> Option<&'static str> {
+        let Some(id) = self.manufacturer else {
+            return None;
+        };
+        Some(match id {
+            1 => "Garmin",
+            6 => "SRM",
+            7 => "Quarq",
+            9 => "Saris",
+            32 => "Wahoo",
+            41 => "Shimano",
+            48 => "Pioneer",
+            51 => "4iiii",
+            60 => "Rotor",
+            63 => "Specialized",
+            69 => "Stages",
+            70 => "Sigma",
+            86 => "Elite",
+            89 => "Tacx",
+            99 => "Look",
+            107 => "Magene",
+            115 => "iGPSPORT",
+            123 => "Polar",
+            135 => "Coospo",
+            258 => "Lezyne",
+            263 => "Favero",
+            267 => "Bryton",
+            268 => "SRAM",
+            289 => "Hammerhead",
+            294 => "Coros",
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Power {
     pub event_count: u8,
@@ -428,5 +503,35 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn makers_and_models_from_the_common_page_and_the_straps_own_pages() {
+        let mut meter = Product::default();
+        meter.note(device_type::POWER, [0x10, 0, 0, 0, 7, 1, 0x34, 0x12]);
+        assert_eq!(meter, Product::default(), "a power page says nothing");
+        meter.note(device_type::POWER, [0x50, 255, 255, 3, 7, 1, 0x34, 0x12]);
+        assert_eq!(meter.manufacturer, Some(263));
+        assert_eq!(meter.model, Some(0x1234));
+        assert_eq!(meter.maker(), Some("Favero"));
+        let mut wheel = Product::default();
+        wheel.note(
+            device_type::SPEED_CADENCE,
+            [0x50, 255, 255, 3, 7, 1, 0x34, 0x12],
+        );
+        assert_eq!(wheel, Product::default(), "legacy sensors have no pages");
+        let mut strap = Product::default();
+        strap.note(device_type::HEART_RATE, [0x82, 123, 0, 0, 0, 0, 0, 72]);
+        strap.note(device_type::HEART_RATE, [0x03, 1, 2, 42, 0, 0, 0, 72]);
+        assert_eq!(strap.maker(), Some("Polar"));
+        assert_eq!(strap.model, Some(42));
+        assert_eq!(
+            Product {
+                manufacturer: Some(9999),
+                model: None
+            }
+            .maker(),
+            None
+        );
     }
 }

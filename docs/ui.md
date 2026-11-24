@@ -272,7 +272,7 @@ layout check fails any frame that draws a cue under the status bar.
 
 Only Ready, the paused screen, End ride, Discard ride, LOSE n UNSAVED RIDES?, the
 summary, a saved ride, FORMAT STORAGE?, CLEAR BESTS? and a sensor's pages
-(its detail, FORGET SENSOR? and REPLACE SENSOR) show cues. Ride pages
+(its detail and FORGET SENSOR?) show cues. Ride pages
 never do: their buttons keep fixed roles. Content stays clear of the
 corners the screen's own cues take on that device, wherever the buttons put
 them. The layout check fails any frame that draws text or a shape under one
@@ -324,15 +324,15 @@ cards as everywhere else.
 - NEARBY is the only page that searches: it asks for a search as it
   opens, and leaving it stops the search. Its title is in `TITLE` where
   SENSORS has its own. A `CAPTION` line under it says how the search goes
-  (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND, a sensor
-  just connected such as HEART RATE ADDED in `GREEN`, or a problem in
+  (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND, how many
+  this visit added such as 2 ADDED in `GREEN`, or a problem in
   `AMBER`) beside the refresh mark, which a tap uses to search
   again. Each nearby sensor not saved yet is a card under that line: its
   icon in `SECONDARY`, the name, `ID 4321`, and a green plus.
 - Both lists scroll with their focus: the page moves only as far as keeps
   the focused row above the bottom 8 px, so the title scrolls away under
   the status bar on a long list.
-- A sensor's page, FORGET SENSOR? and REPLACE SENSOR take the whole screen
+- A sensor's page and FORGET SENSOR? take the whole screen
   with button cues. The sensor's page centres its icon on a `CARD` square,
   the name, its state, BATTERY and ID cells (a `CAPTION` over the value;
   the voltage in the colour of its urgency) and, on a power meter, the

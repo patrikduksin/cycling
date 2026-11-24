@@ -27,7 +27,11 @@ impl Tile for SensorIcon {
     }
 
     fn prepare((): (), placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
-        let Some(identity) = data.sensors().and_then(|menu| menu.pictured()) else {
+        let Some(identity) = data
+            .sensors()
+            .and_then(|menu| menu.shown())
+            .map(|shown| shown.identity)
+        else {
             return;
         };
         let rect = placed.rect.rect();

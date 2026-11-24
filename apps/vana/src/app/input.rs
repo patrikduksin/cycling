@@ -406,10 +406,10 @@ impl Runtime {
         match action {
             Some(Action::Scan) => self.request_search(ant, now),
             Some(Action::StopScan) => self.cancel_search(ant, now),
-            Some(action @ (Action::Connect(_) | Action::Disconnect(_))) => {
+            Some(action @ (Action::Connect(_) | Action::Forget(_))) => {
                 self.request_sensor(action, ant, now)
             }
-            Some(Action::Calibrate) => self.calibrate(ant, now),
+            Some(Action::Calibrate(meter)) => self.calibrate(meter, ant, now),
             Some(Action::Ride) => {
                 self.cancel_search(ant, now);
                 self.after_sensors();

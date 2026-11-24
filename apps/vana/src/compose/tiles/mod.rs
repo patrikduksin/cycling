@@ -40,7 +40,6 @@ pub mod sensor_icon;
 pub mod sensor_line;
 pub mod sensor_row;
 pub mod sensor_search;
-pub mod sensor_swap;
 pub mod sensor_title;
 pub mod sheet;
 pub mod space;

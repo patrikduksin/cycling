@@ -110,7 +110,6 @@ pub enum ScreenId {
     SensorDetail,
     PowerMeter,
     ForgetSensor,
-    ReplaceSensor,
     ControlSheet,
 }
 
@@ -127,7 +126,7 @@ pub enum Asks {
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 51;
+    pub const COUNT: usize = 50;
     pub const ALL: [Self; Self::COUNT] = [
         Self::RideMain,
         Self::RideStats,
@@ -178,7 +177,6 @@ impl ScreenId {
         Self::SensorDetail,
         Self::PowerMeter,
         Self::ForgetSensor,
-        Self::ReplaceSensor,
         Self::ControlSheet,
     ];
 
@@ -386,8 +384,6 @@ impl ScreenId {
             Self::PowerMeter => sensors::POWER_METER,
 
             Self::ForgetSensor => sensors::FORGET,
-
-            Self::ReplaceSensor => sensors::REPLACE,
 
             Self::ControlSheet => control_sheet::BUILTIN,
         }

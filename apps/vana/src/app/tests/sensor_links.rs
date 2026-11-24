@@ -68,8 +68,7 @@ fn workout_scan_keeps_existing_channels_receiving() {
     );
 
     forget_sensor(&mut runtime, &mut radio, 120, 12000);
-    assert!(runtime.preferences.sensors.of_type(120).is_none());
-    assert!(runtime.preferences.sensors.of_type(120).is_none());
+    assert!(runtime.preferences.sensors.active(120).is_none());
     assert_eq!(
         radio.channels.channel(120, 12500).unwrap().link,
         device_api::ant::LinkState::Disconnected
@@ -115,7 +114,7 @@ fn workout_scan_keeps_existing_channels_receiving() {
         25000,
         &mut radio,
     );
-    assert_eq!(runtime.preferences.sensors.of_type(120), Some((0, peer)));
+    assert_eq!(runtime.preferences.sensors.active(120), Some((0, peer)));
     assert_eq!(
         radio.channels.channel(120, 25000).unwrap().link,
         device_api::ant::LinkState::Connected
@@ -490,7 +489,7 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
 }
 
 #[test]
-fn same_type_replacement_waits_for_old_disconnect_observation() {
+fn a_second_sensor_of_a_type_waits_for_the_old_disconnect_observation() {
     let mut radio = Radio {
         channels: firmware_services::ant::Channels::new(),
         requests: std::vec::Vec::new(),
@@ -505,7 +504,7 @@ fn same_type_replacement_waits_for_old_disconnect_observation() {
         device_number: 1,
         transmission_type: 1,
     };
-    let replacement = device_api::ant::Identity {
+    let second = device_api::ant::Identity {
         device_number: 2,
         ..old
     };
@@ -514,12 +513,9 @@ fn same_type_replacement_waits_for_old_disconnect_observation() {
         .channels
         .receive(device_api::ant::Event::Connected(old), 0);
     let mut runtime = restored(&[old]);
-    choose_sensor(&mut runtime, &mut radio, replacement);
-    // The saved selection changes at once; the old peer closes first.
-    assert_eq!(
-        runtime.preferences.sensors.of_type(120),
-        Some((0, replacement))
-    );
+    choose_sensor(&mut runtime, &mut radio, second);
+    assert!(runtime.preferences.sensors.contains(old));
+    assert_eq!(runtime.preferences.sensors.active(120), Some((1, second)));
     radio.data(120, [0; 8], 1000);
     assert!(runtime.links.rejects(&runtime.preferences.sensors, old));
     assert!(matches!(
@@ -533,11 +529,8 @@ fn same_type_replacement_waits_for_old_disconnect_observation() {
         .channels
         .receive(device_api::ant::Event::Disconnected(old), 1800);
     advance(&mut runtime, &mut radio, 1800);
-    assert_eq!(
-        radio.channel(120, 1800).unwrap().selected,
-        Some(replacement)
-    );
-    assert!(matches!(radio.requests.last(), Some(AntOperation::Connect(p)) if *p == replacement));
+    assert_eq!(radio.channel(120, 1800).unwrap().selected, Some(second));
+    assert!(matches!(radio.requests.last(), Some(AntOperation::Connect(p)) if *p == second));
 }
 
 #[test]
@@ -571,7 +564,7 @@ fn busy_radio_keeps_the_selection_and_connects_once_it_recovers() {
         radio.channel(120, 28_100).unwrap().link,
         device_api::ant::LinkState::Connected
     );
-    assert_eq!(runtime.preferences.sensors.of_type(120), Some((0, peer)));
+    assert_eq!(runtime.preferences.sensors.active(120), Some((0, peer)));
 }
 
 #[test]
@@ -705,7 +698,7 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
     );
     runtime.input_received(press(Role::Move), 2700, 2700, &mut radio);
     runtime.input_received(press(Role::Act), 3100, 3100, &mut radio);
-    assert_eq!(runtime.menu.selected_identity(17), Some(fresh));
+    assert_eq!(runtime.saved_sensors().active(17), Some((0, fresh)));
 }
 
 #[test]

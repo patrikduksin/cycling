@@ -25,6 +25,7 @@ impl LinkStatus {
             Self::Live => GREEN,
             Self::Waiting => CYAN,
             Self::Failed | Self::Missing | Self::Check => AMBER,
+            Self::Idle => chrome::SECONDARY,
         }
     }
 }

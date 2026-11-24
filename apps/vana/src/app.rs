@@ -106,6 +106,8 @@ pub struct Runtime {
     links: sensor_links::Links,
     /// The power meter zeroing in progress; live state, never stored.
     calibration: calibration::Phase,
+    /// The power meter `calibration` answers for.
+    calibrated: Option<device_api::ant::Identity>,
     readings: readings::Readings,
     sensors: Client,
     ride: crate::ride::current::Ride,
@@ -167,6 +169,7 @@ impl firmware_services::why::State for Runtime {
         out.owner("sensor_discovery", &self.discovery);
         out.owner("sensor_links", &self.links);
         out.owner("calibration", &self.calibration);
+        out.field("calibrated", &self.calibrated);
         out.owner("readings", &self.readings);
         out.owner("ble", &self.sensors);
         out.owner("ride", &self.ride);
@@ -217,6 +220,7 @@ impl Runtime {
             discovery: sensor_links::Discovery::default(),
             links: sensor_links::Links::default(),
             calibration: calibration::Phase::Idle,
+            calibrated: None,
             readings: readings::Readings::default(),
             sensors: Client::new(profile),
             ride: crate::ride::current::Ride::default(),

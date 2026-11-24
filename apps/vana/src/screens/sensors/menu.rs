@@ -3,7 +3,8 @@ use super::shown::Target;
 use super::slot::{LinkStatus, Selected};
 use super::{CalibrationNote, MenuMessage};
 use crate::sensors::ant::{BatteryStatus, device_type};
-use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
+use crate::sensors::saved::SAVED_CAPACITY;
+use device_api::ant::{DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::Role;
 use firmware_shell::input::Input;
 
@@ -15,9 +16,9 @@ pub enum Action {
     /// NEARBY closed, so nothing needs the search any more.
     StopScan,
     Connect(Identity),
-    Disconnect(u8),
-    /// Zero the saved power meter.
-    Calibrate,
+    Forget(Identity),
+    /// Zero this power meter.
+    Calibrate(Identity),
     Ride,
 }
 
@@ -33,7 +34,7 @@ pub struct Glance {
 }
 
 /// Saved ANT sensors and the one selected BLE sensor.
-pub const GLANCES: usize = CHANNEL_CAPACITY + 1;
+pub const GLANCES: usize = SAVED_CAPACITY + 1;
 
 impl Glance {
     fn of(kind: u8, status: LinkStatus, battery: Option<BatteryStatus>) -> Self {
@@ -73,7 +74,6 @@ pub enum Page {
     Nearby,
     Detail,
     Forget,
-    Replace,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,8 +109,6 @@ pub(super) enum View {
     Detail(usize),
     /// FORGET SENSOR? for a saved sensor, by slot.
     Forget(usize),
-    /// REPLACE SENSOR: a nearby sensor of a type already saved.
-    Replace(Identity),
 }
 
 /// The sensor pages: what they show and focus. Their trees
@@ -139,7 +137,7 @@ impl Menu {
     }
 
     pub fn set_message(&mut self, message: MenuMessage) {
-        let added = matches!(self.state.message, Some(MenuMessage::Added(_)));
+        let added = self.state.message == Some(MenuMessage::Added);
         if added && message.routine() {
             return;
         }
@@ -152,7 +150,7 @@ impl Menu {
         self.state.notice = notice;
     }
 
-    pub fn set_calibration(&mut self, calibration: Option<CalibrationNote>) {
+    pub fn set_calibration(&mut self, calibration: Option<(Identity, CalibrationNote)>) {
         self.state.calibration = calibration;
     }
 
@@ -170,36 +168,42 @@ impl Menu {
         state.settle();
     }
 
-    pub fn selected_identity(&self, kind: u8) -> Option<Identity> {
-        self.state.selected_identity(kind)
-    }
-
-    /// The sensor the rider picked on NEARBY is saved now: NEARBY stays
-    /// open on the sensors still found and says so, and BACK focuses it on
-    /// SENSORS. Nothing changes if it could not be saved.
     pub fn added(&mut self, peer: Identity) {
         let state = &mut self.state;
         if state.slot_of(peer).is_none() {
             return;
         }
-        state.added = Some(peer);
-        state.message = Some(MenuMessage::Added(peer.device_type));
+        if !state.added.contains(&peer) {
+            let _ = state.added.push(peer);
+        }
+        state.message = Some(MenuMessage::Added);
+        if let View::Nearby(_) = state.view {
+            state.view = View::Nearby(state.found_after(peer));
+        }
+    }
+
+    pub fn added_peers(&self) -> &[Identity] {
+        &self.state.added
+    }
+
+    pub fn full(&self) -> bool {
+        self.state.full()
     }
 
     /// Show the saved sensors in their slots, and nearby discoveries.
     pub fn refresh(
         &mut self,
         discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
-        selected: [Option<Selected>; CHANNEL_CAPACITY],
+        selected: [Option<Selected>; SAVED_CAPACITY],
         scanning: bool,
     ) {
         self.state.refresh(discoveries, selected, scanning);
     }
 
-    /// Selected sensors in slot order, for Home.
     pub fn glance(&self) -> heapless::Vec<Glance, GLANCES> {
         self.state
             .selected_peers()
+            .filter(|s| s.connection.in_use())
             .map(|s| {
                 let battery = s.battery.map(|battery| battery.status);
                 Glance::of(s.identity.device_type, s.link_status(), battery)
@@ -215,7 +219,6 @@ impl Menu {
             View::Nearby(_) => 1,
             View::Detail(slot) => 2 + slot.min(0x3f) as u8,
             View::Forget(slot) => 0x80 + slot.min(0x3f) as u8,
-            View::Replace(_) => 0xff,
         }
     }
 
@@ -238,10 +241,9 @@ pub(super) struct State {
     pub(super) discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
     /// Whether each retained discovery was reported by the latest refresh.
     pub(super) present: [bool; DISCOVERY_CAPACITY],
-    pub(super) selected: [Option<Selected>; CHANNEL_CAPACITY],
+    pub(super) selected: [Option<Selected>; SAVED_CAPACITY],
     pub(super) view: View,
-    /// The sensor added last on this visit to NEARBY, which BACK focuses.
-    added: Option<Identity>,
+    pub(super) added: heapless::Vec<Identity, SAVED_CAPACITY>,
     /// When a detail page or FORGET SENSOR? last opened: ACT waits a moment after it.
     opened: u64,
     last_press: Option<u64>,
@@ -251,8 +253,8 @@ pub(super) struct State {
     /// Save trouble, kept apart from discovery progress so it stays visible
     /// for as long as the problem lasts.
     pub(super) notice: Option<MenuMessage>,
-    /// How the latest power meter calibration stands, shown on its detail page.
-    pub(super) calibration: Option<CalibrationNote>,
+    /// How the latest calibration of this power meter stands, shown on its page.
+    pub(super) calibration: Option<(Identity, CalibrationNote)>,
 }
 
 /// ACT does nothing this long after a detail page or FORGET SENSOR? opens,
@@ -272,9 +274,9 @@ impl State {
         Self {
             discoveries: [None; DISCOVERY_CAPACITY],
             present: [false; DISCOVERY_CAPACITY],
-            selected: [None; CHANNEL_CAPACITY],
+            selected: [None; SAVED_CAPACITY],
             view: View::Mine(Mine::Add),
-            added: None,
+            added: heapless::Vec::new(),
             opened: 0,
             last_press: None,
             scanning: false,
@@ -296,7 +298,6 @@ impl State {
             ),
             View::Detail(slot) => (Page::Detail, saved(slot)),
             View::Forget(slot) => (Page::Forget, saved(slot)),
-            View::Replace(identity) => (Page::Replace, Some(identity)),
         };
         Diagnostics {
             page,
@@ -317,16 +318,10 @@ impl State {
         None
     }
 
-    pub(super) fn selected_identity(&self, kind: u8) -> Option<Identity> {
-        self.selected_peers()
-            .find(|s| s.identity.device_type == kind)
-            .map(|s| s.identity)
-    }
-
     fn refresh(
         &mut self,
         discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
-        selected: [Option<Selected>; CHANNEL_CAPACITY],
+        selected: [Option<Selected>; SAVED_CAPACITY],
         scanning: bool,
     ) {
         self.present = [false; DISCOVERY_CAPACITY];
@@ -442,7 +437,7 @@ impl State {
             (View::Mine(Mine::Add), Press::Act) => self.open_nearby(),
             (View::Nearby(_), Press::Back) if self.nothing_saved() => Some(Action::Ride),
             (View::Nearby(_), Press::Back) => {
-                let added = self.added.and_then(|peer| self.slot_of(peer));
+                let added = self.added.last().and_then(|peer| self.slot_of(*peer));
                 self.view = View::Mine(added.map_or(Mine::Add, Mine::Saved));
                 Some(Action::StopScan)
             }
@@ -457,7 +452,7 @@ impl State {
                 None
             }
             (View::Detail(slot), Press::Act) if settled && self.calibratable(slot) => {
-                Some(Action::Calibrate)
+                Some(Action::Calibrate(self.selected[slot]?.identity))
             }
             (View::Detail(slot), Press::Move) if self.calibratable(slot) => {
                 self.view = View::Forget(slot);
@@ -475,19 +470,11 @@ impl State {
                 None
             }
             (View::Forget(slot), Press::Act) if settled => {
-                let kind = self.selected[slot]?.identity.device_type;
+                let peer = self.selected[slot]?.identity;
                 self.view = View::Mine(Mine::Saved(slot));
-                Some(Action::Disconnect(kind))
+                Some(Action::Forget(peer))
             }
-            (View::Replace(identity), Press::Back) => {
-                self.view = View::Nearby(self.index_of(identity));
-                None
-            }
-            (View::Replace(identity), Press::Act) => {
-                self.view = View::Nearby(self.index_of(identity));
-                Some(Action::Connect(identity))
-            }
-            (View::Detail(_) | View::Forget(_) | View::Replace(_), _) => None,
+            (View::Detail(_) | View::Forget(_), _) => None,
         }
     }
 
@@ -496,7 +483,7 @@ impl State {
     fn open_nearby(&mut self) -> Option<Action> {
         self.view = View::Nearby(None);
         self.settle();
-        self.added = None;
+        self.added.clear();
         self.message = None;
         Some(Action::Scan)
     }
@@ -511,20 +498,19 @@ impl State {
 
     fn choose_nearby(&mut self, index: usize) -> Option<Action> {
         let identity = self.discoveries[index]?.identity;
-        let kind = identity.device_type;
         if !self.present[index] {
             self.message = Some(MenuMessage::NotSeen);
             return None;
         }
-        if self.selected_identity(kind).is_some() {
-            self.view = View::Replace(identity);
-            return None;
-        }
-        if self.selected.iter().all(Option::is_some) {
+        if self.full() {
             self.message = Some(MenuMessage::SlotsFull);
             return None;
         }
         Some(Action::Connect(identity))
+    }
+
+    pub(super) fn full(&self) -> bool {
+        self.selected.iter().all(Option::is_some)
     }
 
     /// Whether this saved sensor is a power meter, which can be zeroed.
@@ -549,9 +535,21 @@ impl State {
             .unwrap_or(Mine::Add)
     }
 
-    /// Discovery slots NEARBY lists: nearby sensors not saved already.
+    fn by_signal(&self) -> heapless::Vec<usize, DISCOVERY_CAPACITY> {
+        let mut order: heapless::Vec<usize, DISCOVERY_CAPACITY> = (0..DISCOVERY_CAPACITY)
+            .filter(|&index| self.discoveries[index].is_some())
+            .collect();
+        order.sort_unstable_by_key(|&index| {
+            let bars = self.discoveries[index].map_or(0, |d| bars(d.rssi));
+            (core::cmp::Reverse(bars), index)
+        });
+        order
+    }
+
     pub(super) fn nearby(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..DISCOVERY_CAPACITY).filter(|&index| self.listed(index))
+        self.by_signal()
+            .into_iter()
+            .filter(|&index| self.listed(index))
     }
 
     fn listed(&self, index: usize) -> bool {
@@ -560,14 +558,21 @@ impl State {
     }
 
     fn next_nearby(&self, focus: Option<usize>) -> Option<usize> {
-        let after = focus.and_then(|focus| self.nearby().find(|&index| index > focus));
+        let after = focus.and_then(|focus| self.nearby().skip_while(|&i| i != focus).nth(1));
         after.or_else(|| self.nearby().next())
     }
 
-    fn index_of(&self, identity: Identity) -> Option<usize> {
-        self.nearby()
-            .find(|&index| self.discoveries[index].is_some_and(|d| d.identity == identity))
-            .or_else(|| self.nearby().next())
+    fn found_after(&self, peer: Identity) -> Option<usize> {
+        let order = self.by_signal();
+        let at = order
+            .iter()
+            .position(|&index| self.discoveries[index].is_some_and(|d| d.identity == peer));
+        let after = at.map_or(0, |at| at + 1);
+        let (head, tail) = order.split_at(after.min(order.len()));
+        tail.iter()
+            .chain(head)
+            .copied()
+            .find(|&index| self.listed(index))
     }
 
     fn slot_of(&self, peer: Identity) -> Option<usize> {
@@ -582,5 +587,14 @@ impl State {
 
     pub(super) fn selected_peers(&self) -> impl Iterator<Item = &Selected> {
         self.selected.iter().flatten()
+    }
+}
+
+pub const fn bars(rssi: i8) -> u8 {
+    match rssi {
+        -60.. => 4,
+        -70..=-61 => 3,
+        -80..=-71 => 2,
+        _ => 1,
     }
 }

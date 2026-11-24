@@ -1,8 +1,8 @@
 //! What the sensor pages show, as their tiles read it, and what a finger
 //! lands on.
-use super::menu::{Action, Menu, Mine, View};
+use super::menu::{Action, Menu, Mine, View, bars};
 use super::slot::{LinkStatus, Selected};
-use super::{CalibrationNote, MenuMessage, kind};
+use super::{CalibrationNote, MenuMessage};
 use crate::compose::builtin::{Laid, ScreenId};
 use crate::compose::data::ListKind;
 use crate::compose::node::What;
@@ -33,10 +33,10 @@ pub enum Item {
     Saved(Selected),
     /// SENSORS' last row, which opens NEARBY.
     Add,
-    /// A sensor NEARBY found, and whether the latest search still sees it.
     Found {
         identity: Identity,
         present: bool,
+        bars: u8,
     },
 }
 
@@ -50,7 +50,6 @@ impl Menu {
             View::Detail(slot) if state.calibratable(slot) => ScreenId::PowerMeter,
             View::Detail(_) => ScreenId::SensorDetail,
             View::Forget(_) => ScreenId::ForgetSensor,
-            View::Replace(_) => ScreenId::ReplaceSensor,
         }
     }
 
@@ -90,6 +89,7 @@ impl Menu {
                 Some(Item::Found {
                     identity: found.identity,
                     present: state.present[slot],
+                    bars: bars(found.rssi),
                 })
             }
             _ => None,
@@ -110,17 +110,17 @@ impl Menu {
         self.state.scanning
     }
 
-    /// NEARBY's line under its title: a problem in amber, the sensor just
-    /// added in green, else how the search goes.
     pub fn search_line(&self) -> (Text<24>, u16) {
         let state = &self.state;
         let routine = if state.scanning { ACCENT } else { SECONDARY };
         let mut line = Text::new();
-        let (text, color) = match state.notice.or(state.message) {
+        let message = state.notice.or(state.message);
+        let full = state.full() && message.is_none_or(MenuMessage::routine);
+        let (text, color) = match message {
+            _ if full => (MenuMessage::SlotsFull.short(), AMBER),
             Some(message) if !message.routine() => (message.short(), AMBER),
-            Some(MenuMessage::Added(device_type)) => {
-                let name = core::str::from_utf8(kind(device_type)).unwrap_or("");
-                let _ = write!(line, "{name} ADDED");
+            Some(MenuMessage::Added) => {
+                let _ = write!(line, "{} ADDED", state.added.len());
                 return (line, GREEN);
             }
             Some(MenuMessage::ScanDone) if state.nearby().next().is_none() => {
@@ -142,24 +142,13 @@ impl Menu {
         }
     }
 
-    /// The sensor REPLACE SENSOR would save, and the saved one it replaces.
-    pub fn replacing(&self) -> Option<(Identity, Option<Identity>)> {
-        let View::Replace(new) = self.state.view else {
-            return None;
-        };
-        Some((new, self.state.selected_identity(new.device_type)))
-    }
-
-    /// The sensor a page's icon card pictures.
-    pub fn pictured(&self) -> Option<Identity> {
-        let shown = self.shown().map(|selected| selected.identity);
-        shown.or_else(|| self.replacing().map(|(new, _)| new))
-    }
-
     /// How the power meter's latest calibration stands, on its page.
     pub fn calibration(&self) -> Option<CalibrationNote> {
         match self.state.view {
-            View::Detail(slot) if self.state.calibratable(slot) => self.state.calibration,
+            View::Detail(slot) if self.state.calibratable(slot) => {
+                let (meter, note) = self.state.calibration?;
+                (self.state.selected[slot]?.identity == meter).then_some(note)
+            }
             _ => None,
         }
     }
@@ -317,10 +306,9 @@ pub mod widest {
         of(face, states).max(of(face, warnings))
     }
 
-    /// A message's short wording, a sensor just added included.
     pub fn message(face: &Face) -> usize {
         let shorts = MenuMessage::ALL.map(|message| message.short().as_bytes());
-        let added = name(face) + face.width(b" ADDED");
+        let added = digits(face, 2) + face.width(b" ADDED");
         of(face, shorts).max(added)
     }
 

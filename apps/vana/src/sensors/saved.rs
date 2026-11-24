@@ -1,21 +1,17 @@
-//! ANT sensors the rider deliberately selected: one peer per device type, in
-//! stable tile order, and their persisted field.
-//!
-//! The field is `[count]` followed by `count` identities of
-//! `[device_type][device_number lo][device_number hi][transmission_type]`, in
-//! tile order. VANA's preference record versions it; link states are never
-//! stored.
-use device_api::ant::{CHANNEL_CAPACITY, Identity};
+use device_api::ant::{Discovery, Identity};
 
-const IDENTITY_BYTES: usize = 4;
-pub const FIELD_CAPACITY: usize = 1 + CHANNEL_CAPACITY * IDENTITY_BYTES;
+/// How many sensors the rider can save, whatever their types. Not the
+/// radio's channel count: several saved sensors share one type's channel.
+pub const SAVED_CAPACITY: usize = 10;
+const ENTRY_BYTES: usize = 5;
+pub const FIELD_CAPACITY: usize = 1 + SAVED_CAPACITY * ENTRY_BYTES;
 
 /// The field does not describe saved sensors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Unreadable;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Saved([Option<Identity>; CHANNEL_CAPACITY]);
+pub struct Saved([Option<(Identity, u8)>; SAVED_CAPACITY]);
 
 /// Zero is a wildcard on the wire; a saved peer must name one sensor.
 const fn explicit(peer: Identity) -> bool {
@@ -24,57 +20,136 @@ const fn explicit(peer: Identity) -> bool {
 
 impl Saved {
     pub fn get(&self, slot: usize) -> Option<Identity> {
-        self.0.get(slot).copied().flatten()
+        self.0.get(slot).copied().flatten().map(|(peer, _)| peer)
     }
 
     pub fn peers(&self) -> impl Iterator<Item = (usize, Identity)> + '_ {
         self.0
             .iter()
             .enumerate()
-            .filter_map(|(slot, peer)| Some((slot, (*peer)?)))
+            .filter_map(|(slot, entry)| Some((slot, (*entry)?.0)))
     }
 
-    pub fn of_type(&self, kind: u8) -> Option<(usize, Identity)> {
-        self.peers().find(|(_, peer)| peer.device_type == kind)
+    pub fn slot_of(&self, peer: Identity) -> Option<usize> {
+        self.peers()
+            .find(|(_, saved)| *saved == peer)
+            .map(|(slot, _)| slot)
     }
 
     pub fn contains(&self, peer: Identity) -> bool {
-        self.peers().any(|(_, saved)| saved == peer)
+        self.slot_of(peer).is_some()
     }
 
     pub fn is_full(&self) -> bool {
         self.0.iter().all(Option::is_some)
     }
 
-    /// Select a peer, replacing its type in place or taking the first free
-    /// slot. Returns the slot, or `None` when every slot holds another type.
-    pub fn select(&mut self, peer: Identity) -> Option<usize> {
+    pub fn count_of(&self, kind: u8) -> usize {
+        self.peers()
+            .filter(|(_, peer)| peer.device_type == kind)
+            .count()
+    }
+
+    /// The sensor of this type the radio connects: the one used last.
+    pub fn active(&self, kind: u8) -> Option<(usize, Identity)> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, entry)| Some((slot, (*entry)?)))
+            .filter(|(_, (peer, _))| peer.device_type == kind)
+            .min_by_key(|(_, (_, rank))| *rank)
+            .map(|(slot, (peer, _))| (slot, peer))
+    }
+
+    pub fn is_active(&self, slot: usize) -> bool {
+        self.get(slot)
+            .is_some_and(|peer| self.active(peer.device_type).map(|(s, _)| s) == Some(slot))
+    }
+
+    /// Save a sensor in the first free slot as the one used last, so it is
+    /// its type's active sensor. One already saved keeps its slot and is
+    /// used. Returns the slot, or `None` when every slot is taken or the
+    /// identity has a wildcard zero.
+    pub fn add(&mut self, peer: Identity) -> Option<usize> {
         if !explicit(peer) {
             return None;
         }
-        let slot = self
-            .of_type(peer.device_type)
-            .map(|(slot, _)| slot)
-            .or_else(|| self.0.iter().position(Option::is_none))?;
-        self.0[slot] = Some(peer);
+        if let Some(slot) = self.slot_of(peer) {
+            self.used(peer);
+            return Some(slot);
+        }
+        let slot = self.0.iter().position(Option::is_none)?;
+        for (_, rank) in self.0.iter_mut().flatten() {
+            *rank += 1;
+        }
+        self.0[slot] = Some((peer, 0));
         Some(slot)
     }
 
-    /// Remove the peer of a type; other tiles keep their positions.
-    pub fn remove(&mut self, kind: u8) -> Option<Identity> {
-        let (slot, peer) = self.of_type(kind)?;
-        self.0[slot] = None;
-        Some(peer)
+    /// Forget one sensor; other tiles keep their positions and order of use.
+    pub fn remove(&mut self, peer: Identity) -> Option<usize> {
+        let slot = self.slot_of(peer)?;
+        let (_, removed) = self.0[slot].take()?;
+        for (_, rank) in self.0.iter_mut().flatten() {
+            if *rank > removed {
+                *rank -= 1;
+            }
+        }
+        Some(slot)
+    }
+
+    /// Make a saved sensor its type's active one. Returns whether that
+    /// changed which sensor of its type is active; nothing else moves then,
+    /// so an unchanged choice never rewrites the record.
+    pub fn used(&mut self, peer: Identity) -> bool {
+        if self.active(peer.device_type).map(|(_, active)| active) == Some(peer) {
+            return false;
+        }
+        let Some(slot) = self.slot_of(peer) else {
+            return false;
+        };
+        let Some((_, from)) = self.0[slot] else {
+            return false;
+        };
+        for (_, rank) in self.0.iter_mut().flatten() {
+            if *rank < from {
+                *rank += 1;
+            }
+        }
+        self.0[slot] = Some((peer, 0));
+        true
+    }
+
+    /// The sensor of `kind` the radio should connect, from what a discovery
+    /// heard: the active one while it is heard, else the strongest heard,
+    /// else the active one still. `None` when nothing of the type is saved.
+    pub fn choose(&self, kind: u8, heard: &[Option<Discovery>]) -> Option<Identity> {
+        let (_, active) = self.active(kind)?;
+        let saved = heard
+            .iter()
+            .flatten()
+            .filter(|found| found.identity.device_type == kind && self.contains(found.identity));
+        if saved.clone().any(|found| found.identity == active) {
+            return Some(active);
+        }
+        let strongest = saved.max_by_key(|found| found.rssi);
+        Some(strongest.map_or(active, |found| found.identity))
     }
 
     pub fn encode(&self) -> heapless::Vec<u8, FIELD_CAPACITY> {
         let mut output = heapless::Vec::new();
-        let peers = self.peers().count() as u8;
+        let entries = self.0.iter().flatten();
         // Cannot fail: the capacity covers every slot.
-        let _ = output.push(peers);
-        for (_, peer) in self.peers() {
+        let _ = output.push(entries.clone().count() as u8);
+        for (peer, rank) in entries {
             let [lo, hi] = peer.device_number.to_le_bytes();
-            let _ = output.extend_from_slice(&[peer.device_type, lo, hi, peer.transmission_type]);
+            let _ = output.extend_from_slice(&[
+                peer.device_type,
+                lo,
+                hi,
+                peer.transmission_type,
+                *rank,
+            ]);
         }
         output
     }
@@ -85,28 +160,30 @@ impl Saved {
             return Err(Unreadable);
         };
         let count = usize::from(*count);
-        if count > CHANNEL_CAPACITY {
+        if count > SAVED_CAPACITY {
             return Err(Unreadable);
         }
-        let (identities, rest) = rest
-            .split_at_checked(count * IDENTITY_BYTES)
+        let (entries, rest) = rest
+            .split_at_checked(count * ENTRY_BYTES)
             .ok_or(Unreadable)?;
         let mut saved = Self::default();
-        for (slot, bytes) in identities
-            .as_chunks::<IDENTITY_BYTES>()
-            .0
-            .iter()
-            .enumerate()
-        {
+        let mut ranks = [false; SAVED_CAPACITY];
+        for (slot, bytes) in entries.as_chunks::<ENTRY_BYTES>().0.iter().enumerate() {
             let peer = Identity {
                 device_type: bytes[0],
                 device_number: u16::from_le_bytes([bytes[1], bytes[2]]),
                 transmission_type: bytes[3],
             };
-            if !explicit(peer) || saved.of_type(peer.device_type).is_some() {
+            let rank = bytes[4];
+            let fresh = ranks.get_mut(usize::from(rank)).filter(|seen| !**seen);
+            let Some(seen) = fresh.filter(|_| usize::from(rank) < count) else {
+                return Err(Unreadable);
+            };
+            if !explicit(peer) || saved.contains(peer) {
                 return Err(Unreadable);
             }
-            saved.0[slot] = Some(peer);
+            *seen = true;
+            saved.0[slot] = Some((peer, rank));
         }
         Ok((saved, rest))
     }
@@ -124,58 +201,102 @@ mod tests {
         }
     }
 
+    fn heard(found: &[(Identity, i8)]) -> [Option<Discovery>; 8] {
+        let mut heard = [None; 8];
+        for (slot, (identity, rssi)) in found.iter().enumerate() {
+            heard[slot] = Some(Discovery {
+                identity: *identity,
+                rssi: *rssi,
+                seen_ms: 0,
+            });
+        }
+        heard
+    }
+
     #[test]
-    fn one_peer_per_type_with_stable_slots_and_explicit_replacement() {
+    fn several_sensors_of_a_type_and_the_one_added_last_is_active() {
+        let (bike, spare) = (peer(11, 1), peer(11, 2));
         let mut saved = Saved::default();
-        assert_eq!(saved.select(peer(120, 1)), Some(0));
-        assert_eq!(saved.select(peer(11, 2)), Some(1));
-        assert_eq!(saved.select(peer(121, 3)), Some(2));
-        // Same-type replacement keeps the tile position.
-        assert_eq!(saved.select(peer(11, 9)), Some(1));
-        assert_eq!(saved.of_type(11), Some((1, peer(11, 9))));
-        assert!(!saved.contains(peer(11, 2)));
-        assert_eq!(saved.remove(120), Some(peer(120, 1)));
-        assert_eq!(saved.remove(120), None);
-        assert_eq!(saved.get(1), Some(peer(11, 9)));
-        assert_eq!(saved.select(peer(40, 4)), Some(0));
+        assert_eq!(saved.add(peer(120, 7)), Some(0));
+        assert_eq!(saved.add(bike), Some(1));
+        assert_eq!(saved.add(spare), Some(2));
+        assert_eq!(saved.count_of(11), 2);
+        assert_eq!(saved.active(11), Some((2, spare)));
+        assert!(saved.is_active(2) && !saved.is_active(1));
+        assert!(saved.used(bike));
+        assert!(!saved.used(bike), "already active: nothing moves");
+        assert_eq!(saved.active(11), Some((1, bike)));
+        assert_eq!(saved.active(120), Some((0, peer(120, 7))));
+        assert_eq!(saved.remove(bike), Some(1));
+        assert_eq!(saved.remove(bike), None);
+        assert_eq!(saved.active(11), Some((2, spare)));
+        assert_eq!(saved.get(1), None);
+        assert_eq!(saved.add(peer(40, 4)), Some(1));
+        assert_eq!(saved.add(spare), Some(2), "re-adding keeps its slot");
         assert_eq!(
-            saved.select(Identity {
+            saved.add(Identity {
                 device_number: 0,
                 ..peer(17, 1)
             }),
             None
         );
-        for kind in 1..=7 {
-            assert!(saved.select(peer(kind, 5)).is_some());
-        }
-        assert!(saved.is_full());
-        assert_eq!(saved.select(peer(8, 5)), None);
-        assert_eq!(saved.select(peer(1, 6)), Some(3));
     }
 
     #[test]
-    fn record_round_trips_full_identity_in_tile_order() {
+    fn ten_saved_whatever_their_types() {
         let mut saved = Saved::default();
-        saved.select(peer(120, 1));
-        saved.select(Identity {
-            device_type: 40,
+        for number in 1..=10 {
+            assert!(saved.add(peer(11, number)).is_some());
+        }
+        assert!(saved.is_full());
+        assert_eq!(saved.add(peer(11, 11)), None);
+        assert_eq!(saved.add(peer(120, 1)), None);
+        assert_eq!(saved.active(11), Some((9, peer(11, 10))));
+    }
+
+    #[test]
+    fn the_choice_keeps_a_heard_active_sensor_else_takes_the_strongest_heard() {
+        let (a, b, c) = (peer(11, 1), peer(11, 2), peer(11, 3));
+        let mut saved = Saved::default();
+        for sensor in [a, b, c] {
+            saved.add(sensor);
+        }
+        saved.used(a);
+        let stranger = peer(11, 9);
+        assert_eq!(saved.choose(11, &heard(&[])), Some(a), "nothing heard");
+        assert_eq!(saved.choose(11, &heard(&[(stranger, -40)])), Some(a));
+        assert_eq!(saved.choose(11, &heard(&[(b, -80), (c, -60)])), Some(c));
+        assert_eq!(saved.choose(11, &heard(&[(c, -40), (a, -90)])), Some(a));
+        assert_eq!(saved.choose(120, &heard(&[(b, -60)])), None);
+    }
+
+    #[test]
+    fn record_round_trips_identities_and_order_of_use_in_tile_order() {
+        let mut saved = Saved::default();
+        saved.add(peer(120, 1));
+        saved.add(Identity {
+            device_type: 11,
             device_number: 0xbeef,
             transmission_type: 0xa5,
         });
-        saved.select(peer(11, 7));
-        saved.remove(120);
+        saved.add(peer(11, 7));
+        saved.remove(peer(120, 1));
         let record = saved.encode();
-        assert_eq!(record.as_slice(), [2, 40, 0xef, 0xbe, 0xa5, 11, 7, 0, 1]);
+        assert_eq!(
+            record.as_slice(),
+            [2, 11, 0xef, 0xbe, 0xa5, 1, 11, 7, 0, 1, 0]
+        );
         let (restored, rest) = Saved::decode(&record).unwrap();
         assert!(rest.is_empty());
         // Tiles keep their order; gaps close on restart.
         assert_eq!(restored.get(0), saved.get(1));
         assert_eq!(restored.get(1), saved.get(2));
+        assert_eq!(restored.active(11), saved.active(11).map(|(_, p)| (1, p)));
         assert_eq!(restored.encode(), record);
         assert_eq!(Saved::decode(&[0, 7]), Ok((Saved::default(), &[7][..])));
         let mut full = Saved::default();
-        for kind in 1..=10 {
-            full.select(peer(kind, u16::from(kind)));
+        for number in 1..=10 {
+            full.add(peer(11, number));
         }
         assert_eq!(Saved::decode(&full.encode()), Ok((full, &[][..])));
     }
@@ -185,9 +306,11 @@ mod tests {
         for payload in [
             &[][..],
             &[1],
-            &[1, 120, 1, 0],
-            &[1, 120, 0, 0, 1],
-            &[2, 120, 1, 0, 1, 120, 2, 0, 1],
+            &[1, 120, 1, 0, 1],
+            &[1, 120, 0, 0, 1, 0],
+            &[1, 120, 1, 0, 1, 1],
+            &[2, 120, 1, 0, 1, 0, 120, 1, 0, 1, 1],
+            &[2, 120, 1, 0, 1, 0, 11, 2, 0, 1, 0],
             &[11],
         ] {
             assert_eq!(Saved::decode(payload), Err(Unreadable), "{payload:?}");

@@ -101,7 +101,9 @@ impl Tile for SensorRow {
                 out.fit(&faces, name, width, text, name_base, Align::Left, WHITE);
                 state(out, at, selected, text, under, width);
             }
-            Item::Found { identity, present } => {
+            Item::Found {
+                identity, present, ..
+            } => {
                 let sensor = Sensor::of(identity.device_type);
                 icon(out, at.art.sensor(sensor, Size::Small), left, SECONDARY);
                 let plus = rect.right - at.unit(INSET_UNITS) - usize::from(at.art.plus.size);

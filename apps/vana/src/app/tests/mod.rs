@@ -333,7 +333,7 @@ fn advance(runtime: &mut Runtime, radio: &mut Radio, now: u64) {
 fn restored(peers: &[Identity]) -> Runtime {
     let mut saved = crate::sensors::saved::Saved::default();
     for peer in peers {
-        assert!(saved.select(*peer).is_some());
+        assert!(saved.add(*peer).is_some());
     }
     let record = preferences::encode(&preferences::Record {
         sensors: saved,
@@ -360,10 +360,7 @@ fn ready_runtime(journal: &mut Journal, radio: &mut Radio) -> Runtime {
     runtime
 }
 
-/// Connect `peer` from NEARBY as the rider does: MOVE to it, ACT, and
-/// ACT again on the check cue when it replaces a saved sensor.
 fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant::Identity) {
-    use crate::screens::sensors::Page;
     radio.channels.begin_scan(0, 1).unwrap();
     radio.channels.receive(
         device_api::ant::Event::Discovery {
@@ -395,9 +392,6 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
         "{peer:?} is listed"
     );
     step(runtime, radio, Role::Act);
-    if runtime.menu.diagnostics().page == Page::Replace {
-        step(runtime, radio, Role::Act);
-    }
 }
 
 /// Forget the saved sensor of `kind` as the rider does from `now`: its

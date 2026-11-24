@@ -1,6 +1,3 @@
-//! One centred line of a sensor's pages: its name, its state, the power
-//! meter's calibration and what to do about it, FORGET SENSOR?'s words and
-//! the sensor it forgets, and REPLACE SENSOR's question.
 use crate::compose::data::Data;
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Arg, Form, Forms, Tile};
@@ -23,11 +20,10 @@ pub enum Says {
     Forget,
     Sensor,
     Forgotten,
-    Replace,
 }
 
 impl Says {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 7] = [
         Self::Name,
         Self::State,
         Self::Calibration,
@@ -35,7 +31,6 @@ impl Says {
         Self::Forget,
         Self::Sensor,
         Self::Forgotten,
-        Self::Replace,
     ];
 
     /// Its faces, largest first: the line takes the largest its box fits.
@@ -43,9 +38,7 @@ impl Says {
         match self {
             Self::Name => &[FaceRole::Body, FaceRole::Caption],
             Self::Forget | Self::Sensor => &[FaceRole::Title, FaceRole::Body],
-            Self::State | Self::Calibration | Self::Hint | Self::Forgotten | Self::Replace => {
-                &[FaceRole::Caption]
-            }
+            Self::State | Self::Calibration | Self::Hint | Self::Forgotten => &[FaceRole::Caption],
         }
     }
 
@@ -64,7 +57,6 @@ impl Says {
             Self::Forget => face.fit_width(b"FORGET"),
             Self::Sensor => face.fit_width(b"SENSOR?"),
             Self::Forgotten => widest::name(face) + face.width(b" ") + widest::identity(face),
-            Self::Replace => face.fit_width(b"REPLACE SENSOR"),
         }
     }
 }
@@ -87,7 +79,6 @@ impl Arg for Says {
             Self::Forget => "FORGET",
             Self::Sensor => "SENSOR",
             Self::Forgotten => "FORGOTTEN",
-            Self::Replace => "REPLACE",
         }
     }
 }
@@ -115,10 +106,10 @@ impl Tile for SensorLine {
         let mut line = Text::<28>::new();
         let color = match says {
             Says::Name => {
-                let Some(identity) = menu.pictured() else {
+                let Some(shown) = menu.shown() else {
                     return;
                 };
-                let _ = line.push_str(name(identity.device_type));
+                let _ = line.push_str(name(shown.identity.device_type));
                 WHITE
             }
             Says::State => {
@@ -157,10 +148,6 @@ impl Tile for SensorLine {
                 let identity = shown.identity;
                 let label = menu.identity_label(identity);
                 let _ = write!(line, "{} {}", name(identity.device_type), label.as_str());
-                SECONDARY
-            }
-            Says::Replace => {
-                let _ = line.push_str("REPLACE SENSOR");
                 SECONDARY
             }
         };

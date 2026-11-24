@@ -772,9 +772,9 @@ Settings. [UI](ui.md#form) gives the verdicts' colours and the bars' scale.
 Home, Ready, Settings or setup ──> SENSORS ── ACT on ADD SENSOR ──> NEARBY (searches)
    (straight to NEARBY              │ ACT on a sensor     ^          │ ACT on a sensor: connect it and
     when nothing is saved)          v                     │ BACK     │ stay; BACK: SENSORS, on it
-                               Sensor's page ─────────────┘          v
-                                 │ trash cue                  REPLACE SENSOR? (a saved type)
-                                 v                              check cue: replace; back cue: keep
+                               Sensor's page ─────────────┘
+                                 │ trash cue
+                                 v
                                FORGET SENSOR?
                                  trash cue: forget; back cue: the sensor's page
 ```
@@ -785,14 +785,27 @@ Sensors opened from. With nothing saved, Sensors opens straight on NEARBY,
 and BACK there leaves too.
 
 NEARBY searches as it opens, and only there: leaving it stops the
-search. It lists each nearby sensor not saved yet. ACT on one connects it:
-NEARBY stays open, says HEART RATE ADDED (the sensor's name) in green until
-the next message, and keeps listing the other sensors found, so several pair
+search. It lists each nearby sensor not saved yet, strongest signal first
+(by signal bars, so rows do not swap on every packet). ACT on one saves it,
+even when a sensor of its type is saved already: NEARBY stays open, counts
+the sensors this visit added (2 ADDED) in green until the next message,
+focuses the next sensor found and keeps listing the others, so several pair
 from one search. BACK then returns to SENSORS with the sensor added last
-focused. One of a type already saved asks REPLACE SENSOR first. A sensor the search no longer reports says NOT SEEN - SEARCH
-AGAIN, and with all ten slots used, SENSOR SLOTS FULL. Once the search is
-over, ACT with nothing listed, or a tap on the refresh mark, searches again;
-with sensors listed, BACK and ADD SENSOR again does.
+focused. A sensor the search no longer reports says NOT SEEN - SEARCH
+AGAIN. With all ten slots used, NEARBY says FULL - FORGET ONE. Once the
+search is over, ACT with nothing listed, or a tap on the refresh mark,
+searches again; with sensors listed, BACK and ADD SENSOR again does.
+
+Several sensors of one type may be saved, such as two bikes' power meters.
+The radio has one channel per type, so it connects the one used last. When
+that one has sent nothing for a while (12 s, or 30 s while a ride records),
+VANA runs its own 3 s discovery, at most every 30 s and never while the
+sensor pages are open. It moves the channel to the saved sensor heard after
+the active one fell silent, the strongest if several, and saves it as the one
+used last. The radio connects nothing during those 3 s. A recording ride
+never switches otherwise, and a discovery started before the ride stops when
+it starts. The other sensors of the type say IN RANGE or NOT IN RANGE on
+SENSORS.
 
 A sensor's page shows its state, battery and number with button cues: back
 beside BACK, and the trash beside ACT, or beside MOVE on a power meter, whose

@@ -26,13 +26,10 @@ pub enum MenuMessage {
     NotSaved,
     /// Saved sensors could not be read, so changes are kept until restart only.
     SavedUnreadable,
-    /// The sensor of this device type, picked on NEARBY, is saved; NEARBY's
-    /// line names it.
-    Added(u8),
+    Added,
 }
 
 impl MenuMessage {
-    /// Every message, `Added` standing for each device type.
     pub const ALL: [Self; 22] = [
         Self::PickSensor,
         Self::SearchPending,
@@ -55,7 +52,7 @@ impl MenuMessage {
         Self::SlotsFull,
         Self::NotSaved,
         Self::SavedUnreadable,
-        Self::Added(0),
+        Self::Added,
     ];
 
     /// The lasting save problems `Menu::set_notice` shows.
@@ -82,17 +79,17 @@ impl MenuMessage {
             Self::ScanThenPick => "SCAN THEN PICK SENSOR",
             Self::InputLost => "INPUT LOST - PRESS NEXT",
             Self::NotSeen => "NOT SEEN - SEARCH AGAIN",
-            Self::SlotsFull => "ALL TEN SENSOR SLOTS ARE IN USE",
+            Self::SlotsFull => "TEN SENSORS SAVED - FORGET ONE TO ADD",
             Self::NotSaved => "NOT SAVED - RETRYING",
             Self::SavedUnreadable => "SAVED SENSORS UNREADABLE",
-            Self::Added(_) => "SENSOR ADDED",
+            Self::Added => "SENSOR ADDED",
         }
     }
 
     /// Wording that fits the page feedback and focused status lines.
     pub const fn short(self) -> &'static str {
         match self {
-            Self::SlotsFull => "SENSOR SLOTS FULL",
+            Self::SlotsFull => "FULL - FORGET ONE",
             Self::InputLost => "MOVE FOCUS FIRST",
             Self::WaitingForCompanion => "WAITING FOR RADIO",
             Self::ScanThenPick => "FIND NEARBY",
@@ -129,7 +126,7 @@ impl MenuMessage {
                 | Self::StartingSensors
                 | Self::WaitingForCompanion
                 | Self::ScanThenPick
-                | Self::Added(_)
+                | Self::Added
         )
     }
 }

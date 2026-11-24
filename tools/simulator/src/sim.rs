@@ -335,7 +335,7 @@ impl Sim {
         for &(device_type, device_number) in &kept.sensors {
             let saved = record
                 .sensors
-                .select(AntSensor::new(device_type, device_number).identity);
+                .add(AntSensor::new(device_type, device_number).identity);
             assert!(
                 saved.is_some(),
                 "sensor {device_type}/{device_number} is saved"

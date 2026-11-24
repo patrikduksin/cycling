@@ -19,7 +19,7 @@ fn connection(runtime: &Runtime, radio: &Radio, now: u64, kind: u8) -> Connectio
         .sensor_tiles(radio, now)
         .into_iter()
         .flatten()
-        .find(|tile| tile.identity.device_type == kind)
+        .find(|tile| tile.identity.device_type == kind && tile.connection.in_use())
         .expect("saved tile")
         .connection
 }
@@ -238,8 +238,7 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
     advance(&mut runtime, &mut radio, 0);
     assert_eq!(link(&radio, HEART, 0), Some(LinkState::Connecting));
     let forgot = forget_sensor(&mut runtime, &mut radio, HEART, 1000);
-    assert_eq!(runtime.preferences.sensors.of_type(HEART), None);
-    assert_eq!(runtime.preferences.sensors.of_type(HEART), None);
+    assert_eq!(runtime.preferences.sensors.active(HEART), None);
     assert!(
         runtime
             .sensor_tiles(&radio, forgot)
@@ -283,7 +282,7 @@ fn disconnect_of_a_connected_sensor_retries_a_busy_close() {
     radio.data(HEART, [0; 8], 10);
     radio.reject = Some(device_api::ant::Error::Busy);
     runtime.request_sensor(
-        crate::screens::sensors::Action::Disconnect(HEART),
+        crate::screens::sensors::Action::Forget(heart),
         &mut radio,
         100,
     );
@@ -301,7 +300,7 @@ fn reselecting_a_removed_sensor_connects_it_again() {
     let mut radio = Radio::new();
     advance(&mut runtime, &mut radio, 0);
     runtime.request_sensor(
-        crate::screens::sensors::Action::Disconnect(HEART),
+        crate::screens::sensors::Action::Forget(heart),
         &mut radio,
         100,
     );
@@ -314,7 +313,72 @@ fn reselecting_a_removed_sensor_connects_it_again() {
     );
     assert_eq!(link(&radio, HEART, 600), Some(LinkState::Connected));
     assert!(!runtime.links.rejects(&runtime.preferences.sensors, heart));
-    assert_eq!(runtime.preferences.sensors.of_type(HEART), Some((0, heart)));
+    assert_eq!(runtime.preferences.sensors.active(HEART), Some((0, heart)));
+}
+
+#[test]
+fn a_quiet_power_meter_gives_its_channel_to_the_saved_one_broadcasting() {
+    let (here, away) = (peer(POWER, 1), peer(POWER, 2));
+    let mut runtime = restored(&[here, away]);
+    let mut radio = Radio::quiet();
+    let scans = |radio: &Radio| {
+        radio
+            .requests
+            .iter()
+            .filter(|op| matches!(op, AntOperation::Scan(_)))
+            .count()
+    };
+    run(&mut runtime, &mut radio, 0, 11_000);
+    assert!(radio.connects(away) >= 1);
+    assert_eq!(radio.connects(here), 0);
+    assert_eq!(scans(&radio), 0, "the one used last gets its search first");
+    assert_eq!(runtime.menu.diagnostics().message, None);
+    let mut now = 11_000;
+    while scans(&radio) == 0 {
+        assert!(now < 40_000, "no background discovery");
+        run(&mut runtime, &mut radio, now, now + 10);
+        now += 10;
+    }
+    assert_eq!(scans(&radio), 1);
+    assert!(
+        radio.requests.contains(&AntOperation::Scan(3_000)),
+        "a short search"
+    );
+    radio.channels.receive(
+        Event::Discovery {
+            identity: here,
+            rssi: -60,
+        },
+        now,
+    );
+    while runtime.discovery.scan.active() {
+        assert!(now < 60_000, "the discovery never ended");
+        run(&mut runtime, &mut radio, now, now + 10);
+        now += 10;
+    }
+    assert_eq!(runtime.preferences.sensors.active(POWER), Some((0, here)));
+    assert_eq!(
+        preferences::encode(&runtime.preferences.record()),
+        preferences::encode(&preferences::Record {
+            sensors: runtime.preferences.sensors,
+            ..preferences::Record::default()
+        }),
+    );
+    run(&mut runtime, &mut radio, now, now + 1_000);
+    assert!(
+        radio
+            .requests
+            .iter()
+            .any(|op| matches!(op, AntOperation::Disconnect(POWER)))
+    );
+    radio
+        .channels
+        .receive(Event::Disconnected(away), now + 1_000);
+    run(&mut runtime, &mut radio, now + 1_000, now + 3_000);
+    assert!(radio.connects(here) >= 1);
+    let tiles = runtime.sensor_tiles(&radio, now + 3_000);
+    assert_eq!(tiles[1].unwrap().connection, Connection::NotInRange);
+    assert!(runtime.menu.diagnostics().message.is_none());
 }
 
 #[test]
@@ -453,10 +517,8 @@ fn save_problems_stay_visible_while_discovery_runs() {
     assert_eq!(runtime.menu.diagnostics().notice, None);
 }
 
-/// Replacing a sensor whose old channel cannot be closed retries the close
-/// with the same bounded backoff, never once per tick.
 #[test]
-fn replacement_backs_off_when_the_old_channel_keeps_failing_to_close() {
+fn switching_backs_off_when_the_old_channel_keeps_failing_to_close() {
     let old = peer(HEART, 4242);
     let new = peer(HEART, 5151);
     let mut runtime = restored(&[old]);
@@ -470,6 +532,8 @@ fn replacement_backs_off_when_the_old_channel_keeps_failing_to_close() {
         100,
     );
     assert_eq!(link(&radio, HEART, 100), Some(LinkState::TransportLost));
+    assert!(runtime.preferences.sensors.contains(old));
+    assert_eq!(runtime.preferences.sensors.active(HEART), Some((1, new)));
     let closes = |radio: &Radio| {
         radio
             .requests
@@ -486,10 +550,9 @@ fn replacement_backs_off_when_the_old_channel_keeps_failing_to_close() {
     assert_eq!(radio.connects(new), 0);
     assert_eq!(
         connection(&runtime, &radio, 120_000, HEART),
-        Connection::Replacing
+        Connection::Switching
     );
 
-    // The next close succeeds and the replacement connects right after it.
     radio.fail_disconnects = false;
     let mut now = 120_000;
     while radio.connects(new) == 0 {
@@ -511,7 +574,7 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
         let point = device_api::input::Point { x: 188, y: 312 };
         runtime.input_received(Input::Touch(point), now, now, radio)
     };
-    let saved = |runtime: &Runtime| runtime.preferences.sensors.of_type(HEART).is_some();
+    let saved = |runtime: &Runtime| runtime.preferences.sensors.active(HEART).is_some();
 
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
@@ -568,13 +631,13 @@ fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
     let strap = peer(HEART, 7);
     let other = peer(HEART, 8);
     let meter = peer(POWER, 9);
-    saved.select(strap);
-    saved.select(meter);
+    saved.add(strap);
+    saved.add(meter);
     let low = [0x52, 0xff, 1, 0, 0, 0, 0x80, 0x42];
-    links.note_battery(&saved, &battery_page(other, low));
-    links.note_battery(&saved, &battery_page(peer(34, 1), low));
+    links.note_page(&saved, &battery_page(other, low));
+    links.note_page(&saved, &battery_page(peer(34, 1), low));
     assert!(links.battery(0, strap).is_none() && links.battery(1, meter).is_none());
-    links.note_battery(&saved, &battery_page(strap, low));
+    links.note_page(&saved, &battery_page(strap, low));
     let expected = Battery {
         status: BatteryStatus::Low,
         millivolts: Some(2500),
@@ -583,15 +646,39 @@ fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
     assert_eq!(links.battery(0, strap), Some(expected));
     assert_eq!(links.battery(1, meter), None);
     // A reserved status or an ordinary page keeps what was reported.
-    links.note_battery(
+    links.note_page(
         &saved,
         &battery_page(strap, [0x52, 0xff, 1, 0, 0, 0, 0, 0x62]),
     );
-    links.note_battery(&saved, &battery_page(strap, [0x10, 0, 0, 0, 0, 0, 0, 0x22]));
+    links.note_page(&saved, &battery_page(strap, [0x10, 0, 0, 0, 0, 0, 0, 0x22]));
     assert_eq!(links.battery(0, strap), Some(expected));
-    // Replacing the sensor must not carry its report to the new one.
-    saved.select(other);
+    saved.remove(strap);
+    assert_eq!(saved.add(other), Some(0));
     assert_eq!(links.battery(0, other), None);
+}
+
+#[test]
+fn a_saved_sensor_names_its_maker_once_its_pages_say() {
+    let mut links = crate::app::sensor_links::Links::default();
+    let mut saved = crate::sensors::saved::Saved::default();
+    let meter = peer(POWER, 9);
+    saved.add(meter);
+    assert_eq!(links.product(0, meter).maker(), None);
+    links.note_page(
+        &saved,
+        &battery_page(peer(POWER, 10), [0x50, 255, 255, 1, 7, 1, 3, 0]),
+    );
+    assert_eq!(
+        links.product(0, meter).maker(),
+        None,
+        "another meter's page"
+    );
+    links.note_page(
+        &saved,
+        &battery_page(meter, [0x50, 255, 255, 1, 7, 1, 3, 0]),
+    );
+    let product = links.product(0, meter);
+    assert_eq!((product.maker(), product.model), (Some("Favero"), Some(3)));
 }
 
 #[test]
@@ -600,7 +687,7 @@ fn a_dual_sided_meter_stays_low_while_its_other_battery_reads_good() {
     let mut links = crate::app::sensor_links::Links::default();
     let mut saved = crate::sensors::saved::Saved::default();
     let meter = peer(POWER, 9);
-    saved.select(meter);
+    saved.add(meter);
     let side = |identifier: u8, status: u8| {
         battery_page(
             meter,
@@ -617,18 +704,18 @@ fn a_dual_sided_meter_stays_low_while_its_other_battery_reads_good() {
         )
     };
     for _ in 0..4 {
-        links.note_battery(&saved, &side(0, 4));
+        links.note_page(&saved, &side(0, 4));
         assert_eq!(
             links.battery(0, meter).map(|b| b.status),
             Some(BatteryStatus::Low)
         );
-        links.note_battery(&saved, &side(1, 2));
+        links.note_page(&saved, &side(1, 2));
         assert_eq!(
             links.battery(0, meter).map(|b| b.status),
             Some(BatteryStatus::Low)
         );
     }
-    links.note_battery(&saved, &side(0, 2));
+    links.note_page(&saved, &side(0, 2));
     assert_eq!(
         links.battery(0, meter).map(|b| b.status),
         Some(BatteryStatus::Good)
@@ -640,8 +727,8 @@ fn a_combined_speed_cadence_sensor_never_reports_a_battery() {
     let mut links = crate::app::sensor_links::Links::default();
     let mut saved = crate::sensors::saved::Saved::default();
     let sensor = peer(121, 5);
-    saved.select(sensor);
-    links.note_battery(
+    saved.add(sensor);
+    links.note_page(
         &saved,
         &battery_page(sensor, [0x52, 0x10, 0x20, 0, 0, 0x30, 0x23, 0x41]),
     );

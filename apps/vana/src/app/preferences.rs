@@ -1,47 +1,3 @@
-//! VANA's persisted cycling preferences: the training profile, the ANT
-//! sensors the rider selected and the ride, display and sound options.
-//!
-//! The record lives in the application area of the shell settings envelope,
-//! which the shell stores and carries through its own saves without reading
-//! it. VANA owns the layout below:
-//!
-//! | Byte | Field |
-//! | --- | --- |
-//! | 0 | Record version, 12 |
-//! | 1..3 | FTP in watts, little-endian |
-//! | 3..5 | LTHR in bpm, little-endian |
-//! | 5 | Saved ANT sensor count, at most 10 |
-//! | 6.. | Per sensor: device type, device number (little-endian), transmission type |
-//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF; other bits zero |
-//! | then | Auto lap: 0 off, 1 to 100 km between laps, 255 at the start point |
-//! | then | Day and night: 0 automatic, 1 always day, 2 always night |
-//! | then | First-run setup step to resume, 0 when setup is done |
-//! | then | Ride pages, 4 bytes owned by `screens::ride::Deck`: the optional pages MOVE shows after the main page, in order, by `RidePage::index`, then 255s |
-//! | then | Ride alerts, 9 bytes owned by `ride::alerts` (see `ALERTS_DEFAULT`) |
-//! | then | Theme: 0 dark, 1 light, 2 automatic |
-//! | then | Time zone, 2 bytes owned by `clock::Zone`: 0 0 for Chile |
-//! | then | Wheel circumference in mm, little-endian, 0 for never set |
-//! | then | Wheel size mode: 0 automatic (learned from GPS), 1 manual |
-//! | then | Rider weight in kg, 0 for unset, else 30 to 200 |
-//! | then | Rider age in years, 0 for unset, else 10 to 99 |
-//! | then | Rider sex: 0 unset, 1 male, 2 female |
-//! | then | Main page lower line: reading id of the left slot, then of the right (`screens::ride::slots`), 0 and 1 (cadence, distance) by default |
-//! | then | Display mode: the row of `mode::TABLE`, 0 normal and 1 saver |
-//! | then | Brightness: 1 follows the ambient light, 0 holds the shell's stored percent |
-//!
-//! A record is `36 + 4 * count` bytes, at most 76 of the shell's 96. Any
-//! change to the layout or to the values a field may hold, a new reading id
-//! or a removed page included, bumps the version. The wheel size is global,
-//! not per sensor: the saved ANT sensors are one per kind and VANA rides one
-//! bike's wheel; a sensor moved to another wheel is relearned on the next
-//! ride.
-//!
-//! An empty area means nothing was saved yet: the defaults apply, first-run
-//! setup is due, and the first change writes a record. A record of an older
-//! version is outdated: the defaults apply and replace it, and the shell's
-//! own settings around it stay. Any other record that is not exactly what
-//! this firmware would write is foreign: the defaults stay in force and the
-//! record stays stored untouched.
 use super::Runtime;
 use super::mode::DisplayMode;
 use crate::clock::Zone;
@@ -60,7 +16,7 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::{AppPreferences, Source};
 use firmware_shell::shell::{BrightnessChoice, Shell};
 
-const VERSION: u8 = 12;
+const VERSION: u8 = 13;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
@@ -793,14 +749,14 @@ mod tests {
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                12, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+                13, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
                 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
         let mut sensors = Saved::default();
-        sensors.select(sensor(120, 0x1234));
-        sensors.select(device_api::ant::Identity {
+        sensors.add(sensor(120, 0x1234));
+        sensors.add(device_api::ant::Identity {
             device_type: 40,
             device_number: 7,
             transmission_type: 5,
@@ -833,20 +789,20 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                12, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b110, 10, 2, 3, 1, 2, 5,
-                0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6,
-                2, 1, 0
+                13, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 1, 40, 7, 0, 5, 0, 0b110, 10, 2, 3, 1, 2,
+                5, 0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2,
+                6, 2, 1, 0
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
         // Ten sensors fit the shell application area.
         let mut full = Saved::default();
         for kind in 1..=10 {
-            full.select(sensor(kind, u16::from(kind)));
+            full.add(sensor(kind, u16::from(kind)));
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 76);
+        assert_eq!(bytes.len(), 86);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
     }
@@ -1101,7 +1057,7 @@ mod tests {
     #[test]
     fn sensor_changes_save_at_once_and_locked_records_keep_them_in_memory() {
         let mut sensors = Saved::default();
-        sensors.select(sensor(120, 1));
+        sensors.add(sensor(120, 1));
         let mut preferences = Preferences::load(&encode(&Record::default()), Source::Current);
         assert_eq!(preferences.stored, Stored::Current);
         preferences.set_sensors(sensors, 10_000);
@@ -1162,7 +1118,7 @@ mod tests {
         for _ in 0..rng.below(12) {
             let any = rng.byte();
             let device_type = rng.pick(&[120, 11, 121, 122, 123, 17, 40, any]);
-            sensors.select(device_api::ant::Identity {
+            sensors.add(device_api::ant::Identity {
                 device_type,
                 device_number: rng.range(1, 65_535) as u16,
                 transmission_type: rng.range(1, 255) as u8,

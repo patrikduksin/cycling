@@ -1,8 +1,7 @@
 //! The sensor pages. SENSORS lists the saved sensors and ADD SENSOR under
 //! its title; NEARBY lists what a search found under its title and the
 //! search line. A sensor's page pictures it over its name and state, its
-//! BATTERY and ID, and on a power meter its calibration. FORGET SENSOR?
-//! and REPLACE SENSOR ask with corner cues.
+//! BATTERY and ID, and on a power meter its calibration.
 //!
 //! The menu (`screens::sensors`) takes the presses itself: lost input makes
 //! MOVE confirm the focus before ACT, and ACT waits a moment after a page
@@ -13,8 +12,7 @@ use crate::compose::data::ListKind;
 use crate::compose::input::{Action, Button, Buttons, OnPage};
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::{
-    SENSOR_CELLS, SENSOR_ICON, SENSOR_LINE, SENSOR_ROW, SENSOR_SEARCH, SENSOR_SWAP, SENSOR_TITLE,
-    SPACE, STATUS,
+    SENSOR_CELLS, SENSOR_ICON, SENSOR_LINE, SENSOR_ROW, SENSOR_SEARCH, SENSOR_TITLE, SPACE, STATUS,
 };
 use crate::compose::tiles::sensor_line::Says;
 use crate::screens::cue::Icon;
@@ -96,20 +94,6 @@ pub const FORGET: &Builtin = &Builtin {
         ])
     },
     buttons: answer(Icon::Trash),
-};
-
-pub const REPLACE: &Builtin = &Builtin {
-    tree: |_: &Choices| {
-        page(&[
-            Node::leaf(SENSOR_ICON, 0, Size::CONTENT),
-            Node::col(3, Size::CONTENT),
-            line(Says::Name),
-            space(NEAR_UNITS),
-            line(Says::Replace),
-            Node::leaf(SENSOR_SWAP, 0, Size::CONTENT),
-        ])
-    },
-    buttons: answer(Icon::Check),
 };
 
 const fn answer(icon: Icon) -> Buttons {

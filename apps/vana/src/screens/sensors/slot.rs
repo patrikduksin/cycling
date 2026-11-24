@@ -1,7 +1,7 @@
 //! A saved sensor tile: the rider's selection and what VANA last observed
 //! while connecting it automatically.
 use crate::screens::workout::Text;
-use crate::sensors::ant::Battery;
+use crate::sensors::ant::{Battery, Product};
 use core::fmt::Write;
 use device_api::ant::Identity;
 
@@ -21,24 +21,28 @@ pub enum Connection {
     /// The radio is starting, discovering or busy; connecting follows.
     WaitingForRadio,
     /// The previous sensor of this type is closing first.
-    Replacing,
+    Switching,
     /// The radio cannot connect sensors until it recovers.
     RadioUnavailable,
     /// The radio does not support this device type.
     Unsupported,
+    Standby,
+    NotInRange,
 }
 
 impl Connection {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Live,
         Self::WaitingForData,
         Self::DataLost,
         Self::Searching,
         Self::NotFound,
         Self::WaitingForRadio,
-        Self::Replacing,
+        Self::Switching,
         Self::RadioUnavailable,
         Self::Unsupported,
+        Self::Standby,
+        Self::NotInRange,
     ];
 
     pub const fn text(self) -> &'static str {
@@ -49,19 +53,26 @@ impl Connection {
             Self::Searching => "SEARCHING",
             Self::NotFound => "NOT FOUND YET",
             Self::WaitingForRadio => "WAITING FOR RADIO",
-            Self::Replacing => "REPLACING",
+            Self::Switching => "SWITCHING",
             Self::RadioUnavailable => "RADIO UNAVAILABLE",
             Self::Unsupported => "TYPE UNSUPPORTED",
+            Self::Standby => "IN RANGE",
+            Self::NotInRange => "NOT IN RANGE",
         }
+    }
+
+    pub const fn in_use(self) -> bool {
+        !matches!(self, Self::Standby | Self::NotInRange)
     }
 
     pub(super) const fn status(self) -> LinkStatus {
         match self {
             Self::Live => LinkStatus::Live,
             Self::WaitingForData | Self::DataLost => LinkStatus::Check,
-            Self::Searching | Self::WaitingForRadio | Self::Replacing => LinkStatus::Waiting,
+            Self::Searching | Self::WaitingForRadio | Self::Switching => LinkStatus::Waiting,
             Self::NotFound => LinkStatus::Missing,
             Self::RadioUnavailable | Self::Unsupported => LinkStatus::Failed,
+            Self::Standby | Self::NotInRange => LinkStatus::Idle,
         }
     }
 }
@@ -79,6 +90,7 @@ pub(super) enum LinkStatus {
     Failed,
     /// Connected, but data is missing or stale.
     Check,
+    Idle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +99,7 @@ pub struct Selected {
     pub connection: Connection,
     /// What the sensor last reported about its battery, if it has.
     pub battery: Option<Battery>,
+    pub product: Product,
 }
 
 impl Selected {

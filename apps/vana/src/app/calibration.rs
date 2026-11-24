@@ -229,13 +229,22 @@ impl Phase {
 }
 
 impl Runtime {
-    /// The rider asked to zero the saved power meter.
-    pub(super) fn calibrate(&mut self, ant: &mut impl Ant, now: u64) {
+    /// The rider asked to zero `meter` from its page. Only the active power
+    /// meter, live on its channel, can be asked; any other is not connected.
+    pub(super) fn calibrate(&mut self, meter: Identity, ant: &mut impl Ant, now: u64) {
         let event = Event::Ask {
-            live: self.live_power_meter(ant, now),
+            live: self
+                .live_power_meter(ant, now)
+                .filter(|target| target.identity == meter),
             recording: self.recorder_busy(),
             now,
         };
+        if !matches!(
+            self.calibration,
+            Phase::Requested { .. } | Phase::Waiting { .. }
+        ) {
+            self.calibrated = Some(meter);
+        }
         self.calibration = step(self.calibration, event);
         self.submit_calibration(ant, now);
         self.display.redraw();
@@ -314,9 +323,8 @@ impl Runtime {
         }
     }
 
-    /// The saved power meter, when its channel is connected and its data fresh.
     fn live_power_meter(&self, ant: &impl Ant, now: u64) -> Option<Target> {
-        let (_, peer) = self.preferences.sensors.of_type(device_type::POWER)?;
+        let (_, peer) = self.preferences.sensors.active(device_type::POWER)?;
         let channel = ant.channel(device_type::POWER, now)?;
         (channel.selected == Some(peer) && channel.link == LinkState::Connected && !channel.stale)
             .then_some(Target {

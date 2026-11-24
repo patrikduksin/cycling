@@ -1,22 +1,17 @@
-//! ANT sensor links: foreground discovery, the rider's saved selections and
-//! their automatic connection.
-//!
-//! Saved selections are the only connection intent. Connection work runs every
-//! tick whatever the open screen or display state, submits at most one radio
-//! request per tick, takes saved sensors in turn, and backs off after each
-//! failed search. Disconnect removes a selection; its channel is then closed
-//! and no later event can reconnect it.
+//! The radio has one channel per device type, so of several saved sensors
+//! of one type only the active one, the one used last, is connected.
 use super::Runtime;
 use super::preferences::Persistence;
 use crate::screens::sensors::{Action, Connection, MenuMessage, Selected};
-use crate::sensors::ant::{Battery, BatteryReports};
-use crate::sensors::saved::Saved;
+use crate::sensors::ant::{Battery, BatteryReports, Product};
+use crate::sensors::saved::{SAVED_CAPACITY, Saved};
 use crate::sensors::scan::{self, Scan, Status};
 use device_api::ant::{
-    Admission, Ant, AntOperation, CHANNEL_CAPACITY, Error, Identity, LinkState, Packet, STALE_MS,
-    ScanState, Snapshot,
+    Admission, Ant, AntOperation, CONNECT_TIMEOUT_MS, DISCOVERY_CAPACITY, Discovery as Found,
+    Error, Identity, LinkState, Packet, STALE_MS, ScanState, Snapshot,
 };
 use device_api::observation::Availability;
+use firmware_services::why;
 
 /// Delay before the next search after this many unsuccessful ones; the
 /// transport's own connect timeout comes on top of it.
@@ -46,6 +41,14 @@ const RADIO_RETRY_MS: u64 = 5_000;
 const SILENT_RECONNECT_MS: u64 = 30_000;
 /// Removed sensors whose channel failed are closed this many times at most.
 const CLOSE_ATTEMPTS: u8 = 3;
+const IDLE_CHOICE_MS: u64 = CONNECT_TIMEOUT_MS + 2_000;
+const DROPOUT_MS: u64 = 30_000;
+const CHOICE_EVERY_MS: u64 = 30_000;
+/// A discovery heard this recently still says the sensor is broadcasting.
+const HEARD_MS: u64 = 15_000;
+/// The radio connects nothing while it searches, so VANA's own search is
+/// short: ANT+ sensors broadcast about four times a second.
+const CHOICE_SCAN_MS: u32 = 3_000;
 
 #[derive(Default)]
 pub(super) struct Discovery {
@@ -54,19 +57,32 @@ pub(super) struct Discovery {
     requested: bool,
     /// Transport scan generation already shown, so a new search clears old results.
     generation: u32,
+    searcher: Searcher,
+    choice_due_ms: u64,
 }
 
 state!(Discovery {
     scan,
     requested,
     generation,
+    searcher,
+    choice_due_ms,
 });
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Searcher {
+    #[default]
+    Rider,
+    /// VANA choosing among saved sensors of a type; the sensor pages
+    /// neither show nor clear for it.
+    Choice { recording: bool },
+}
 
 impl Discovery {
     /// A search the rider asked for starts or runs; its results arrive a
     /// few packets a pass.
     pub(super) fn searching(&self) -> bool {
-        self.requested || self.scan.active()
+        self.requested || self.scan.active() && self.searcher == Searcher::Rider
     }
 
     pub(super) fn message(&self) -> MenuMessage {
@@ -87,7 +103,11 @@ impl Discovery {
 
     pub(super) fn step(&mut self, mut event: scan::Event, ant: &mut impl Ant, now: u64) {
         while let Some(op) = self.scan.step(event, &seen(ant, now), now) {
-            event = scan::Event::Answer(op, ant.request(op.operation(), now));
+            let operation = match (op, self.searcher) {
+                (scan::Op::Start, Searcher::Choice { .. }) => AntOperation::Scan(CHOICE_SCAN_MS),
+                _ => op.operation(),
+            };
+            event = scan::Event::Answer(op, ant.request(operation, now));
         }
     }
 }
@@ -119,6 +139,7 @@ struct Schedule {
     refused: Option<Error>,
     /// When the current connected session was first observed.
     connected_ms: Option<u64>,
+    silent_since_ms: u64,
 }
 
 impl Schedule {
@@ -191,18 +212,22 @@ enum Target {
     Closing(usize),
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Heard {
+    peer: Identity,
+    batteries: BatteryReports,
+    product: Product,
+}
+
 #[derive(Default)]
 pub(super) struct Links {
-    schedules: [Schedule; CHANNEL_CAPACITY],
-    closing: heapless::Vec<Closing, CHANNEL_CAPACITY>,
+    schedules: [Schedule; SAVED_CAPACITY],
+    closing: heapless::Vec<Closing, SAVED_CAPACITY>,
     /// Saved slot served first next time, so no sensor starves the others.
     next: usize,
     /// Save state last shown on the sensor page.
     shown: Option<Persistence>,
-    /// What each saved slot's sensor last reported about its batteries, kept
-    /// with the peer so a replaced sensor's report never describes the new
-    /// one. Live state only; never stored.
-    batteries: [Option<(Identity, BatteryReports)>; CHANNEL_CAPACITY],
+    heard: [Option<Heard>; SAVED_CAPACITY],
 }
 
 state!(Links {
@@ -210,7 +235,7 @@ state!(Links {
     closing,
     next,
     shown,
-    batteries,
+    heard,
 });
 
 fn channel_of(channels: &[Option<Snapshot>], kind: u8) -> Option<Snapshot> {
@@ -222,39 +247,102 @@ fn channel_of(channels: &[Option<Snapshot>], kind: u8) -> Option<Snapshot> {
 }
 
 impl Links {
-    /// Keep a battery report from a saved sensor; any other page is ignored.
-    pub(super) fn note_battery(&mut self, saved: &Saved, packet: &Packet) {
+    pub(super) fn note_page(&mut self, saved: &Saved, packet: &Packet) {
         let peer = packet.identity;
-        let Some((slot, saved)) = saved.of_type(peer.device_type) else {
+        let Some(slot) = saved.slot_of(peer) else {
             return;
         };
-        if saved != peer {
-            return;
-        }
-        let Some(battery) = Battery::decode(peer.device_type, packet.data) else {
-            return;
+        let heard = match &mut self.heard[slot] {
+            Some(heard) if heard.peer == peer => heard,
+            held => held.insert(Heard {
+                peer,
+                batteries: BatteryReports::default(),
+                product: Product::default(),
+            }),
         };
-        match &mut self.batteries[slot] {
-            Some((reporter, reports)) if *reporter == peer => reports.note(battery),
-            held => {
-                let mut reports = BatteryReports::default();
-                reports.note(battery);
-                *held = Some((peer, reports));
-            }
+        if let Some(battery) = Battery::decode(peer.device_type, packet.data) {
+            heard.batteries.note(battery);
         }
+        heard.product.note(peer.device_type, packet.data);
+    }
+
+    fn heard(&self, slot: usize, peer: Identity) -> Option<&Heard> {
+        self.heard[slot].as_ref().filter(|heard| heard.peer == peer)
     }
 
     pub(super) fn battery(&self, slot: usize, peer: Identity) -> Option<Battery> {
-        let (reporter, reports) = self.batteries[slot].as_ref()?;
-        (*reporter == peer).then(|| reports.worst()).flatten()
+        self.heard(slot, peer)?.batteries.worst()
     }
 
-    /// Whether a packet belongs to a sensor VANA is closing or replacing.
+    pub(super) fn product(&self, slot: usize, peer: Identity) -> Product {
+        self.heard(slot, peer)
+            .map_or_else(Product::default, |heard| heard.product)
+    }
+
     pub(super) fn rejects(&self, saved: &Saved, peer: Identity) -> bool {
         self.closing.iter().any(|c| c.kind == peer.device_type)
             || saved
-                .of_type(peer.device_type)
-                .is_some_and(|(_, saved)| saved != peer)
+                .active(peer.device_type)
+                .is_some_and(|(_, active)| active != peer)
+    }
+
+    fn due_for_choice(&self, saved: &Saved, slot: usize, recording: bool, now: u64) -> bool {
+        let Some(peer) = saved.get(slot) else {
+            return false;
+        };
+        let wait = if recording {
+            DROPOUT_MS
+        } else {
+            IDLE_CHOICE_MS
+        };
+        saved.is_active(slot)
+            && saved.count_of(peer.device_type) > 1
+            && now.saturating_sub(self.schedules[slot].silent_since_ms) >= wait
+    }
+
+    fn choose(
+        &mut self,
+        saved: &mut Saved,
+        heard: &[Option<Found>],
+        recording: bool,
+        now: u64,
+    ) -> bool {
+        let mut changed = false;
+        for slot in 0..SAVED_CAPACITY {
+            if !self.due_for_choice(saved, slot, recording, now) {
+                continue;
+            }
+            let Some(kind) = saved.get(slot).map(|peer| peer.device_type) else {
+                continue;
+            };
+            // The transport keeps the last search's list until the next
+            // begins, so only what was heard since this sensor fell silent,
+            // and lately, counts.
+            let since = self.schedules[slot].silent_since_ms;
+            let fresh: [Option<Found>; DISCOVERY_CAPACITY] = core::array::from_fn(|index| {
+                heard.get(index).copied().flatten().filter(|found| {
+                    found.seen_ms >= since && now.saturating_sub(found.seen_ms) <= HEARD_MS
+                })
+            });
+            let Some(pick) = saved.choose(kind, &fresh) else {
+                continue;
+            };
+            if saved.used(pick) {
+                why!("links.chose", kind, pick);
+                if let Some(slot) = saved.slot_of(pick) {
+                    self.activated(slot, now);
+                }
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn activated(&mut self, slot: usize, now: u64) {
+        self.schedules[slot] = Schedule {
+            silent_since_ms: now,
+            ..Schedule::default()
+        };
     }
 
     fn need(&self, slot: usize, peer: Identity, channel: Option<Snapshot>, now: u64) -> Need {
@@ -305,19 +393,25 @@ impl Links {
     /// Track observed link state: fresh data resets the backoff, a new need
     /// is given its delay, and finished closes are dropped.
     fn observe(&mut self, saved: &Saved, channels: &[Option<Snapshot>], now: u64) {
-        for slot in 0..CHANNEL_CAPACITY {
+        for slot in 0..SAVED_CAPACITY {
             let Some(peer) = saved.get(slot) else {
                 continue;
             };
+            let schedule = &mut self.schedules[slot];
+            if !saved.is_active(slot) {
+                schedule.armed = false;
+                schedule.connected_ms = None;
+                continue;
+            }
             let channel = channel_of(channels, peer.device_type);
             let ours = channel.filter(|s| s.selected == Some(peer));
-            let schedule = &mut self.schedules[slot];
             match ours {
                 Some(s) if s.link == LinkState::Connected => {
                     schedule.connected_ms.get_or_insert(now);
                     if s.age_ms.is_some_and(|age| age < STALE_MS) {
                         schedule.failures = 0;
                         schedule.refused = None;
+                        schedule.silent_since_ms = now;
                     }
                 }
                 _ => schedule.connected_ms = None,
@@ -348,7 +442,6 @@ impl Links {
         });
     }
 
-    /// The next due request, closes first; saved sensors are taken in turn.
     fn next_request(
         &mut self,
         saved: &Saved,
@@ -366,12 +459,12 @@ impl Links {
                 ));
             }
         }
-        for offset in 0..CHANNEL_CAPACITY {
-            let slot = (self.next + offset) % CHANNEL_CAPACITY;
+        for offset in 0..SAVED_CAPACITY {
+            let slot = (self.next + offset) % SAVED_CAPACITY;
             let Some(peer) = saved.get(slot) else {
                 continue;
             };
-            if !self.schedules[slot].due(now) {
+            if !saved.is_active(slot) || !self.schedules[slot].due(now) {
                 continue;
             }
             let operation = match self.need(slot, peer, channel_of(channels, peer.device_type), now)
@@ -380,7 +473,7 @@ impl Links {
                 Need::Connect => AntOperation::Connect(peer),
                 Need::Close => AntOperation::Disconnect(peer.device_type),
             };
-            self.next = (slot + 1) % CHANNEL_CAPACITY;
+            self.next = (slot + 1) % SAVED_CAPACITY;
             return Some((operation, Target::Saved(slot)));
         }
         None
@@ -403,8 +496,6 @@ impl Links {
         }
     }
 
-    /// A saved sensor still waits for its first connection attempt. A new
-    /// choice, or a restart, goes ahead of discovery.
     fn first_attempt_pending(
         &self,
         saved: &Saved,
@@ -413,7 +504,8 @@ impl Links {
     ) -> bool {
         saved.peers().any(|(slot, peer)| {
             let schedule = &self.schedules[slot];
-            schedule.failures == 0
+            saved.is_active(slot)
+                && schedule.failures == 0
                 && schedule.closes == 0
                 && schedule.refused.is_none()
                 && self.need(slot, peer, channel_of(channels, peer.device_type), now)
@@ -421,42 +513,53 @@ impl Links {
         })
     }
 
-    /// The rider's explicit choice; replaces any saved peer of its type.
-    fn select(&mut self, saved: &mut Saved, peer: Identity) -> bool {
-        let Some(slot) = saved.select(peer) else {
+    fn add(&mut self, saved: &mut Saved, peer: Identity, now: u64) -> bool {
+        let Some(slot) = saved.add(peer) else {
             return false;
         };
-        self.schedules[slot] = Schedule::default();
+        self.activated(slot, now);
         self.closing.retain(|c| c.kind != peer.device_type);
         true
     }
 
-    /// Disconnect: forget the selection and close whatever channel it had.
-    fn remove(&mut self, saved: &mut Saved, kind: u8) -> bool {
-        let Some((slot, _)) = saved.of_type(kind) else {
+    fn forget(&mut self, saved: &mut Saved, peer: Identity, now: u64) -> bool {
+        let kind = peer.device_type;
+        let was_active = saved.active(kind).map(|(_, active)| active) == Some(peer);
+        let Some(slot) = saved.remove(peer) else {
             return false;
         };
-        saved.remove(kind);
         self.schedules[slot] = Schedule::default();
-        if !self.closing.iter().any(|c| c.kind == kind) {
-            // Cannot fail: one entry per device type, and at most
-            // CHANNEL_CAPACITY types are ever selected.
-            let _ = self.closing.push(Closing {
-                kind,
-                schedule: Schedule::default(),
-            });
+        self.heard[slot] = None;
+        match saved.active(kind) {
+            Some((next, _)) if was_active => self.activated(next, now),
+            Some(_) => {}
+            None if !self.closing.iter().any(|c| c.kind == kind) => {
+                let _ = self.closing.push(Closing {
+                    kind,
+                    schedule: Schedule::default(),
+                });
+            }
+            None => {}
         }
         true
     }
 
-    /// Rider-facing state of a saved sensor, from observations only.
     fn connection(
         &self,
         slot: usize,
         peer: Identity,
         channel: Option<Snapshot>,
         radio: Radio,
+        active: bool,
+        in_range: bool,
     ) -> Connection {
+        if !active {
+            return if in_range {
+                Connection::Standby
+            } else {
+                Connection::NotInRange
+            };
+        }
         let schedule = &self.schedules[slot];
         if matches!(
             schedule.refused,
@@ -472,7 +575,7 @@ impl Links {
                 LinkState::Connecting => return Connection::Searching,
                 _ => {}
             },
-            Some(s) if s.link != LinkState::Disconnected => return Connection::Replacing,
+            Some(s) if s.link != LinkState::Disconnected => return Connection::Switching,
             _ => {}
         }
         if radio == Radio::Unavailable
@@ -510,17 +613,66 @@ impl Runtime {
         let was_scanning = self.discovery.scan.active();
         self.discovery.step(scan::Event::Tick, ant, now);
         self.refresh_discovery_session(ant);
-        if was_scanning || self.discovery.scan.active() {
+        let scanning = self.discovery.scan.active();
+        if (was_scanning || scanning) && self.discovery.searcher == Searcher::Rider {
             self.menu.set_message(self.discovery.message());
         }
+        if scanning
+            && self.discovery.searcher == (Searcher::Choice { recording: false })
+            && self.ride.recording()
+        {
+            self.cancel_search(ant, now);
+        }
+        if was_scanning && !scanning {
+            self.discovery.searcher = Searcher::Rider;
+            self.choose_sensors(ant, now);
+        }
         self.start_sensor_search(ant, now);
+        self.start_choice_search(ant, now);
         self.advance_links(ant, now);
         self.show_persistence();
     }
 
     pub(super) fn request_search(&mut self, ant: &mut impl Ant, now: u64) {
         self.discovery.requested = true;
+        self.discovery.searcher = Searcher::Rider;
         self.start_sensor_search(ant, now);
+    }
+
+    fn choose_sensors(&mut self, ant: &impl Ant, now: u64) {
+        let mut saved = self.preferences.sensors;
+        let recording = self.ride.recording();
+        if self
+            .links
+            .choose(&mut saved, &ant.discoveries(), recording, now)
+        {
+            self.preferences.set_sensors(saved, now);
+        }
+    }
+
+    fn start_choice_search(&mut self, ant: &mut impl Ant, now: u64) {
+        let discovery = &self.discovery;
+        if discovery.requested || discovery.scan.active() || now < discovery.choice_due_ms {
+            return;
+        }
+        let sensor_pages = self.navigation.page() == crate::screens::workout::Page::Sensors;
+        if sensor_pages || self.radio(ant) != Radio::Ready || ant.scan().state != ScanState::Idle {
+            return;
+        }
+        let saved = &self.preferences.sensors;
+        let channels = ant.channels(now);
+        let recording = self.ride.recording();
+        if self.links.first_attempt_pending(saved, &channels, now)
+            || !(0..SAVED_CAPACITY)
+                .any(|slot| self.links.due_for_choice(saved, slot, recording, now))
+        {
+            return;
+        }
+        why!("links.choice_search", recording);
+        self.discovery.searcher = Searcher::Choice { recording };
+        self.discovery.choice_due_ms = now.saturating_add(CHOICE_EVERY_MS);
+        self.discovery.step(scan::Event::Start, ant, now);
+        self.refresh_discovery_session(ant);
     }
 
     pub(super) fn cancel_search(&mut self, ant: &mut impl Ant, now: u64) {
@@ -552,7 +704,9 @@ impl Runtime {
         let generation = ant.scan().generation;
         if self.discovery.generation != generation {
             self.discovery.generation = generation;
-            self.menu.search_started();
+            if self.discovery.searcher == Searcher::Rider {
+                self.menu.search_started();
+            }
         }
     }
 
@@ -589,14 +743,14 @@ impl Runtime {
         let mut saved = self.preferences.sensors;
         let changed = match action {
             Action::Connect(peer) => {
-                let selected = self.links.select(&mut saved, peer);
-                if !selected {
+                let added = self.links.add(&mut saved, peer, now);
+                if !added {
                     self.menu.set_message(MenuMessage::SlotsFull);
                 }
-                selected
+                added
             }
-            Action::Disconnect(kind) => self.links.remove(&mut saved, kind),
-            Action::Scan | Action::StopScan | Action::Calibrate | Action::Ride => false,
+            Action::Forget(peer) => self.links.forget(&mut saved, peer, now),
+            Action::Scan | Action::StopScan | Action::Calibrate(_) | Action::Ride => false,
         };
         if changed {
             self.preferences.set_sensors(saved, now);
@@ -611,28 +765,37 @@ impl Runtime {
         &self,
         ant: &impl Ant,
         now: u64,
-    ) -> [Option<Selected>; CHANNEL_CAPACITY] {
+    ) -> [Option<Selected>; SAVED_CAPACITY] {
         let channels = ant.channels(now);
         let radio = self.radio(ant);
+        let found = ant.discoveries();
+        let saved = &self.preferences.sensors;
         core::array::from_fn(|slot| {
-            let peer = self.preferences.sensors.get(slot)?;
+            let peer = saved.get(slot)?;
             let channel = channel_of(&channels, peer.device_type);
+            let in_range = found.iter().flatten().any(|f| f.identity == peer);
+            let active = saved.is_active(slot);
             Some(Selected {
                 identity: peer,
-                connection: self.links.connection(slot, peer, channel, radio),
+                connection: self
+                    .links
+                    .connection(slot, peer, channel, radio, active, in_range),
                 battery: self.links.battery(slot, peer),
+                product: self.links.product(slot, peer),
             })
         })
     }
 
     pub(super) fn refresh_sensor_menu(&mut self, ant: &impl Ant, now: u64) {
         let tiles = self.sensor_tiles(ant, now);
+        let busy = self.discovery.scan.busy(ant.scan().state);
         self.menu.refresh(
             ant.discoveries(),
             tiles,
-            self.discovery.scan.busy(ant.scan().state),
+            busy && self.discovery.searcher == Searcher::Rider,
         );
-        self.menu.set_calibration(self.calibration.note());
+        let note = self.calibration.note();
+        self.menu.set_calibration(self.calibrated.zip(note));
     }
 
     /// Sensors saved for automatic connection, in tile order.
@@ -653,5 +816,94 @@ impl Runtime {
             Persistence::Saved | Persistence::Pending => None,
         });
         self.display.redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meter(device_number: u16) -> Identity {
+        Identity {
+            device_type: 11,
+            device_number,
+            transmission_type: 1,
+        }
+    }
+
+    fn heard(peer: Identity, seen_ms: u64) -> [Option<Found>; 1] {
+        [Some(Found {
+            identity: peer,
+            rssi: -50,
+            seen_ms,
+        })]
+    }
+
+    #[test]
+    fn a_recording_ride_switches_sensor_only_after_a_long_dropout() {
+        let (bike, spare) = (meter(1), meter(2));
+        let mut saved = Saved::default();
+        saved.add(spare);
+        saved.add(bike);
+        let mut links = Links::default();
+        links.activated(1, 0);
+        let choose = |recording, now| {
+            let (mut saved, mut links) = (saved, Links::default());
+            links.activated(1, 0);
+            links.choose(&mut saved, &heard(spare, now), recording, now);
+            saved.active(11).map(|(_, peer)| peer)
+        };
+        assert_eq!(choose(false, IDLE_CHOICE_MS - 1), Some(bike));
+        assert_eq!(choose(false, IDLE_CHOICE_MS), Some(spare));
+        assert_eq!(choose(true, IDLE_CHOICE_MS), Some(bike), "mid-ride");
+        assert_eq!(choose(true, DROPOUT_MS - 1), Some(bike));
+        assert_eq!(choose(true, DROPOUT_MS), Some(spare));
+        let channels = [Some(Snapshot {
+            scanning: false,
+            link: LinkState::Connected,
+            selected: Some(bike),
+            generation: 1,
+            packets: 1,
+            dropped_packets: 0,
+            discovery_overflows: 0,
+            transport_losses: 0,
+            tx_failures: 0,
+            age_ms: Some(0),
+            stale: false,
+        })];
+        links.observe(&saved, &channels, 29_000);
+        assert!(!links.choose(&mut saved, &heard(spare, DROPOUT_MS), true, DROPOUT_MS));
+        assert!(links.choose(
+            &mut saved,
+            &heard(spare, 29_000 + DROPOUT_MS),
+            true,
+            29_000 + DROPOUT_MS
+        ));
+        assert_eq!(saved.active(11), Some((0, spare)));
+    }
+
+    #[test]
+    fn a_type_with_one_saved_sensor_never_chooses() {
+        let mut saved = Saved::default();
+        saved.add(meter(1));
+        let mut links = Links::default();
+        assert!(!links.choose(&mut saved, &heard(meter(2), 600_000), false, 600_000));
+        assert!(!links.due_for_choice(&saved, 0, false, 600_000));
+    }
+
+    #[test]
+    fn a_stale_discovery_list_never_switches_the_sensor() {
+        let (bike, spare) = (meter(1), meter(2));
+        let mut saved = Saved::default();
+        saved.add(spare);
+        saved.add(bike);
+        let mut links = Links::default();
+        links.activated(1, 40_000);
+        let now = 40_000 + DROPOUT_MS;
+        // Heard before the bike's meter fell silent: the spare was at home.
+        assert!(!links.choose(&mut saved, &heard(spare, 39_000), true, now));
+        // Heard after, but too long ago to say it broadcasts now.
+        assert!(!links.choose(&mut saved, &heard(spare, now - HEARD_MS - 1), true, now));
+        assert!(links.choose(&mut saved, &heard(spare, now - 1_000), true, now));
     }
 }

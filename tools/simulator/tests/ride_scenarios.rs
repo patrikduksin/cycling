@@ -2301,12 +2301,12 @@ fn disconnect_is_remembered_across_reboot() {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.home("SENSORS");
     sim.disconnect_sensor("HEART RATE");
-    assert!(
+    assert_eq!(
         sim.device
             .sdk
             .saved_sensors()
-            .of_type(device_type::HEART_RATE)
-            .is_none()
+            .count_of(device_type::HEART_RATE),
+        0
     );
     sim.expect_no_text("HEART RATE");
     sim.checkpoint("heart rate disconnected");
@@ -2334,38 +2334,77 @@ fn disconnect_is_remembered_across_reboot() {
     sim.checkpoint("ready without the removed sensor");
 }
 
+fn power_meter_on_channel(sim: &Sim) -> Option<u16> {
+    let channel = shown_channel(sim, device_type::POWER)?;
+    (channel.link == LinkState::Connected).then_some(channel.selected?.device_number)
+}
+
+fn shown_channel(sim: &Sim, kind: u8) -> Option<device_api::ant::Snapshot> {
+    use device_api::ant::Ant;
+    sim.device.sim().ant.channel(kind, sim.device.now)
+}
+
 #[test]
-fn same_type_replacement_is_saved_and_survives_reboot() {
+fn two_power_meters_stay_saved_and_the_one_in_range_takes_the_channel() {
     let mut sim = rider();
-    const SECOND_HEART: u16 = 5151;
-    sim.ant_sensor(device_type::HEART_RATE, SECOND_HEART);
+    const SPARE: u16 = 5151;
+    sim.ant_sensor(device_type::POWER, SPARE);
     sim.home("SENSORS");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
-    sim.connect_sensor("HEART RATE");
-    let first = sim
-        .device
-        .sdk
-        .saved_sensors()
-        .of_type(device_type::HEART_RATE);
-    let first = first.unwrap().1.device_number;
-    sim.replace_sensor("HEART RATE");
-    sim.checkpoint("heart rate replaced");
-    let second = if first == HEART { SECOND_HEART } else { HEART };
-    assert_eq!(
-        sim.device
-            .sdk
-            .saved_sensors()
-            .of_type(device_type::HEART_RATE)
-            .map(|(_, peer)| peer.device_number),
-        Some(second)
-    );
+    sim.connect_sensor("POWER METER");
+    sim.connect_sensor("POWER METER");
+    sim.expect_text("2 ADDED");
+    sim.checkpoint("two power meters added");
+    let saved = sim.device.sdk.saved_sensors();
+    assert_eq!(saved.count_of(device_type::POWER), 2);
+    let in_use = saved.active(device_type::POWER).unwrap().1.device_number;
+    let other = if in_use == POWER { SPARE } else { POWER };
     go_home(&mut sim);
+    let mut waited = 0;
+    while power_meter_on_channel(&sim) != Some(in_use) {
+        assert!(
+            waited < seconds(30),
+            "{:?}",
+            shown_channel(&sim, device_type::POWER)
+        );
+        sim.advance(100);
+        waited += 100;
+    }
+
+    let scans = |sim: &Sim| {
+        let log = &sim.device.sim().ant.log;
+        log.iter()
+            .filter(|(_, request)| matches!(request, Request::Scan { .. }))
+            .count()
+    };
+    let searched = scans(&sim);
+    sim.set_present(device_type::POWER, in_use, false);
+    let mut waited = 0;
+    while power_meter_on_channel(&sim) != Some(other) {
+        assert!(
+            waited < seconds(90),
+            "{:?}",
+            shown_channel(&sim, device_type::POWER)
+        );
+        sim.advance(100);
+        waited += 100;
+    }
+    let saved = sim.device.sdk.saved_sensors();
+    assert_eq!(saved.count_of(device_type::POWER), 2);
+    assert_eq!(
+        saved.active(device_type::POWER).unwrap().1.device_number,
+        other
+    );
+    assert_eq!(
+        scans(&sim),
+        searched + 1,
+        "one background discovery chose it"
+    );
+    sim.checkpoint("the other bike's power meter in use");
 
     sim.power_loss();
-    wait_connected(&mut sim, device_type::HEART_RATE, seconds(5));
-    assert_eq!(connects(&sim, device_type::HEART_RATE), [second]);
-    expect_ready_sensors(&mut sim, &["1 SENSOR LIVE", "HR"]);
-    sim.checkpoint("replacement after reboot");
+    wait_connected(&mut sim, device_type::POWER, seconds(15));
+    assert_eq!(power_meter_on_channel(&sim), Some(other));
 }
 
 #[test]
@@ -3716,7 +3755,7 @@ fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     sim.expect_no_text("NEXT");
     sim.checkpoint("sensors menu");
     sim.tap(120, 118);
-    sim.expect_text("HEART RATE ADDED");
+    sim.expect_text("1 ADDED");
     sim.expect_text("POWER METER");
     sim.checkpoint("sensor connected by tap");
     sim.press(Role::Back);
@@ -7684,9 +7723,8 @@ fn closing_car() -> Vehicle {
 #[test]
 fn a_radar_alarm_that_cuts_the_arrival_chime_short_lets_it_sound_whole_after() {
     let chime_ms = arrival_chime_ms();
-    let heard = cues_after_acting_before_chime(chime_ms, 100, seconds(15), |sim| {
-        sim.vehicle(closing_car())
-    });
+    let heard =
+        cues_after_acting_before_chime(chime_ms, 0, seconds(15), |sim| sim.vehicle(closing_car()));
     let first: Vec<_> = heard
         .iter()
         .take(2)

@@ -63,27 +63,12 @@ impl Sim {
         panic!("NEARBY does not open; screen:\n{}", self.screen().text());
     }
 
-    /// On NEARBY, MOVE to a sensor kind and connect it: NEARBY stays, says
-    /// it was added and keeps the other sensors found, so more pair from
-    /// the same search.
     #[track_caller]
     pub fn connect_sensor(&mut self, kind: &str) {
         self.nearby_page();
         self.focus_row(kind);
         self.press(Role::Act);
-        self.expect_text(&format!("{kind} ADDED"));
-    }
-
-    /// On NEARBY, MOVE to a sensor of an already saved kind and confirm,
-    /// with the check cue, that it replaces the saved one.
-    #[track_caller]
-    pub fn replace_sensor(&mut self, kind: &str) {
-        self.nearby_page();
-        self.focus_row(kind);
-        self.press(Role::Act);
-        self.expect_text("REPLACE SENSOR");
-        self.press(Role::Act);
-        self.expect_text(&format!("{kind} ADDED"));
+        self.expect_text(" ADDED");
     }
 
     /// On SENSORS, MOVE to a saved sensor and open its detail page.

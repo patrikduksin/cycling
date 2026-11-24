@@ -412,7 +412,7 @@ impl Runtime {
         let wheel = self.preferences.options.wheel;
         let saved = &self.preferences.sensors;
         let sensors = [device_type::SPEED, device_type::SPEED_CADENCE]
-            .map(|kind| saved.of_type(kind).map(|(_, identity)| identity));
+            .map(|kind| saved.active(kind).map(|(_, identity)| identity));
         let readings = &mut self.readings;
         if sensors != readings.wheel_sensors {
             why!("readings.wheel_sensors_changed", sensors);
@@ -507,12 +507,11 @@ impl Runtime {
             let Some(packet) = ant.take_packet() else {
                 break;
             };
-            // A removed or replaced sensor's pages never reach the ride.
             if !self
                 .links
                 .rejects(&self.preferences.sensors, packet.identity)
             {
-                self.links.note_battery(&self.preferences.sensors, &packet);
+                self.links.note_page(&self.preferences.sensors, &packet);
                 self.hear_calibration(&packet, now);
                 self.readings.receive(packet);
             }

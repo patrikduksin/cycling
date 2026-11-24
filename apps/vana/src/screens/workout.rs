@@ -1553,10 +1553,8 @@ impl<const N: usize> core::fmt::Write for Text<N> {
         if self.len + value.len() > N {
             return Err(core::fmt::Error);
         }
-        for byte in value.bytes() {
-            self.bytes[self.len] = byte.to_ascii_uppercase();
-            self.len += 1;
-        }
+        self.bytes[self.len..][..value.len()].copy_from_slice(value.as_bytes());
+        self.len += value.len();
         Ok(())
     }
 }
@@ -2312,10 +2310,10 @@ mod tests {
     }
 
     #[test]
-    fn text_is_uppercase_and_bounded() {
+    fn text_keeps_its_case_and_is_bounded() {
         let mut line = Text::<4>::new();
-        assert!(line.push_str("ok").is_ok());
+        assert!(line.push_str("Ok").is_ok());
         assert!(line.push_str("abc").is_err());
-        assert_eq!(line.as_bytes(), b"OK");
+        assert_eq!(line.as_bytes(), b"Ok");
     }
 }

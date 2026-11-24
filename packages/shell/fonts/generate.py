@@ -24,9 +24,10 @@ HERE = Path(__file__).resolve().parent
 SOURCE = HERE / "Nunito[wght].ttf"
 FONT = HERE.parent / "src/rendering/font"
 
-FIRST, LAST = 0x20, 0x5F
+FIRST, CAPS_LAST, LAST = 0x20, 0x5F, 0x7E
 DIGITS = "0123456789"
-TEXT = "".join(chr(c) for c in range(FIRST, LAST + 1))
+TEXT = "".join(chr(c) for c in range(FIRST, CAPS_LAST + 1))
+PRINTABLE = "".join(chr(c) for c in range(FIRST, LAST + 1))
 NUMBERS = " +-./0123456789:%"
 
 # name, weight, em size in pixels, characters, extra tracking in pixels, doc
@@ -48,6 +49,13 @@ FACES = [
     ("TOTAL_30", 700, 30, NUMBERS, 0, "The ride's averages when a course is done."),
     ("TOTAL_11", 900, 11, "ABCDEGHIKMNPRSTVW /", 0.6, "The captions over those totals."),
     ("FOOT_20", 700, 20, NUMBERS, 0, "The distance left in the map's footer."),
+    ("TAG", 800, 11, TEXT, 0.6, "Ride-page field titles, zone tags and the top line's battery."),
+    ("NOTE", 700, 13, PRINTABLE, 0, "Sentence-case subtitles and list labels."),
+    ("LABEL", 800, 15, PRINTABLE, 0, "List values and button labels."),
+    ("HEADING", 800, 21, PRINTABLE, 0, "A phone-style screen's title."),
+    ("DIGITS_40", 700, 40, NUMBERS, 0, "Ride-grid field digits."),
+    ("DIGITS_26", 700, 26, NUMBERS, 0, "The % beside 40 px digits, and mid-size values."),
+    ("DIGITS_15", 700, 15, NUMBERS, 0, "The ride top line's elapsed time."),
 ]
 SHIPPED_ADVANCES = {"CAPTION": {"_": 7}}
 
@@ -83,6 +91,11 @@ def rasterize(weight: int, size: int, chars: str, tracking: float, faint: FaintG
             top += box[1] - 2
             data = canvas.tobytes()
             pixels = [quantize(data[y * width + x]) for y in range(height) for x in range(width)]
+            if 15 not in pixels and not faint.allowed:
+                # A stroke that straddles pixel rows, as a small "-" does, has
+                # no solid pixel; at scale 1 its strongest pixels become solid.
+                strongest = max(pixels)
+                pixels = [(p * 15 + strongest // 2) // strongest for p in pixels]
             if 15 not in pixels:
                 assert faint.allowed, f"{char!r} at {size}px has no solid pixel"
                 faint.chars.append(char)
@@ -166,7 +179,9 @@ def emit(scale: Fraction = Fraction(1)) -> str:
             print(f"{name} at {size} px: {''.join(faint.chars)!r} have no solid pixel")
         bits = bytearray()
         entries = []
-        for code in range(FIRST, LAST + 1):
+        # A face given lowercase covers printable ASCII; the rest stop at "_".
+        last = LAST if any(c.islower() for c in chars) else CAPS_LAST
+        for code in range(FIRST, last + 1):
             g = glyphs.get(chr(code))
             if g is None:
                 entries.append("    Glyph::NONE,")
@@ -189,7 +204,7 @@ def emit(scale: Fraction = Fraction(1)) -> str:
             f"    glyphs: &{name}_GLYPHS,",
             f"    bits: &{name}_BITS,",
             "};",
-            f"static {name}_GLYPHS: [Glyph; {LAST - FIRST + 1}] = [",
+            f"static {name}_GLYPHS: [Glyph; {last - FIRST + 1}] = [",
             *entries,
             "];",
             f"static {name}_BITS: [u8; {len(bits)}] = [",

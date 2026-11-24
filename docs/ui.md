@@ -131,6 +131,15 @@ draw and holding only the characters it shows: `SIGN_50`, `SIGN_32`,
 sign, `TOTAL_60`, `TOTAL_30` (700) and `TOTAL_11` (900) for the totals, and
 `FOOT_20` (700) for the distance in the map's footer. See Course sign below.
 
+The #517 kit adds its own faces. `NOTE` (700, 13 px), `LABEL` (800, 15 px) and
+`HEADING` (800, 21 px) hold printable ASCII, lowercase included, for
+sentence-case subtitles and list labels, list values and button labels, and
+a phone-style screen's title. `TAG` (800, 11 px, capitals) is for ride-page
+field titles, zone tags and the top line's battery. `DIGITS_40`, `DIGITS_26`
+and `DIGITS_15` (700) hold the value characters for ride-grid digits, the %
+beside them and mid-size values, and the top line's elapsed time. A face
+without lowercase draws a lowercase letter as its capital.
+
 `VALUE`, `LARGE` and `HERO` hold only ` +-./0123456789:%`. Units are a
 `CAPTION` in `SECONDARY`, bottom-aligned with the number and 6 px to its
 right. A missing reading shows `--` in the value's face and colour.

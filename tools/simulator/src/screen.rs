@@ -189,7 +189,7 @@ fn templates(faces: &'static Faces) -> &'static Templates {
 fn build_templates(faces: &Faces) -> Templates {
     let mut map: HashMap<(usize, usize), Vec<Template>> = HashMap::new();
     for (face_index, face) in faces.0.iter().enumerate() {
-        for character in 0x21..=0x5f_u8 {
+        for character in 0x21..0x20 + face.glyphs.len() as u8 {
             let glyph = face.glyph(character);
             let (w, h) = (usize::from(glyph.w), usize::from(glyph.h));
             if w == 0 {
@@ -290,7 +290,10 @@ impl<'a> Frame<'a> {
             glyphs
         });
         let mut runs = self.group(glyphs);
-        runs.retain(|run| !(run.text.len() == 1 && b"-.,:/_=".contains(&run.text.as_bytes()[0])));
+        // A lone stroke or bar, such as a map line read as a thin "I", is not text.
+        runs.retain(|run| {
+            !(run.text.len() == 1 && b"-.,:/_=Il|".contains(&run.text.as_bytes()[0]))
+        });
         runs.retain(|run| !run.text.bytes().all(|b| b == b'_' || b == b' '));
         runs.sort_by_key(|run| (run.y, run.x));
         runs
@@ -508,7 +511,41 @@ impl<'a> Frame<'a> {
                 }
             }
         }
+        // A glyph in another colour over a heavier glyph's ink box is the
+        // background between letters, as a thin "I" between the "5" and "0"
+        // of a large "250" is.
+        let boxes: Vec<_> = found.iter().map(|g| self.ink_box(g)).collect();
+        let gap = |i: usize| {
+            let [left, top, right, bottom] = boxes[i];
+            (0..found.len()).any(|j| {
+                let [l, t, r, b] = boxes[j];
+                found[j].color != found[i].color
+                    && found[j].ink > found[i].ink
+                    && left < r
+                    && l < right
+                    && top < b
+                    && t < bottom
+            })
+        };
+        let gaps: Vec<bool> = (0..found.len()).map(gap).collect();
         found
+            .into_iter()
+            .zip(gaps)
+            .filter_map(|(glyph, gap)| (!gap).then_some(glyph))
+            .collect()
+    }
+
+    /// The ink box of a glyph read in a face: left, top, right and bottom.
+    fn ink_box(&self, glyph: &Glyph) -> [usize; 4] {
+        let face = self.face(glyph.scale - FACE_SCALE).glyph(glyph.character);
+        let left = (glyph.x as i32 + i32::from(face.x)) as usize;
+        let top = glyph.y + usize::from(face.y);
+        [
+            left,
+            top,
+            left + usize::from(face.w),
+            top + usize::from(face.h),
+        ]
     }
 
     /// The glyph box's top-left corner when `template` matches at an anchor.

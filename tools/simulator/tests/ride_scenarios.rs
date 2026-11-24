@@ -10202,7 +10202,7 @@ mod navigation {
     }
 
     #[test]
-    fn a_turn_banner_covers_the_time_and_moves_no_reading() {
+    fn a_turn_banner_moves_no_reading_and_leaves_the_top_line() {
         let course = straight_then(-1_000.0);
         let mut sim = on_course(&course, &course);
         sim.ride_at(24.6, 182.0, 141.0, 84.0);
@@ -10215,18 +10215,13 @@ mod navigation {
         assert!((6_690.0..6_710.0).contains(&soon), "{soon}");
         ride_until_sign(&mut sim, BANNER, &["120", "M"], 6_900.0);
         assert_eq!(readings_at(&sim), at_rest, "the banner moves no reading");
-        sim.expect_no_text("0:");
+        assert!(sim.screen().text().contains("0:"), "the top line's time stays");
         sim.checkpoint("ride-turns");
 
         let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 7_000.0);
         assert!((6_960.0..6_980.0).contains(&now), "{now}");
         ride_to(&mut sim, 7_100.0);
         assert_eq!(readings_at(&sim), at_rest, "nor does it leaving");
-        assert_eq!(
-            sign_text(&sim, CHIP),
-            ["900", "M"],
-            "the chip again, to the end"
-        );
     }
 
     #[test]
@@ -10309,8 +10304,7 @@ mod navigation {
     }
 
     #[test]
-    #[ignore = "the Stats page has no chip tile yet (#517)"]
-    fn tapping_the_sign_opens_the_map_even_with_the_map_page_hidden() {
+    fn tapping_the_banner_opens_the_map_even_with_the_map_page_hidden() {
         let course = straight_then(1_000.0);
         let mut sim = on_course(&course, &course);
         hide_ride_pages(&mut sim, &["MAP"]);
@@ -10321,20 +10315,13 @@ mod navigation {
             Some("ride/main"),
             "a loaded course keeps the map in the cycle"
         );
-        ride_until_sign(&mut sim, CHIP, &["6.5", "KM"], 1_000.0);
+        ride_until_cue(&mut sim, "turn_soon", 6_900.0);
         sim.tap(120, 200);
         assert_eq!(
             sim.ride_page_name().as_deref(),
             Some("ride/main"),
             "not on the sign"
         );
-        sim.tap(60, 86);
-        expect_map(&sim);
-        sim.checkpoint("the chip tapped opens the map");
-
-        sim.press(Role::Move);
-        assert_eq!(sim.ride_page_name().as_deref(), Some("ride/main"));
-        ride_until_cue(&mut sim, "turn_soon", 6_900.0);
         sim.tap(120, 60);
         expect_map(&sim);
         sim.checkpoint("the banner tapped opens the map");

@@ -26,8 +26,17 @@ def command(clock=time.time, sleep=time.sleep):
     return f'TIME SET {second}'
 
 
+# A fresh boot answers BUSY until its companion check ends (about 3 s).
+BUSY_TRIES = 20
+BUSY_WAIT_S = 0.5
+
+
 def sync(connection, clock=time.time, sleep=time.sleep):
-    reply = connection.terminal_command(command(clock, sleep))
+    for _ in range(BUSY_TRIES):
+        reply = connection.terminal_command(command(clock, sleep))
+        if reply['status'] != 'BUSY':
+            break
+        sleep(BUSY_WAIT_S)
     if reply['status'] != 'OK':
         raise RuntimeError(f'TIME SET answered {reply["status"]}: {reply.get("data", "")}')
     return connection.terminal_command('TIME')

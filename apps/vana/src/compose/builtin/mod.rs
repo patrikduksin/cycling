@@ -124,7 +124,7 @@ pub enum Asks {
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 50;
+    pub const COUNT: usize = 49;
     pub const ALL: [Self; Self::COUNT] = [
         Self::RideMain,
         Self::RideLap,

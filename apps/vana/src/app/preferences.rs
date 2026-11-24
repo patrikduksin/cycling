@@ -749,8 +749,8 @@ mod tests {
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                13, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1
+                14, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 1, 0, 1
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -789,9 +789,9 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                13, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 1, 40, 7, 0, 5, 0, 0b110, 10, 2, 3, 1, 2,
-                5, 0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2,
-                6, 2, 1, 0
+                14, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 1, 40, 7, 0, 5, 0, 0b110, 10, 2, 3, 1, 4,
+                0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6,
+                2, 1, 0
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -802,7 +802,7 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 86);
+        assert_eq!(bytes.len(), 85);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
     }

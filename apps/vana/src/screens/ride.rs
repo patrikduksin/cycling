@@ -439,9 +439,10 @@ pub(super) fn hide_banner(view: &mut View, laid: Option<&crate::compose::builtin
         let overlaps = |top: usize, bottom: usize| top < covered.bottom && covered.top < bottom;
         for placed in tiles {
             let tile = placed.rect.rect();
-            let worded = canvas.runs.iter().any(|run| {
-                tile.contains(run.left, run.top) && overlaps(run.top, run.bottom())
-            });
+            let worded = canvas
+                .runs
+                .iter()
+                .any(|run| tile.contains(run.left, run.top) && overlaps(run.top, run.bottom()));
             if worded {
                 rows = rows.start.min(tile.top)..rows.end.max(tile.bottom);
             }

@@ -15,6 +15,8 @@ pub const LAYOUT: Layout = Layout {
         button: 45,
         ring: 3,
         bar: 6,
+        mark: 3,
+        track: 14,
     },
     radius: Radius {
         button: 14,
@@ -23,6 +25,7 @@ pub const LAYOUT: Layout = Layout {
     },
     face: Type {
         tag: FaceRole::Tag,
+        hero: FaceRole::Hero,
         digits: FaceRole::Digits40,
         digits_small: FaceRole::Digits26,
         line: FaceRole::Digits15,

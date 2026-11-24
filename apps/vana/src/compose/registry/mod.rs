@@ -41,7 +41,7 @@ const FAMILIES: &[Family] = &[
         &[&super::tile::Erased::<super::input::tests::Tap>::NEW],
     ),
     family(16, 32, ride::TILES),
-    family(32, 40, climb_workout::TILES),
+    family(32, 36, climb_workout::TILES),
     family(40, 48, map_summary::TILES),
     family(48, 56, statics::TILES),
     family(statics::LINE, 64, statics::QUESTIONS),

@@ -11,11 +11,14 @@
 //!   share, so a layout solves once for both.
 //! - A tile with an action takes the focus ring and the tap with no code of
 //!   its own: `Tile::action` returns its spec's action.
+mod band;
 pub mod bar;
+pub mod chart;
 pub mod facts;
 pub mod field;
 pub mod item;
 pub mod rule;
+pub mod step;
 pub mod symbol;
 pub mod text;
 pub mod top_line;

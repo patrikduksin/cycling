@@ -1,7 +1,7 @@
 //! A horizontal bar: an effort's zones, each lit segment in its own zone's
-//! colour up to the zone it sits in, or a level, lit from the left up to a
-//! metric's share of its full scale.
-use super::{px, specs};
+//! colour up to the zone it sits in, a level, lit from the left up to a
+//! metric's share of its full scale, or a workout step's target band.
+use super::{band, px, specs};
 use crate::compose::data::{Data, Effort, Metric, Reads};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Form, Forms, Tile, forms};
@@ -22,6 +22,8 @@ pub enum Shows {
         full: i32,
         tone: Tone,
     },
+    /// The workout step's target band and the reading it checks.
+    Target,
 }
 
 #[derive(Debug)]
@@ -39,6 +41,7 @@ impl Spec {
         match self.shows {
             Shows::Zones(effort) => effort.zones(),
             Shows::Level { .. } => 1,
+            Shows::Target => band::SHAPES,
         }
     }
 }
@@ -49,6 +52,7 @@ specs! {
     pub enum Gauge: Spec {
         PowerZones = 0 => Spec { name: "POWER ZONES", shows: Shows::Zones(Effort::Power) },
         HeartZones = 1 => Spec { name: "HEART ZONES", shows: Shows::Zones(Effort::Heart) },
+        Step = 64 => Spec { name: "STEP TARGET", shows: Shows::Target },
     }
 }
 
@@ -64,11 +68,15 @@ impl Tile for Bar {
             Shows::Zones(Effort::Power) => Some(Reads::Metric(Metric::Power)),
             Shows::Zones(Effort::Heart) => Some(Reads::Metric(Metric::Heart)),
             Shows::Level { metric, .. } => Some(Reads::Metric(metric)),
+            Shows::Target => Some(Reads::Target),
         }
     }
 
     fn forms(gauge: Gauge, at: &Scaled) -> Forms {
         let spec = gauge.spec();
+        if spec.shows == Shows::Target {
+            return forms(&[band::form(at)]);
+        }
         let segments = usize::from(spec.shapes());
         forms(&[Form {
             width: (segments * (px(at, SEAM_UNITS) + 1)) as u16,
@@ -121,6 +129,7 @@ impl Tile for Bar {
                     colors: [theme.tone(tone), theme.off],
                 });
             }
+            Shows::Target => band::prepare(rect, at, data, out),
         }
     }
 }

@@ -443,7 +443,7 @@ pub(crate) mod scenes {
         sim.ride_at(30.0, 120.0, 142.0, 90.0);
         sim.advance(seconds(20));
         assert_eq!(sim.ride_page_name().as_deref(), Some("ride/workout"));
-        sim.expect_text("1/12");
+        sim.expect_text("LEFT");
         sim
     }
 

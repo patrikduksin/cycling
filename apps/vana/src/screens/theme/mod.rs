@@ -158,6 +158,11 @@ pub struct Space {
     pub ring: u8,
     /// A zone bar's height.
     pub bar: u8,
+    /// A thick rule, such as the one between a target's high and low, and
+    /// the ring a marker keeps clear around it.
+    pub mark: u8,
+    /// A target band's track.
+    pub track: u8,
 }
 
 /// Corner radii in scaled units.
@@ -173,6 +178,8 @@ pub struct Radius {
 pub struct Type {
     /// Capital titles over a field, zone tags, the battery.
     pub tag: FaceRole,
+    /// The one reading a page is about, such as a workout's power.
+    pub hero: FaceRole,
     /// A ride field's number.
     pub digits: FaceRole,
     /// The % beside `digits`, and a field's look when `digits` does not fit.

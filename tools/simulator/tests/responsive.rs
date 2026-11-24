@@ -344,9 +344,9 @@ fn the_workout_page_draws_on_both_test_panels() {
         twin.both(|sim| sim.ride_at(30.0, 120.0, 142.0, 90.0));
         twin.advance(seconds(20));
         assert_eq!(twin.guide.ride_page_name().as_deref(), Some("ride/workout"));
-        shows(&twin.sim, &["VO2 MAX", "WARM UP", "W", "LEFT", "NEXT"]);
+        shows(&twin.sim, &["W", "LEFT", "WORK", "3:00"]);
         if model.name == WIDE.name {
-            shows(&twin.sim, &["1/12", "108-151 W"]);
+            shows(&twin.sim, &["108", "151"]);
         }
         twin.sim
             .checkpoint(&format!("ride workout on {}", model.name));
@@ -754,7 +754,7 @@ fn the_ftp_sheet_draws_on_both_test_panels() {
                 sim.press(Role::Back);
                 sim.advance(seconds(3));
             }
-            sim.expect_text("ALL OUT");
+            assert_eq!(sim.workout()["step"], "11/12", "twenty minutes all out");
         });
         twin.both(|sim| sim.ride_at(30.0, 260.0, 142.0, 90.0));
         twin.guide(|sim| {

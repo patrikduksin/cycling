@@ -10215,7 +10215,10 @@ mod navigation {
         assert!((6_690.0..6_710.0).contains(&soon), "{soon}");
         ride_until_sign(&mut sim, BANNER, &["120", "M"], 6_900.0);
         assert_eq!(readings_at(&sim), at_rest, "the banner moves no reading");
-        assert!(sim.screen().text().contains("0:"), "the top line's time stays");
+        assert!(
+            sim.screen().text().contains("0:"),
+            "the top line's time stays"
+        );
         sim.checkpoint("ride-turns");
 
         let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 7_000.0);

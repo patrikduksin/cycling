@@ -175,12 +175,17 @@ fn riding_pace(seconds: u64) -> (u64, u64) {
 fn a_recording_ride_passes_about_as_often_as_it_draws() {
     let (passes, frames) = riding_pace(60);
     println!("a ride: {passes} passes/s, {frames} frames/s");
+    // The sensors here report together each quarter second, and the Stats
+    // page has no gauge to glide between their readings.
     assert!(
-        frames >= 12,
-        "each of three 4 Hz sensors' new readings draws: {frames} frames/s"
+        frames >= 4,
+        "each quarter second's new readings draw: {frames} frames/s"
     );
+    // Between frames the page rests, waking no more often than a still
+    // rest of 50 ms allows.
+    let still = 1000 / 50;
     assert!(
-        passes <= frames + 10,
+        passes <= frames + still,
         "{passes} passes/s for {frames} frames/s"
     );
 }

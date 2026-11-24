@@ -6,7 +6,6 @@ use crate::compose::builtin::{Choices, Laid};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{ACCENT, RED, Rect, SECONDARY, WHITE};
 use crate::screens::cue::Cue;
-use crate::screens::cue::RADIUS;
 use crate::screens::{C606, Device, panels};
 use crate::sensors::ant::{Battery, BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
@@ -635,7 +634,14 @@ fn taps_act_on(device: &'static Device) {
     );
     menu.open();
     let panel = device.scaled.panel;
-    let (middle, right, bottom) = (panel.width / 2, panel.width - 8, panel.height - 8);
+    let tab = |role| device.keys.of_role(role).tab(&device.scaled, false);
+    let (middle, bottom) = (panel.width / 2, panel.height - 8);
+    let (left, right) = (
+        tab(device_api::input::Role::Move).center_x(),
+        tab(device_api::input::Role::Act).center_x(),
+    );
+    let back = tab(device_api::input::Role::Back);
+    let high = back.top.midpoint(back.bottom);
     let row = |menu: &Menu, index: usize| {
         let (rect, _) = card(menu, device, index);
         (rect.top + rect.bottom) / 2
@@ -666,16 +672,16 @@ fn taps_act_on(device: &'static Device) {
         "content is no target"
     );
     assert_eq!(page(&menu), Page::Detail);
-    assert_eq!(tap(&mut menu, 8, bottom, now + SETTLE_MS), None);
+    assert_eq!(tap(&mut menu, left, bottom, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Forget);
     assert_ne!(
         menu.touch_view(),
         view,
         "a contact never moves between pages"
     );
-    assert_eq!(tap(&mut menu, 8, 8, now + SETTLE_MS), None);
+    assert_eq!(tap(&mut menu, 8, high, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Detail);
-    assert_eq!(tap(&mut menu, 8, 8, now + SETTLE_MS), None);
+    assert_eq!(tap(&mut menu, 8, high, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Sensors);
     let third = row(&menu, 2);
     assert_eq!(tap(&mut menu, middle, third, now), Some(Action::Scan));
@@ -842,18 +848,9 @@ fn assert_clear_of_cues_on(menu: &Menu, device: &'static Device, what: &str) {
     let boxes: std::vec::Vec<Rect> = texts
         .chain(canvas.shapes.iter().map(Shape::bounds))
         .collect();
-    let panel = device.scaled.panel;
     for cue in cues_on(menu, device) {
-        let corner = cue.corner(device);
-        let cx = if corner.left() { 0 } else { panel.width };
-        let cy = if corner.top() { 0 } else { panel.height };
         for rect in &boxes {
-            let dx = cx.clamp(rect.left, rect.right).abs_diff(cx);
-            let dy = cy.clamp(rect.top, rect.bottom).abs_diff(cy);
-            assert!(
-                dx * dx + dy * dy > (RADIUS + 4).pow(2),
-                "{what}: {rect:?} near {cue:?}"
-            );
+            assert!(!cue.covers(*rect, device), "{what}: {rect:?} on {cue:?}");
         }
     }
 }
@@ -1050,7 +1047,7 @@ fn stored(
     bytes.extend(nodes.iter().flat_map(|node| node.bytes()));
     bytes.push(0);
     let mut screens = crate::compose::Screens::EMPTY;
-    let controls = |key| crate::compose::builtin::ScreenId::controls(key, device.corners);
+    let controls = |key| crate::compose::builtin::ScreenId::controls(key, device.keys);
     crate::compose::parse(&bytes, &device.scaled, &controls, &mut screens).ok()?;
     Some(screens)
 }

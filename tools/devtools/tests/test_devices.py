@@ -65,8 +65,8 @@ def test_partitions_equal_the_table_and_layout_firmware_py_held(c606):
 
 
 B0 = '{ id = 0, role = "back", edge = "left", at = 250 }'
-B1 = '{ id = 1, role = "move", edge = "left", at = 750 }'
-B2 = '{ id = 2, role = "act", edge = "right", at = 750 }'
+B1 = '{ id = 1, role = "move", edge = "bottom", at = 217 }'
+B2 = '{ id = 2, role = "act", edge = "bottom", at = 783 }'
 
 
 def test_fitted_rs_holds_the_driver_literals_it_replaced(c606):
@@ -80,8 +80,8 @@ def test_fitted_rs_holds_the_driver_literals_it_replaced(c606):
     )
     assert fixtures == [
         ('0', 'Some(Role::Back)', 'Left', '250'),
-        ('1', 'Some(Role::Move)', 'Left', '750'),
-        ('2', 'Some(Role::Act)', 'Right', '750'),
+        ('1', 'Some(Role::Move)', 'Bottom', '217'),
+        ('2', 'Some(Role::Act)', 'Bottom', '783'),
     ]
     for fact in ('GPS', 'ANT', 'BLE', 'WIFI', 'SOUND', 'SHUTDOWN', 'CARD'):
         assert f'pub const {fact}: bool = true;' in text
@@ -227,39 +227,10 @@ def test_buttons_may_list_any_ids_in_any_order_up_to_eight(tmp_path):
     assert [b.id for b in devices.parse(path).model.buttons] == [200, 7, 3, 10, 11, 12, 13, 14]
 
 
-@pytest.mark.parametrize('at', [334, 500, 666])
-def test_a_button_with_a_role_is_refused_in_the_middle_third_of_its_edge(tmp_path, at):
+@pytest.mark.parametrize('at', [0, 333, 500, 1000])
+def test_a_button_with_a_role_may_sit_anywhere_along_its_edge(tmp_path, at):
     path = manifest_with(tmp_path, lambda t: t.replace(B0, B0.replace('at = 250', f'at = {at}')))
-    with pytest.raises(devices.ManifestError, match=f'button 0 .back. at {at} .*a mid-edge cue is not designed yet'):
-        devices.parse(path)
-
-
-@pytest.mark.parametrize('at', [0, 333, 667, 1000])
-def test_a_button_with_a_role_may_sit_in_either_outer_third(tmp_path, at):
-    path = manifest_with(tmp_path, lambda t: t.replace(B2, B2.replace('at = 750', f'at = {at}')))
-    assert devices.parse(path).model.buttons[2].at == at
-
-
-@pytest.mark.parametrize(
-    ('back', 'move', 'act', 'corner'),
-    [
-        ('left", at = 250', 'left", at = 300', 'right", at = 750', 'top-left'),
-        ('top", at = 100', 'left", at = 0', 'right", at = 750', 'top-left'),
-        ('left", at = 250', 'bottom", at = 900', 'right", at = 1000', 'bottom-right'),
-        ('top", at = 900', 'right", at = 100', 'left", at = 750', 'top-right'),
-        ('left", at = 250', 'bottom", at = 0', 'left", at = 750', 'bottom-left'),
-    ],
-)
-def test_two_roles_nearest_the_same_corner_are_refused(tmp_path, back, move, act, corner):
-    placed = {B0: back, B1: move, B2: act}
-
-    def change(text):
-        for button, at in placed.items():
-            text = text.replace(button, button.split('edge = "')[0] + f'edge = "{at} }}')
-        return text
-
-    with pytest.raises(devices.ManifestError, match=f'nearest the same corner, {corner}'):
-        devices.parse(manifest_with(tmp_path, change))
+    assert devices.parse(path).model.buttons[0].at == at
 
 
 def manifest_with(tmp_path, change):
@@ -280,7 +251,7 @@ def manifest_with(tmp_path, change):
         (lambda t: t.replace('{ id = 2,', '{ id = 256,'), 'integers from 0 to 255'),
         (lambda t: t.replace('{ id = 2,', '{ id = -1,'), 'integers from 0 to 255'),
         (
-            lambda t: t.replace('edge = "right"', 'edge = "front"'),
+            lambda t: t.replace('edge = "bottom"', 'edge = "front"'),
             'edge .front. must be one of left, right, top, bottom',
         ),
         (lambda t: t.replace('at = 250', 'at = 1001'), 'at 1001 must be an integer from 0 to 1000'),

@@ -99,6 +99,10 @@ pub trait Data {
     fn page(&self) -> PageData<'_> {
         PageData::None
     }
+    /// The swipe-down sheet's brightness, look and sensors, while it shows.
+    fn sheet(&self) -> Option<&crate::screens::sheet::Facts> {
+        None
+    }
 }
 
 /// What a tile reads, for a trace's shown line: a metric, or whatever the

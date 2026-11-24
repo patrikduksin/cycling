@@ -1,138 +1,92 @@
-//! Button cues: a quarter disc in the corner beside a physical button, with
-//! an icon of what that button does on this screen.
-//!
-//! Cues appear only on screens where the rider decides something about the
-//! ride (ready, paused, end ride, ride saved), never on live ride pages and
-//! never as words. Their colour follows the palette: `GREEN` disc for the
-//! action that moves forward (start, resume, save, done), a `RAISED` disc for
-//! stepping back or ending, a `RED` one for throwing a ride away. See
-//! `docs/ui.md`, "Button cues".
 use super::Device;
 use super::chrome::{
-    BLACK, GREEN, Look, RAISED, RED, Rect, Row, Shown, WHITE, blend, disc, paint_disc_over,
+    BLACK, GREEN, Look, RAISED, RED, Rect, Row, SECONDARY, Shown, WHITE, blend, disc,
+    paint_disc_over, rounded,
 };
-use super::scaled::{Panel, Track};
+use super::scaled::Scaled;
 use device_api::input::{ALONG, Fixtures, Role, Side};
 
-const fn in_middle_third(at: u16) -> bool {
-    const FIRST: u16 = ALONG / 3 + 1;
-    const LAST: u16 = ALONG - ALONG / 3 - 1;
-    matches!(at, FIRST..=LAST)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Key {
+    pub edge: Side,
+    pub at: u16,
+}
+
+const STRIP: (usize, usize) = (44, 7);
+const SIGN: (usize, usize) = (32, 20);
+const RADIUS: usize = 9;
+const TARGET_DEPTH: usize = 40;
+const TARGET_GROW: usize = 8;
+
+const fn min(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
+}
+
+impl Key {
+    pub const fn tab(self, at: &Scaled, sign: bool) -> Rect {
+        let (length, depth) = if sign { SIGN } else { STRIP };
+        let (length, depth) = (at.unit(length), at.unit(depth));
+        let (width, height) = (at.panel.width, at.panel.height);
+        let side = match self.edge {
+            Side::Left | Side::Right => height,
+            Side::Top | Side::Bottom => width,
+        };
+        let centre = side * self.at as usize / ALONG as usize;
+        let start = centre.saturating_sub(length / 2);
+        let start = if start + length > side {
+            side - length
+        } else {
+            start
+        };
+        let (end, screen) = (start + length, at.screen());
+        match self.edge {
+            Side::Left => Rect {
+                top: start,
+                right: screen.left + depth,
+                bottom: end,
+                ..screen
+            },
+            Side::Right => Rect {
+                left: screen.right - depth,
+                top: start,
+                bottom: end,
+                ..screen
+            },
+            Side::Top => Rect {
+                left: start,
+                right: end,
+                bottom: screen.top + depth,
+                ..screen
+            },
+            Side::Bottom => Rect {
+                left: start,
+                top: screen.bottom - depth,
+                right: end,
+                ..screen
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Corner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
+pub struct Keys {
+    act: Key,
+    back: Key,
+    move_: Key,
 }
 
-impl Corner {
-    /// The corner nearest a button `at` thousandths along `edge`. A button
-    /// in the middle third of its side has no corner: a cue beside the
-    /// middle of a side is not designed yet, and `cycling devices` refuses it.
-    pub const fn nearest(edge: Side, at: u16) -> Self {
-        assert!(
-            !in_middle_third(at),
-            "a cue beside the middle of a side is not designed yet"
-        );
-        let far = at > ALONG / 2;
-        match (edge, far) {
-            (Side::Left | Side::Top, false) => Self::TopLeft,
-            (Side::Left, true) | (Side::Bottom, false) => Self::BottomLeft,
-            (Side::Right, false) | (Side::Top, true) => Self::TopRight,
-            (Side::Right | Side::Bottom, true) => Self::BottomRight,
-        }
-    }
-
-    pub const fn top(self) -> bool {
-        matches!(self, Self::TopLeft | Self::TopRight)
-    }
-
-    pub const fn left(self) -> bool {
-        matches!(self, Self::TopLeft | Self::BottomLeft)
-    }
-
-    const fn clear_columns(self, rect: Rect, panel: Panel) -> Rect {
-        let reach = disc_reach_in_rounded_up(if self.top() {
-            rect.top
-        } else {
-            panel.height - rect.bottom
-        });
-        if self.left() {
-            Rect {
-                left: if rect.left < reach { reach } else { rect.left },
-                ..rect
-            }
-        } else {
-            let edge = panel.width - reach;
-            Rect {
-                right: if edge < rect.right { edge } else { rect.right },
-                ..rect
-            }
-        }
-    }
-
-    const fn clear_rows(self, rect: Rect, panel: Panel, gap: usize) -> Rect {
-        let reach = gap
-            + disc_reach_in_rounded_up(if self.left() {
-                rect.left
-            } else {
-                panel.width - rect.right
-            });
-        if self.top() {
-            Rect {
-                top: if rect.top < reach { reach } else { rect.top },
-                ..rect
-            }
-        } else {
-            let edge = panel.height - reach;
-            Rect {
-                bottom: if edge < rect.bottom {
-                    edge
-                } else {
-                    rect.bottom
-                },
-                ..rect
-            }
-        }
-    }
-
-    const fn inset(self, panel: Panel, inset: i32) -> (i32, i32) {
-        let (width, height) = (panel.width as i32, panel.height as i32);
-        (
-            if self.left() { inset } else { width - inset },
-            if self.top() { inset } else { height - inset },
-        )
-    }
-}
-
-/// The corner beside each role's button on one device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Corners {
-    act: Corner,
-    back: Corner,
-    move_: Corner,
-}
-
-impl Corners {
-    /// Each role's corner, nearest its button. Refused at compile time when
-    /// a role has no button, or when two roles' cues would share a corner.
+impl Keys {
+    /// Each role's key. Panics, at compile time in a const, when a role
+    /// has no button.
     pub const fn of(buttons: &Fixtures) -> Self {
-        let (act, back, move_) = (
-            nearest(buttons, Role::Act),
-            nearest(buttons, Role::Back),
-            nearest(buttons, Role::Move),
-        );
-        assert!(
-            act as u8 != back as u8 && act as u8 != move_ as u8 && back as u8 != move_ as u8,
-            "two roles' buttons sit nearest the same corner"
-        );
-        Self { act, back, move_ }
+        Self {
+            act: key(buttons, Role::Act),
+            back: key(buttons, Role::Back),
+            move_: key(buttons, Role::Move),
+        }
     }
 
-    pub const fn of_role(&self, role: Role) -> Corner {
+    pub const fn of_role(&self, role: Role) -> Key {
         match role {
             Role::Act => self.act,
             Role::Back => self.back,
@@ -140,31 +94,27 @@ impl Corners {
         }
     }
 
-    /// `rect` narrowed so each of `cues` stays out of it on `panel`.
-    pub const fn columns_clear_of(&self, cues: &[Cue], rect: Rect, panel: Panel) -> Rect {
-        let mut rect = rect;
-        let mut index = 0;
-        while index < cues.len() {
-            rect = self.of_role(cues[index].role).clear_columns(rect, panel);
-            index += 1;
+    /// Panics, at compile time in a const, when two roles' tabs would
+    /// overlap on `at`.
+    pub const fn assert_apart(&self, at: &Scaled) {
+        let tabs = [
+            self.act.tab(at, true),
+            self.back.tab(at, true),
+            self.move_.tab(at, true),
+        ];
+        let mut a = 0;
+        while a < tabs.len() {
+            let mut b = a + 1;
+            while b < tabs.len() {
+                assert!(!overlap(tabs[a], tabs[b]), "two keys' tabs overlap");
+                b += 1;
+            }
+            a += 1;
         }
-        rect
-    }
-
-    /// `rect` cut short so each of `cues` stays `gap` rows clear of it on
-    /// `panel`.
-    pub const fn rows_clear_of(&self, cues: &[Cue], rect: Rect, panel: Panel, gap: usize) -> Rect {
-        let mut rect = rect;
-        let mut index = 0;
-        while index < cues.len() {
-            rect = self.of_role(cues[index].role).clear_rows(rect, panel, gap);
-            index += 1;
-        }
-        rect
     }
 }
 
-const fn nearest(buttons: &Fixtures, role: Role) -> Corner {
+const fn key(buttons: &Fixtures, role: Role) -> Key {
     let list = buttons.as_slice();
     let mut index = 0;
     while index < list.len() {
@@ -172,11 +122,18 @@ const fn nearest(buttons: &Fixtures, role: Role) -> Corner {
         if let Some(found) = fixture.role
             && found as u8 == role as u8
         {
-            return Corner::nearest(fixture.edge, fixture.at);
+            return Key {
+                edge: fixture.edge,
+                at: fixture.at,
+            };
         }
         index += 1;
     }
     panic!("a role has no button")
+}
+
+const fn overlap(a: Rect, b: Rect) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -195,35 +152,16 @@ pub enum Icon {
     Trash,
     /// Zero a power meter: a target.
     Calibrate,
+    Less,
+    More,
 }
 
-/// Columns across a cue screen that keep its text clear of the cues on both
-/// sides.
-pub const CLEAR_OF_CUES: [Track; 3] = [Track::Unit(24), Track::Fr(1), Track::Unit(24)];
-
-/// The visible quarter disc's radius.
-pub const RADIUS: usize = 42;
-
-const fn disc_reach_in_rounded_up(from_edge: usize) -> usize {
-    if from_edge >= RADIUS {
-        return 0;
+impl Icon {
+    pub const fn sign(self) -> bool {
+        matches!(self, Self::Less | Self::More)
     }
-    let span = RADIUS * RADIUS - from_edge * from_edge;
-    let root = span.isqrt();
-    if root * root < span { root + 1 } else { root }
-}
-/// The icon's centre, this far in from both edges of its corner.
-const ICON_INSET: i32 = 17;
-/// The box around the icon centre that the icon can touch, in pixels.
-const ICON_REACH: i32 = 9;
-
-/// Whether any of `cues` sits in a top corner, where the status bar would
-/// cut it: such a screen shows without the bar.
-pub fn any_at_top(cues: &[Cue], device: &Device) -> bool {
-    cues.iter().any(|cue| cue.corner(device).top())
 }
 
-/// A cue beside the button of `role`, which answers the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Cue {
     pub role: Role,
@@ -235,92 +173,157 @@ impl Cue {
         Self { role, icon }
     }
 
-    /// Forward actions are green with a black icon, throwing a ride away is
-    /// red with a white one; others are raised grey with a white one.
     pub const fn colors(&self) -> (u16, u16) {
         match self.icon {
             Icon::Play | Icon::Check | Icon::Send | Icon::Calibrate => (GREEN, BLACK),
-            Icon::Stop | Icon::Back => (RAISED, WHITE),
-            Icon::Trash => (RED, WHITE),
+            Icon::Stop | Icon::Trash => (RED, WHITE),
+            Icon::Back => (SECONDARY, BLACK),
+            Icon::Less | Icon::More => (RAISED, WHITE),
         }
     }
 
-    /// The corner the cue sits in on `device`.
-    pub const fn corner(&self, device: &Device) -> Corner {
-        device.corners.of_role(self.role)
+    pub const fn tab(&self, keys: &Keys, at: &Scaled) -> Rect {
+        keys.of_role(self.role).tab(at, self.icon.sign())
     }
 
-    /// Whether the disc reaches into `rect`.
+    const fn rect(&self, device: &Device) -> Rect {
+        self.tab(&device.keys, &device.scaled)
+    }
+
     pub const fn covers(&self, rect: Rect, device: &Device) -> bool {
-        let (cx, cy) = self.corner(device).inset(device.scaled.panel, 0);
-        let (cx, cy) = (cx as usize, cy as usize);
-        let dx = if cx < rect.left {
-            rect.left - cx
-        } else {
-            cx.saturating_sub(rect.right)
+        overlap(self.rect(device), rect)
+    }
+
+    pub const fn target(&self, device: &Device) -> Rect {
+        let (tab, at) = (self.rect(device), &device.scaled);
+        let (reach, grow) = (at.unit(TARGET_DEPTH), at.unit(TARGET_GROW));
+        let screen = at.screen();
+        let along = Rect {
+            left: tab.left.saturating_sub(grow),
+            top: tab.top.saturating_sub(grow),
+            right: min(tab.right + grow, screen.right),
+            bottom: min(tab.bottom + grow, screen.bottom),
         };
-        let dy = if cy < rect.top {
-            rect.top - cy
-        } else {
-            cy.saturating_sub(rect.bottom)
-        };
-        dx * dx + dy * dy < RADIUS * RADIUS
+        match device.keys.of_role(self.role).edge {
+            Side::Left => Rect {
+                left: screen.left,
+                right: screen.left + reach,
+                ..along
+            },
+            Side::Right => Rect {
+                left: screen.right - reach,
+                right: screen.right,
+                ..along
+            },
+            Side::Top => Rect {
+                top: screen.top,
+                bottom: screen.top + reach,
+                ..along
+            },
+            Side::Bottom => Rect {
+                top: screen.bottom - reach,
+                bottom: screen.bottom,
+                ..along
+            },
+        }
     }
 
     pub const fn rows(&self, device: &Device) -> core::ops::Range<usize> {
-        let height = device.scaled.panel.height;
-        if self.corner(device).top() {
-            0..RADIUS + 1
-        } else {
-            height - RADIUS - 1..height
+        let rect = self.rect(device);
+        rect.top..rect.bottom
+    }
+
+    pub const fn clear(&self, keys: &Keys, at: &Scaled, rect: Rect) -> Rect {
+        let tab = self.tab(keys, at);
+        if !overlap(tab, rect) {
+            return rect;
+        }
+        match keys.of_role(self.role).edge {
+            Side::Left => Rect {
+                left: tab.right,
+                ..rect
+            },
+            Side::Right => Rect {
+                right: tab.left,
+                ..rect
+            },
+            Side::Top => Rect {
+                top: tab.bottom,
+                ..rect
+            },
+            Side::Bottom => Rect {
+                bottom: tab.top,
+                ..rect
+            },
+        }
+    }
+
+    fn over(
+        &self,
+        device: &Device,
+        (fill, ink): (Shown, Shown),
+        x: usize,
+        y: usize,
+        under: Shown,
+    ) -> Option<Shown> {
+        let tab = self.rect(device);
+        let radius = tab.width().min(tab.height()).min(RADIUS);
+        // The box runs past the edge by the radius so only its inner corners
+        // round; the left and top edges shift box and point to stay unsigned.
+        let edge = device.keys.of_role(self.role).edge;
+        let across = matches!(edge, Side::Left | Side::Right);
+        let (shift_x, shift_y) = match edge {
+            Side::Left => (radius, 0),
+            Side::Top => (0, radius),
+            Side::Right | Side::Bottom => (0, 0),
+        };
+        let past = Rect {
+            left: tab.left,
+            top: tab.top,
+            right: tab.right + if across { radius } else { 0 },
+            bottom: tab.bottom + if across { 0 } else { radius },
+        };
+        let coverage = rounded(past, radius, x + shift_x, y + shift_y);
+        if coverage == 0 || !tab.contains(x, y) {
+            return None;
+        }
+        let color = blend(fill, under, coverage);
+        if !self.icon.sign() {
+            return Some(color);
+        }
+        let (cx, cy) = (tab.center_x() as i32, tab.top.midpoint(tab.bottom) as i32);
+        let (dx, dy) = (x as i32 - cx, y as i32 - cy);
+        if dx.abs() > ICON_REACH || dy.abs() > ICON_REACH {
+            return Some(color);
+        }
+        match icon(self.icon, 4 * dx + 2, 4 * dy + 2) {
+            0 => Some(color),
+            sign => Some(blend(ink, color, sign)),
         }
     }
 
     pub fn paint(&self, row: &mut Row, device: &Device) {
         let y = row.y();
-        if !self.rows(device).contains(&y) {
+        let tab = self.rect(device);
+        if !(tab.top..tab.bottom).contains(&y) {
             return;
         }
-        let (corner, panel) = (self.corner(device), device.scaled.panel);
         let (fill, ink) = self.colors();
-        let (cx, cy) = corner.inset(panel, 0);
-        let disc = (4 * cx, 4 * cy, 4 * RADIUS as i32);
-        paint_disc_over(row, disc, fill);
-        let (ix, iy) = corner.inset(panel, ICON_INSET);
-        if (y as i32 - iy).abs() > ICON_REACH {
-            return;
-        }
-        let left = (ix - ICON_REACH).max(0) as usize;
-        let right = (ix + ICON_REACH + 1) as usize;
-        let ink = row.ink(ink);
-        row.each_over(left..right, |x, under| {
-            let coverage = icon(self.icon, 4 * (x as i32 - ix) + 2, 4 * (y as i32 - iy) + 2);
-            (coverage > 0).then(|| blend(ink, under, coverage))
+        let colors = (row.ink(fill), row.ink(ink));
+        row.each_over(tab.left..tab.right, |x, under| {
+            self.over(device, colors, x, y, under)
         });
     }
 
     /// The per-pixel original of `paint`, over `under`, as `look` shows it.
     pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown, device: &Device) -> Shown {
-        let (corner, panel) = (self.corner(device), device.scaled.panel);
         let (fill, ink) = self.colors();
-        let (fill, ink) = (look.ink(fill), look.ink(ink));
-        let (cx, cy) = corner.inset(panel, 0);
-        let coverage = disc(x, y, 4 * cx, 4 * cy, 4 * RADIUS as i32);
-        if coverage == 0 {
-            return under;
-        }
-        let mut color = blend(fill, under, coverage);
-        let (ix, iy) = corner.inset(panel, ICON_INSET);
-        let (dx, dy) = (x as i32 - ix, y as i32 - iy);
-        if dx.abs() <= ICON_REACH && dy.abs() <= ICON_REACH {
-            let icon = icon(self.icon, 4 * dx + 2, 4 * dy + 2);
-            if icon > 0 {
-                color = blend(ink, color, icon);
-            }
-        }
-        color
+        self.over(device, (look.ink(fill), look.ink(ink)), x, y, under)
+            .unwrap_or(under)
     }
 }
+
+const ICON_REACH: i32 = 9;
 
 /// A green disc with a black icon inside, such as the check over RIDE SAVED.
 /// The same drawing as a cue, placed anywhere.
@@ -401,6 +404,10 @@ fn icon(icon: Icon, x: i32, y: i32) -> u8 {
         Icon::Calibrate => {
             let distance = ((x * x + y * y) as u32).isqrt() as i32;
             edge((9 - 2 * (distance - 19).abs()) / 2).max(edge(7 - distance))
+        }
+        Icon::Less => stroke(x, y, &[(-16, 0), (16, 0)], 6),
+        Icon::More => {
+            stroke(x, y, &[(-16, 0), (16, 0)], 6).max(stroke(x, y, &[(0, -16), (0, 16)], 6))
         }
     }
 }
@@ -507,29 +514,22 @@ mod tests {
     }
 
     #[test]
-    fn the_base_buttons_put_back_top_left_move_bottom_left_and_act_bottom_right() {
-        let corners = crate::screens::C606.corners;
-        assert_eq!(corners.of_role(Role::Back), Corner::TopLeft);
-        assert_eq!(corners.of_role(Role::Move), Corner::BottomLeft);
-        assert_eq!(corners.of_role(Role::Act), Corner::BottomRight);
-    }
-
-    #[test]
-    fn a_button_takes_the_corner_nearest_it() {
-        let cases = [
-            (Side::Left, 0, Corner::TopLeft),
-            (Side::Left, 333, Corner::TopLeft),
-            (Side::Left, 667, Corner::BottomLeft),
-            (Side::Right, 100, Corner::TopRight),
-            (Side::Right, ALONG, Corner::BottomRight),
-            (Side::Top, 200, Corner::TopLeft),
-            (Side::Top, 800, Corner::TopRight),
-            (Side::Bottom, 300, Corner::BottomLeft),
-            (Side::Bottom, 900, Corner::BottomRight),
-        ];
-        for (edge, at, corner) in cases {
-            assert_eq!(Corner::nearest(edge, at), corner, "{edge:?} {at}");
+    fn the_c606_keys_are_back_top_left_and_move_and_act_on_the_bottom_edge() {
+        let device = &crate::screens::C606;
+        let tab = |role| device.keys.of_role(role).tab(&device.scaled, false);
+        let (back, move_, act) = (tab(Role::Back), tab(Role::Move), tab(Role::Act));
+        assert_eq!((back.left, back.right), (0, 7), "BACK on the left edge");
+        assert!(back.bottom <= device.scaled.panel.height / 2, "{back:?}");
+        assert!(back.top >= crate::compose::tiles::status::rows(&device.scaled));
+        for tab in [move_, act] {
+            assert_eq!(
+                (tab.top, tab.bottom),
+                (313, 320),
+                "{tab:?} on the bottom edge"
+            );
         }
+        let half = device.scaled.panel.width / 2;
+        assert!(move_.right <= half && half <= act.left, "{move_:?} {act:?}");
     }
 
     fn button(id: u8, role: Role, edge: Side, at: u16) -> Fixture {
@@ -541,76 +541,72 @@ mod tests {
         }
     }
 
-    const OFF_C606_CORNERS: Fixtures = Fixtures::new(&[
-        Fixture {
-            id: 4,
-            role: None,
-            edge: Side::Left,
-            at: 100,
-        },
-        Fixture {
-            id: 5,
-            role: Some(Role::Act),
-            edge: Side::Left,
-            at: 800,
-        },
-        Fixture {
-            id: 6,
-            role: Some(Role::Move),
-            edge: Side::Bottom,
-            at: 900,
-        },
-        Fixture {
-            id: 7,
-            role: Some(Role::Back),
-            edge: Side::Top,
-            at: 700,
-        },
-    ]);
-
     #[test]
-    fn a_cue_follows_its_role_s_button() {
-        let corners = Corners::of(&OFF_C606_CORNERS);
-        assert_eq!(corners.of_role(Role::Act), Corner::BottomLeft);
-        assert_eq!(corners.of_role(Role::Move), Corner::BottomRight);
-        assert_eq!(corners.of_role(Role::Back), Corner::TopRight);
-        let act_on_the_left = Fixtures::new(&[
-            button(0, Role::Back, Side::Left, 250),
-            button(1, Role::Act, Side::Left, 750),
-            button(2, Role::Move, Side::Right, 750),
-        ]);
-        let corners = Corners::of(&act_on_the_left);
-        assert_eq!(corners.of_role(Role::Act), Corner::BottomLeft);
-        assert_eq!(corners.of_role(Role::Move), Corner::BottomRight);
+    fn a_tab_stays_on_its_panel_at_either_end_of_its_edge() {
+        let at = crate::screens::scaled::BASE;
+        for (edge, at_end) in [(Side::Top, 0), (Side::Right, ALONG), (Side::Bottom, ALONG)] {
+            let tab = Key { edge, at: at_end }.tab(&at, true);
+            assert!(tab.right <= at.panel.width && tab.bottom <= at.panel.height);
+            assert_eq!(
+                tab.width().max(tab.height()),
+                SIGN.0,
+                "{tab:?} keeps its length"
+            );
+        }
     }
 
     #[test]
-    #[should_panic(expected = "not designed yet")]
-    fn a_button_mid_side_has_no_corner() {
-        Corner::nearest(Side::Right, ALONG / 2);
-    }
-
-    #[test]
-    #[should_panic(expected = "the same corner")]
-    fn two_roles_may_not_share_a_corner() {
-        Corners::of(&Fixtures::new(&[
+    #[should_panic(expected = "tabs overlap")]
+    fn two_keys_whose_tabs_meet_are_refused() {
+        let keys = Keys::of(&Fixtures::new(&[
             button(0, Role::Back, Side::Left, 250),
-            button(1, Role::Move, Side::Left, 300),
-            button(2, Role::Act, Side::Right, 750),
+            button(1, Role::Move, Side::Bottom, 450),
+            button(2, Role::Act, Side::Bottom, 550),
         ]));
+        keys.assert_apart(&crate::screens::scaled::BASE);
     }
 
     #[test]
-    fn cues_sit_in_their_corner_and_paint_their_reference() {
+    fn a_tile_beside_a_tab_ends_where_the_tab_begins() {
+        let device = &crate::screens::C606;
+        let (keys, at) = (&device.keys, &device.scaled);
+        let bottom = Rect {
+            left: 0,
+            top: 260,
+            right: 240,
+            bottom: 320,
+        };
+        let go = Cue::new(Role::Act, Icon::Play);
+        assert_eq!(go.clear(keys, at, bottom).bottom, 313);
+        let side = Rect {
+            left: 0,
+            top: 40,
+            right: 120,
+            bottom: 140,
+        };
+        assert_eq!(
+            Cue::new(Role::Back, Icon::Back).clear(keys, at, side).left,
+            7
+        );
+        let away = Rect {
+            top: 0,
+            bottom: 40,
+            ..side
+        };
+        assert_eq!(Cue::new(Role::Back, Icon::Back).clear(keys, at, away), away);
+    }
+
+    #[test]
+    fn tabs_sit_on_their_edge_and_paint_their_reference() {
+        const UNDER: u16 = 0x1082;
         let panels = [(240, 320), (240, 400), (180, 240)];
-        let corners = [
-            Corner::TopLeft,
-            Corner::TopRight,
-            Corner::BottomLeft,
-            Corner::BottomRight,
-        ];
+        let elsewhere = Fixtures::new(&[
+            button(4, Role::Back, Side::Top, 700),
+            button(5, Role::Act, Side::Left, 800),
+            button(6, Role::Move, Side::Right, 100),
+        ]);
         for ((width, height), buttons) in panels.into_iter().flat_map(|panel| {
-            [crate::screens::C606_BUTTONS, OFF_C606_CORNERS].map(|buttons| (panel, buttons))
+            [crate::screens::limits::C606_BUTTONS, elsewhere].map(|buttons| (panel, buttons))
         }) {
             let device = std::boxed::Box::leak(std::boxed::Box::new(Device::of(
                 crate::screens::scaled::Scaled::of(width, height),
@@ -624,44 +620,36 @@ mod tests {
                 Icon::Send,
                 Icon::Trash,
                 Icon::Calibrate,
+                Icon::Less,
+                Icon::More,
             ];
             for (role, icon) in Role::ALL
                 .into_iter()
                 .flat_map(|role| icons.map(|icon| (role, icon)))
             {
                 let cue = Cue::new(role, icon);
-                let corner = cue.corner(device);
-                assert!(corners.contains(&corner));
+                let tab = cue.rect(device);
                 let (fill, ink) = cue.colors();
-                let mut inked = 0;
+                let (mut filled, mut inked) = (0, 0);
                 for y in 0..height {
-                    let mut pixels = std::vec![BLACK; width];
+                    let mut pixels = std::vec![UNDER; width];
                     cue.paint(&mut Row::new(y, &mut pixels), device);
                     for (x, &pixel) in pixels.iter().enumerate() {
                         assert_eq!(
                             pixel,
-                            cue.pixel(Look::PLAIN, x, y, Shown(BLACK), device).0,
+                            cue.pixel(Look::PLAIN, x, y, Shown(UNDER), device).0,
                             "{cue:?} at {x},{y}"
                         );
-                        inked += usize::from(pixel == ink);
+                        assert!(pixel == UNDER || tab.contains(x, y), "{cue:?} at {x},{y}");
+                        filled += usize::from(pixel == fill);
+                        inked += usize::from(pixel == ink && pixel != fill);
                     }
                 }
-                assert!(inked > 20, "{cue:?} draws its icon: {inked}");
-                let (near, far) = ((2, 3), (RADIUS + 2, RADIUS + 3));
-                let x = |(left, right)| if corner.left() { left } else { width - right };
-                let y = |(top, bottom)| if corner.top() { top } else { height - bottom };
-                assert_eq!(
-                    cue.pixel(Look::PLAIN, x(near), y(near), Shown(BLACK), device)
-                        .0,
-                    fill,
-                    "{cue:?} fills its {corner:?} corner"
+                assert!(
+                    filled * 2 > tab.width() * tab.height(),
+                    "{cue:?} fills its tab"
                 );
-                assert_eq!(
-                    cue.pixel(Look::PLAIN, x(far), y(near), Shown(BLACK), device)
-                        .0,
-                    BLACK,
-                    "{cue:?} stays small"
-                );
+                assert_eq!(inked > 10, icon.sign(), "{cue:?} carries a sign: {inked}");
             }
         }
     }

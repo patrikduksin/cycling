@@ -8,10 +8,10 @@
 //! a screen that leaves MOVE free steps the ring with it, wrapping. ACT runs
 //! the current stop. BACK is always the screen's.
 use super::solve::{Placed, Rect16, Solved};
-use crate::screens::cue::{Corners, Cue, Icon};
+use crate::screens::cue::{Cue, Icon, Keys};
 use crate::screens::scaled::Scaled;
 use crate::screens::workout::Page;
-use device_api::input::Role;
+use device_api::input::{Role, Side};
 
 /// What a press or a tap asks for, named by the owner that carries it out.
 /// Each owner judges the request by its own state.
@@ -29,6 +29,25 @@ pub enum Action {
     /// What the buttons or a finger do to the list shown, which its owner
     /// carries out on the item it keeps focused.
     List(ListAct),
+    Sheet(SheetAct),
+}
+
+impl Action {
+    /// Accept lets it go without a key path: the sheet opens only to a
+    /// finger.
+    pub const fn touch_only(self) -> bool {
+        matches!(self, Self::Sheet(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SheetAct {
+    Close,
+    Dimmer,
+    Brighter,
+    Level,
+    DayNight,
+    Sensors,
 }
 
 /// A press or a tap on a list's items.
@@ -95,6 +114,7 @@ pub trait Owners {
     fn course_off(&mut self);
     fn page(&mut self, act: OnPage);
     fn list(&mut self, act: ListAct);
+    fn sheet(&mut self, act: SheetAct);
 }
 
 /// Hand `action` to the owner that carries it out.
@@ -106,6 +126,7 @@ pub fn apply(action: Action, owners: &mut impl Owners) {
         Action::CourseOff => owners.course_off(),
         Action::Page(act) => owners.page(act),
         Action::List(act) => owners.list(act),
+        Action::Sheet(act) => owners.sheet(act),
     }
 }
 
@@ -164,8 +185,6 @@ impl Buttons {
     }
 }
 
-/// A screen's buttons and the cues they show in this device's corners,
-/// which its tiles keep clear of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Controls {
     buttons: Buttons,
@@ -180,10 +199,10 @@ impl Controls {
         cues: None,
     };
 
-    pub fn new(buttons: Buttons, corners: Corners) -> Self {
+    pub fn new(buttons: Buttons, keys: Keys) -> Self {
         Self {
             buttons,
-            cues: Some(cues(&buttons, corners)),
+            cues: Some(cues(&buttons, keys)),
         }
     }
 
@@ -191,13 +210,13 @@ impl Controls {
         &self.buttons
     }
 
-    /// Every cue the buttons set: the corners the tiles keep clear of.
+    /// Every cue the buttons set: the tabs the tiles keep clear of.
     pub const fn cues(&self) -> Option<&Cues> {
         self.cues.as_ref()
     }
 
     /// The cues shown with `focus`: ACT's only while the focus is on the
-    /// screen stop. Its corner stays clear either way.
+    /// screen stop. Its tab stays clear either way.
     pub fn shown(&self, focus: Focus) -> impl Iterator<Item = Cue> + '_ {
         let cues = self.cues.as_ref().map_or(&[][..], Cues::shown);
         cues.iter()
@@ -206,11 +225,11 @@ impl Controls {
     }
 }
 
-/// The corner cues a screen shows, made only by [`cues`] from its buttons.
+/// The key tabs a screen shows, made only by [`cues`] from its buttons.
 /// `Screen::cues` hands back the ones accept fitted its tiles clear of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cues {
-    corners: Corners,
+    keys: Keys,
     shown: heapless::Vec<Cue, 3>,
 }
 
@@ -219,29 +238,45 @@ impl Cues {
         &self.shown
     }
 
-    /// `rect` narrowed so no cue reaches into it.
+    /// `area` short of the tabs on its top and bottom edges. Cutting a tile
+    /// there instead would cost a content-height row the rows it needs.
+    pub(super) fn within(&self, area: Rect16, at: &Scaled) -> Rect16 {
+        self.shown.iter().fold(area, |area, cue| {
+            let tab = cue.tab(&self.keys, at);
+            match self.keys.of_role(cue.role).edge {
+                Side::Bottom => Rect16 {
+                    bottom: area.bottom.min(tab.top as u16),
+                    ..area
+                },
+                Side::Top => Rect16 {
+                    top: area.top.max(tab.bottom as u16),
+                    ..area
+                },
+                Side::Left | Side::Right => area,
+            }
+        })
+    }
+
     pub(super) fn clear(&self, rect: Rect16, at: &Scaled) -> Rect16 {
-        let clear = Rect16::of(
-            self.corners
-                .columns_clear_of(&self.shown, rect.rect(), at.panel),
-        );
-        let left = clear.left.min(rect.right);
+        let clear = self
+            .shown
+            .iter()
+            .fold(rect.rect(), |rect, cue| cue.clear(&self.keys, at, rect));
+        let clear = Rect16::of(clear);
         Rect16 {
-            left,
-            right: clear.right.max(left),
-            ..rect
+            right: clear.right.max(clear.left),
+            bottom: clear.bottom.max(clear.top),
+            ..clear
         }
     }
 }
 
-/// A cue beside each button the screen sets with an icon, in the corners of
-/// this device.
-pub fn cues(buttons: &Buttons, corners: Corners) -> Cues {
+pub fn cues(buttons: &Buttons, keys: Keys) -> Cues {
     let shown = [Role::Act, Role::Back, Role::Move]
         .into_iter()
         .filter_map(|role| Some(Cue::new(role, buttons.of(role)?.cue?)))
         .collect();
-    Cues { corners, shown }
+    Cues { keys, shown }
 }
 
 /// The current stop: the screen's ACT, or a tile kept by its node in the
@@ -701,7 +736,7 @@ pub(super) mod tests {
         ];
         let bytes: Vec<u8> = nodes.iter().flat_map(|node| node.bytes()).collect();
         let accept = |buttons| {
-            let controls = Controls::new(buttons, crate::screens::C606.corners);
+            let controls = Controls::new(buttons, crate::screens::C606.keys);
             Screen::parse(0, &bytes, &BASE, controls)
         };
         for buttons in [Buttons::FREE, ACT] {
@@ -788,14 +823,14 @@ pub(super) mod tests {
 
     #[test]
     fn cues_show_beside_the_buttons_that_set_an_icon() {
-        let corners = crate::screens::C606.corners;
-        assert!(cues(&Buttons::FREE, corners).shown().is_empty());
+        let keys = crate::screens::C606.keys;
+        assert!(cues(&Buttons::FREE, keys).shown().is_empty());
         let quiet = Buttons {
             back: Some(HOME),
             move_: Some(NEXT),
             ..Buttons::FREE
         };
-        assert!(cues(&quiet, corners).shown().is_empty());
+        assert!(cues(&quiet, keys).shown().is_empty());
         let paused = Buttons {
             act: Some(START),
             back: Some(Button {
@@ -805,7 +840,7 @@ pub(super) mod tests {
             ..quiet
         };
         assert_eq!(
-            cues(&paused, corners).shown(),
+            cues(&paused, keys).shown(),
             [
                 Cue::new(Role::Act, Icon::Play),
                 Cue::new(Role::Back, Icon::Stop)
@@ -815,14 +850,14 @@ pub(super) mod tests {
 
     #[test]
     fn the_act_cue_shows_only_while_focus_is_on_the_screen_stop() {
-        let controls = Controls::new(ACT, crate::screens::C606.corners);
+        let controls = Controls::new(ACT, crate::screens::C606.keys);
         let play = Cue::new(Role::Act, Icon::Play);
         assert_eq!(controls.shown(Focus::Screen).collect::<Vec<_>>(), [play]);
         assert_eq!(controls.shown(Focus::Tile(2)).count(), 0);
         assert_eq!(
             controls.cues().unwrap().shown(),
             [play],
-            "its corner stays clear"
+            "its tab stays clear"
         );
     }
 
@@ -833,7 +868,7 @@ pub(super) mod tests {
                 .iter()
                 .flat_map(|node| node.bytes())
                 .collect();
-            let controls = Controls::new(buttons, crate::screens::C606.corners);
+            let controls = Controls::new(buttons, crate::screens::C606.keys);
             Screen::parse(0, &bytes, &BASE, controls)
                 .err()
                 .map(|reject| reject.why)
@@ -858,7 +893,7 @@ pub(super) mod tests {
     #[test]
     fn a_screen_accepted_with_cues_keeps_its_tiles_clear_of_them() {
         let device = &crate::screens::C606;
-        let controls = Controls::new(ACT, device.corners);
+        let controls = Controls::new(ACT, device.keys);
         let nodes = [
             Node::col(2, Size::grow(1)),
             Node::leaf(SPACE, 0, Size::grow(1)),
@@ -878,7 +913,7 @@ pub(super) mod tests {
         };
         assert!(
             cue.covers(tap(&under), device),
-            "the tile sits in the cue's corner"
+            "the tile sits on the cue's tab"
         );
         assert!(!cue.covers(tap(&clear), device));
     }
@@ -910,6 +945,10 @@ pub(super) mod tests {
         fn list(&mut self, act: ListAct) {
             self.0.push(("list", Action::List(act)));
         }
+
+        fn sheet(&mut self, act: SheetAct) {
+            self.0.push(("sheet", Action::Sheet(act)));
+        }
     }
 
     #[test]
@@ -938,6 +977,12 @@ pub(super) mod tests {
             ("page", Action::Page(OnPage::Calibrate)),
             ("page", Action::Page(OnPage::Forget)),
             ("page", Action::Page(OnPage::Search)),
+            ("sheet", Action::Sheet(SheetAct::Close)),
+            ("sheet", Action::Sheet(SheetAct::Dimmer)),
+            ("sheet", Action::Sheet(SheetAct::Brighter)),
+            ("sheet", Action::Sheet(SheetAct::Level)),
+            ("sheet", Action::Sheet(SheetAct::DayNight)),
+            ("sheet", Action::Sheet(SheetAct::Sensors)),
         ];
         let mut reached = Reached::default();
         for (_, action) in every {

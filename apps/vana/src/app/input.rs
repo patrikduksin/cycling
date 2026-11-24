@@ -16,7 +16,7 @@ use crate::screens::ride::RidePage;
 use crate::screens::ride::summary;
 use crate::screens::sensors::Action;
 use crate::screens::settings;
-use crate::screens::touch::{Control, Hit, Owner, Swipe, TouchEvent};
+use crate::screens::touch::{Control, Hit, Owner, Pull, Swipe, TouchEvent};
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type;
 use device_api::ant::Ant;
@@ -134,6 +134,16 @@ impl Runtime {
                 return;
             }
         }
+        if self.sheet_open() {
+            if let Input::Press {
+                role: button,
+                code: 1,
+            } = input
+            {
+                self.button_press(button, held, received, now, ant);
+            }
+            return;
+        }
         // Buttons and a Cancel reach the sensor menu, so lost input makes
         // MOVE reconfirm the focus before ACT can change a sensor.
         if self.navigation.page() == Page::Sensors {
@@ -174,7 +184,7 @@ impl Runtime {
         self.navigation.pressed(received);
         self.display.redraw();
         // The number editor's buttons step and repeat outside the tree.
-        if self.editing_number() {
+        if self.editing_number() && !self.sheet_open() {
             self.settings_input(button, now, held);
         } else if let Some(super::composition::Pressed::Asks(action)) = self.composed_press(button)
         {
@@ -223,20 +233,26 @@ impl Runtime {
         };
         let sheet = u32::from(self.power.view().is_some() || self.ftp_sheet().is_some());
         let dark = u32::from(!self.display.is_active());
-        Owner(page | subview << 4 | sheet << 12 | dark << 13)
+        let pulled = u32::from(self.sheet_open());
+        Owner(page | subview << 4 | sheet << 12 | dark << 13 | pulled << 14)
     }
 
     /// What lies under a finger landing at `point`: the control a tap
     /// would act on, the list it would scroll and whether the page swipes.
     pub(super) fn hit_test(&self, point: device_api::input::Point, now: u64, radar: bool) -> Hit {
+        if self.sheet_open() {
+            return self.sheet_hit(point);
+        }
         let (x, y) = (usize::from(point.x), usize::from(point.y));
         let navigation = &self.navigation;
         let paused_screen = self.paused_screen_shown();
         let composed = self.composed_hit(point);
+        let key = self.key_at(x, y);
         let control = match navigation.page() {
             // The sensor menu takes its taps itself, as it takes its presses.
             Page::Sensors => Some(Control::Menu(point)),
             _ if composed.is_some() => composed,
+            _ if key.is_some() => key,
             Page::Ride if paused_screen => None,
             // The course sign floats over every ride page, a region of the
             // screen rather than a tile of its tree.
@@ -258,6 +274,7 @@ impl Runtime {
                 navigation.page(),
                 Page::Ride | Page::Summary | Page::PastRide | Page::Settings
             ),
+            pull: self.pulls_down(y).then_some(Pull::Down),
         };
         if let Some(list) = self.page_list() {
             let layout = self.list_layout(list);
@@ -271,6 +288,13 @@ impl Runtime {
             }
         }
         hit
+    }
+
+    fn key_at(&self, x: usize, y: usize) -> Option<Control> {
+        let laid = self.composition.laids().get(self.screen_id())?;
+        let mut cues = laid.controls().shown(laid.focus());
+        cues.find(|cue| cue.target(self.device).contains(x, y))
+            .map(|cue| Control::Key(cue.role))
     }
 
     fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
@@ -301,6 +325,12 @@ impl Runtime {
             }
             TouchEvent::Hold(_) => {}
             TouchEvent::Swipe(swipe) => self.swiped(swipe),
+            TouchEvent::Pull(Pull::Down) => self.open_sheet(),
+            TouchEvent::Pull(Pull::Up) => self.close_sheet(),
+            TouchEvent::Drag(Control::Level { left, right }, point) => {
+                self.drag_level((left, right), point.x, now)
+            }
+            TouchEvent::Drag(..) => {}
         }
         self.display.redraw();
     }
@@ -308,10 +338,14 @@ impl Runtime {
     /// A tap lifted on `control`: it acts, and takes the focus if it has one.
     fn activate(&mut self, control: Control, now: u64, ant: &mut impl Ant) {
         match control {
+            Control::Composed(action @ crate::compose::input::Action::Sheet(_), _) => {
+                self.act(action, false, now, now, ant)
+            }
             Control::Composed(action, focus) => {
                 self.composed_focus(focus);
                 self.act(action, false, now, now, ant);
             }
+            Control::Key(role) => self.button_press(role, false, now, now, ant),
             Control::Menu(point) => {
                 self.refresh_sensor_menu(ant, now);
                 let (x, y) = (usize::from(point.x), usize::from(point.y));
@@ -324,7 +358,7 @@ impl Runtime {
                 self.sensors_action(action, now, ant);
             }
             Control::Sign => self.navigation.go(To::RidePage(RidePage::Map)),
-            Control::Lower | Control::Raise | Control::Map => {}
+            Control::Lower | Control::Raise | Control::Map | Control::Level { .. } => {}
         }
     }
 

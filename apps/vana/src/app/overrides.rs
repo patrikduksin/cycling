@@ -159,7 +159,7 @@ impl Overrides {
                     key,
                     nodes,
                     &device.scaled,
-                    ScreenId::controls(key, device.corners),
+                    ScreenId::controls(key, device.keys),
                 )?;
                 Some(Edit::Set(&set))
             }
@@ -341,8 +341,8 @@ impl Default for Overrides {
 /// What each stored screen's buttons do and the cues they show on
 /// `device`: its built-in's, as what a button does stays in code.
 fn controls(device: &Device) -> impl Fn(u8) -> Controls {
-    let corners = device.corners;
-    move |key| ScreenId::controls(key, corners)
+    let keys = device.keys;
+    move |key| ScreenId::controls(key, keys)
 }
 
 /// The screens the rider changed, for the composition to show in place of

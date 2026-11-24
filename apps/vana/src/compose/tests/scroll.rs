@@ -100,7 +100,7 @@ fn full_width() -> [Node; 4] {
 #[test]
 fn a_long_history_draws_every_card_in_view_at_every_offset() {
     for at in panels() {
-        let device = crate::screens::Device::of(at, &crate::screens::C606_BUTTONS);
+        let device = crate::screens::Device::of(at, &crate::screens::limits::C606_BUTTONS);
         let laid = Laid::new(
             ScreenId::History,
             &device,
@@ -222,7 +222,7 @@ fn an_empty_list_s_words_show_inside_its_viewport_or_it_is_refused() {
             "{:?}: {reject}",
             at.panel
         );
-        let device = crate::screens::Device::of(at, &crate::screens::C606_BUTTONS);
+        let device = crate::screens::Device::of(at, &crate::screens::limits::C606_BUTTONS);
         let laid = Laid::new(
             ScreenId::History,
             &device,

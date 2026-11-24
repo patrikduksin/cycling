@@ -508,7 +508,7 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     use crate::screens::sensors::Page as SensorPage;
     let heart = peer(HEART, 4242);
     let touch = |runtime: &mut Runtime, radio: &mut Radio, now| {
-        let point = device_api::input::Point { x: 232, y: 312 };
+        let point = device_api::input::Point { x: 188, y: 312 };
         runtime.input_received(Input::Touch(point), now, now, radio)
     };
     let saved = |runtime: &Runtime| runtime.preferences.sensors.of_type(HEART).is_some();

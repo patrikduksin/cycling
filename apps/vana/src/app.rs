@@ -54,6 +54,7 @@ mod recording;
 mod ride_control;
 mod seen;
 mod setup;
+mod sheet;
 mod storage;
 mod sync;
 pub use crate::ride::current::Journals;

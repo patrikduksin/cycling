@@ -231,6 +231,7 @@ pub(crate) fn solve<'a>(
     sink: &mut impl Sink<'a>,
 ) -> Result<Cost, Why> {
     let at = tree.at();
+    let area = cues.map_or(area, |cues| cues.within(area, at));
     let mut solver = Solver::new(tree.nodes(), flags);
     solver.looks(at)?;
     solver.upgrade(at, area);
@@ -652,7 +653,11 @@ impl<'a> Solver<'a> {
         let clear = cues.map_or(rect, |cues| cues.clear(rect, at));
         let Some(form) = largest_within(clear) else {
             let narrowest = forms.iter().map(|form| form.width).min().unwrap_or(0);
-            return Err(self.misfit(i, Axis::Across, clear.width(), narrowest));
+            if clear.width() < narrowest {
+                return Err(self.misfit(i, Axis::Across, clear.width(), narrowest));
+            }
+            let lowest = forms.iter().map(|form| form.height).min().unwrap_or(0);
+            return Err(self.misfit(i, Axis::Down, clear.height(), lowest));
         };
         cost.shown += 1;
         let placed = Placed {

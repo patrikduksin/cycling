@@ -52,6 +52,7 @@ pub const PRESS_DELAY_MS: u64 = 150;
 const SWIPE_MIN: i32 = 48;
 /// ...at least twice as far as up or down, within this time.
 const SWIPE_MAX_MS: u64 = 1000;
+const PULL_MIN: i32 = 40;
 
 /// What the screen showed when an edge arrived; a contact that began under
 /// one owner never completes under another.
@@ -73,12 +74,21 @@ pub enum Control {
     /// A tile of a built-in screen: what it asks for, and where focus rests
     /// after.
     Composed(crate::compose::input::Action, crate::compose::input::Focus),
+    Key(device_api::input::Role),
+    Level {
+        left: u16,
+        right: u16,
+    },
 }
 
 impl Control {
     /// Acts as the finger lands rather than when it lifts.
     pub const fn on_contact(self) -> bool {
         matches!(self, Self::Lower | Self::Raise)
+    }
+
+    pub const fn tracks(self) -> bool {
+        matches!(self, Self::Level { .. })
     }
 }
 
@@ -98,6 +108,13 @@ pub struct Hit {
     pub list: Option<List>,
     /// The page takes sideways swipes.
     pub swipes: bool,
+    pub pull: Option<Pull>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pull {
+    Down,
+    Up,
 }
 
 /// A swipe's direction, named by what it shows.
@@ -136,6 +153,8 @@ pub enum TouchEvent {
     Hold(Control),
     Pan(List, Pan),
     Swipe(Swipe),
+    Pull(Pull),
+    Drag(Control, Point),
 }
 
 /// The events of one edge: at most a release, an activation and a pan.
@@ -150,6 +169,8 @@ enum Claim {
     Pan,
     /// Sideways travel: a swipe if it lifts as one.
     Sideways,
+    Vertical,
+    Track,
     /// A contact control took it, or the finger left the slop with no one
     /// to claim it: nothing more comes of it.
     Spent,
@@ -315,6 +336,10 @@ impl Touches {
                 let _ = events.push(TouchEvent::Contact(control));
                 claim = Claim::Spent;
             }
+            Some(control) if control.tracks() => {
+                let _ = events.push(TouchEvent::Drag(control, point));
+                claim = Claim::Track;
+            }
             // Outside a list nothing can scroll: press at once.
             Some(control) if hit.list.is_none() => {
                 let _ = events.push(TouchEvent::Pressed(control));
@@ -348,8 +373,21 @@ impl Touches {
         *last = point;
         let dx = i32::from(point.x) - i32::from(start.x);
         let dy = i32::from(point.y) - i32::from(start.y);
+        if *claim == Claim::Track {
+            if let Some(control) = hit.control {
+                let _ = events.push(TouchEvent::Drag(control, point));
+            }
+            return;
+        }
+        let pulled = match hit.pull {
+            Some(Pull::Down) => dy,
+            Some(Pull::Up) => -dy,
+            None => 0,
+        };
         if *claim == Claim::Open {
-            let next = if hit.list.is_some() && dy.abs() >= DRAG_SLOP && dy.abs() >= dx.abs() {
+            let next = if pulled >= DRAG_SLOP && pulled > dx.abs() {
+                Claim::Vertical
+            } else if hit.list.is_some() && dy.abs() >= DRAG_SLOP && dy.abs() >= dx.abs() {
                 Claim::Pan
             } else if hit.swipes && dx.abs() >= DRAG_SLOP && dx.abs() > dy.abs() {
                 Claim::Sideways
@@ -377,6 +415,13 @@ impl Touches {
             && let Some(list) = hit.list
         {
             let _ = events.push(TouchEvent::Pan(list, Pan::Move(i32::from(point.y))));
+        }
+        if *claim == Claim::Vertical
+            && pulled >= PULL_MIN
+            && let Some(pull) = hit.pull
+        {
+            let _ = events.push(TouchEvent::Pull(pull));
+            *claim = Claim::Spent;
         }
     }
 
@@ -464,12 +509,14 @@ mod tests {
         control: Some(CARD),
         list: Some(List::Rides),
         swipes: false,
+        pull: None,
     };
     /// A control on a page that swipes, with no list.
     const ON_PAGE: Hit = Hit {
         control: Some(EXTEND),
         list: None,
         swipes: true,
+        pull: None,
     };
 
     fn at(x: u16, y: u16) -> Input {
@@ -623,11 +670,71 @@ mod tests {
             control: Some(Control::Map),
             list: None,
             swipes: true,
+            pull: None,
         };
         let events = contact(&mut t, map, &[(100, 200), (103, 202), (101, 199)], 1_200);
         assert_eq!(events.last(), Some(&Hold(Control::Map)));
         let wandering = contact(&mut t, map, &[(100, 200), (130, 200), (100, 200)], 1_200);
         assert!(!wandering.contains(&Hold(Control::Map)));
+    }
+
+    #[test]
+    fn a_drag_the_way_the_hit_pulls_pulls_the_sheet_once_and_spends_the_contact() {
+        let mut t = Touches::default();
+        let top = Hit {
+            pull: Some(Pull::Down),
+            ..ON_PAGE
+        };
+        let events = contact(
+            &mut t,
+            top,
+            &[(120, 4), (122, 30), (124, 60), (124, 120)],
+            300,
+        );
+        assert_eq!(
+            taps(events),
+            [
+                Pressed(EXTEND),
+                Released(EXTEND),
+                TouchEvent::Pull(Pull::Down)
+            ],
+            "the control under the finger lets go, and the pull comes once"
+        );
+        let up = contact(&mut t, top, &[(120, 200), (120, 100)], 200);
+        assert!(!up.iter().any(|e| matches!(e, TouchEvent::Pull(_))));
+        let sideways = contact(&mut t, top, &[(200, 4), (150, 20), (60, 30)], 200);
+        assert_eq!(sideways.last(), Some(&TouchEvent::Swipe(Swipe::Next)));
+        let close = Hit {
+            pull: Some(Pull::Up),
+            ..IN_LIST
+        };
+        let events = contact(&mut t, close, &[(100, 250), (100, 230), (100, 190)], 200);
+        assert!(events.contains(&TouchEvent::Pull(Pull::Up)));
+        assert!(!events.contains(&TouchEvent::Pan(List::Rides, Pan::Up)));
+    }
+
+    #[test]
+    fn a_tracking_control_follows_the_finger_from_where_it_lands() {
+        let mut t = Touches::default();
+        let bar = Control::Level {
+            left: 10,
+            right: 230,
+        };
+        let level = Hit {
+            control: Some(bar),
+            pull: Some(Pull::Up),
+            ..Hit::default()
+        };
+        let events = contact(&mut t, level, &[(40, 50), (90, 52), (90, 10)], 200);
+        assert_eq!(
+            events,
+            [
+                TouchEvent::Drag(bar, Point { x: 40, y: 50 }),
+                TouchEvent::Drag(bar, Point { x: 90, y: 52 }),
+                TouchEvent::Drag(bar, Point { x: 90, y: 10 }),
+            ],
+            "no tap, no pull: the bar keeps the finger"
+        );
     }
 
     #[test]
@@ -637,6 +744,7 @@ mod tests {
             control: Some(Control::Raise),
             list: None,
             swipes: false,
+            pull: None,
         };
         let events = contact(&mut t, pad, &[(200, 220), (201, 221)], 100);
         assert_eq!(events, [TouchEvent::Contact(Control::Raise)]);

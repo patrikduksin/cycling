@@ -87,7 +87,7 @@ impl device_api::input::InputSource for Keys {
     fn controls(&self) -> device_api::input::Controls {
         device_api::input::Controls {
             touch: Availability::Unsupported,
-            buttons: crate::screens::C606_BUTTONS,
+            buttons: crate::screens::limits::C606_BUTTONS,
         }
     }
     fn take_edge(&mut self) -> Option<device_api::input::Edge> {

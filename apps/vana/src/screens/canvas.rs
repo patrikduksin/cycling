@@ -189,6 +189,33 @@ impl Shape {
     }
 }
 
+type Part<'a> = (&'a [Shape], &'a [Run]);
+
+fn paint((shapes, runs): Part<'_>, row: &mut Row) {
+    for shape in shapes {
+        shape.paint(row);
+    }
+    for run in runs {
+        run.paint(row);
+    }
+}
+
+#[cfg(test)]
+fn pixel((shapes, runs): Part<'_>, look: Look, x: usize, y: usize, background: Shown) -> Shown {
+    let mut color = background;
+    for shape in shapes {
+        if let Some(pixel) = shape.pixel(look, x, y, color) {
+            color = pixel;
+        }
+    }
+    for run in runs {
+        if let Some(pixel) = run.pixel(look, x, y, color) {
+            color = pixel;
+        }
+    }
+    color
+}
+
 /// The columns a play triangle covers on row `y`: none outside it, at
 /// least one inside.
 fn play_width(rect: Rect, y: usize) -> Option<usize> {
@@ -222,6 +249,7 @@ const fn fitted(rect: Rect, radius: usize) -> usize {
 pub struct Canvas {
     pub shapes: Vec<Shape, 24>,
     pub runs: Vec<Run, 28>,
+    cover: Option<(u8, u8)>,
     /// Shapes and runs that found the canvas full: the layout check fails a
     /// frame that lost any, where firmware quietly paints without them.
     #[cfg(any(test, feature = "invariants"))]
@@ -232,9 +260,27 @@ impl Canvas {
     pub const EMPTY: Self = Self {
         shapes: Vec::new(),
         runs: Vec::new(),
+        cover: None,
         #[cfg(any(test, feature = "invariants"))]
         dropped: 0,
     };
+
+    pub fn start_cover(&mut self, (shapes, runs): (usize, usize)) {
+        self.shapes.truncate(self.shapes.capacity() - shapes);
+        self.runs.truncate(self.runs.capacity() - runs);
+        self.cover = Some((self.shapes.len() as u8, self.runs.len() as u8));
+    }
+
+    fn split(&self) -> (Part<'_>, Part<'_>) {
+        let (shapes, runs) = self
+            .cover
+            .map_or((self.shapes.len(), self.runs.len()), |(s, r)| {
+                (usize::from(s), usize::from(r))
+            });
+        let (under_shapes, over_shapes) = self.shapes.split_at(shapes);
+        let (under_runs, over_runs) = self.runs.split_at(runs);
+        ((under_shapes, under_runs), (over_shapes, over_runs))
+    }
 
     pub fn shape(&mut self, shape: Shape) {
         if self.shapes.push(shape).is_err() {
@@ -307,12 +353,11 @@ impl Canvas {
     }
 
     pub fn paint(&self, row: &mut Row) {
-        for shape in &self.shapes {
-            shape.paint(row);
-        }
-        for run in &self.runs {
-            run.paint(row);
-        }
+        paint(self.split().0, row);
+    }
+
+    pub fn paint_cover(&self, row: &mut Row) {
+        paint(self.split().1, row);
     }
 
     pub fn parts(&self, parts: &mut Parts) {
@@ -353,18 +398,12 @@ impl Canvas {
 
     #[cfg(test)]
     pub fn pixel(&self, look: Look, x: usize, y: usize, background: Shown) -> Shown {
-        let mut color = background;
-        for shape in &self.shapes {
-            if let Some(pixel) = shape.pixel(look, x, y, color) {
-                color = pixel;
-            }
-        }
-        for run in &self.runs {
-            if let Some(pixel) = run.pixel(look, x, y, color) {
-                color = pixel;
-            }
-        }
-        color
+        pixel(self.split().0, look, x, y, background)
+    }
+
+    #[cfg(test)]
+    pub fn cover_pixel(&self, look: Look, x: usize, y: usize, background: Shown) -> Shown {
+        pixel(self.split().1, look, x, y, background)
     }
 
     /// Whether some run reads exactly `text`.

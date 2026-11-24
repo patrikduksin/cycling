@@ -11,8 +11,8 @@ height = 400
 touch = true
 buttons = [
   { id = 0, role = "back", edge = "left", at = 250 },
-  { id = 1, role = "move", edge = "left", at = 750 },
-  { id = 2, role = "act", edge = "right", at = 750 },
+  { id = 1, role = "move", edge = "bottom", at = 217 },
+  { id = 2, role = "act", edge = "bottom", at = 783 },
 ]
 
 [fitted]

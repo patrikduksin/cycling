@@ -545,7 +545,7 @@ impl Runtime {
     /// The ride prefers BLE cadence, so a live ANT cadence sensor (cadence-only
     /// or combined) stands for the role only while the BLE sensor is not
     /// connected. A failed radio has no strap to speak of.
-    fn glance(&self, now: u64) -> heapless::Vec<Glance, GLANCES> {
+    pub(super) fn glance(&self, now: u64) -> heapless::Vec<Glance, GLANCES> {
         use crate::sensors::ble_profile::{Link, Profile};
         let mut glance = self.menu.glance();
         let ble = self.sensors.snapshot(now);

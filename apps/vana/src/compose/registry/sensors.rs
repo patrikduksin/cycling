@@ -1,4 +1,3 @@
-//! Ids 96–111: the tiles of a sensor's pages, past the lists' at 76–79.
 use crate::compose::tile::{Component, Erased};
 use crate::compose::tiles::{sensor_cells, sensor_line, sensor_swap};
 

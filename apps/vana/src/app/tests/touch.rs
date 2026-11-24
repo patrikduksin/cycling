@@ -351,7 +351,7 @@ fn a_tap_chooses_its_card_but_a_tap_that_stops_a_coasting_list_does_not() {
 }
 
 #[test]
-fn a_tap_off_every_tile_of_a_static_screen_does_nothing() {
+fn a_tap_off_every_tile_and_key_tab_of_a_static_screen_does_nothing() {
     let mut runtime = booted(Profile::HeartRate);
     let panel = runtime.device.scaled.panel;
     for page in [
@@ -364,10 +364,13 @@ fn a_tap_off_every_tile_of_a_static_screen_does_nothing() {
         runtime.navigation.go(To::Page(page));
         runtime.compose_shown();
         let laid = runtime.composition.laids().get(runtime.screen_id());
-        let solved = laid.expect("the screen has a tree").solved();
+        let laid = laid.expect("the screen has a tree");
+        let solved = laid.solved();
+        let tabs = laid.controls().shown(laid.focus());
         let tiles: std::vec::Vec<_> = solved
             .focus_order()
             .map(|placed| placed.rect.rect())
+            .chain(tabs.map(|cue| cue.target(runtime.device)))
             .collect();
         for y in 0..panel.height {
             for x in (0..panel.width).filter(|&x| !tiles.iter().any(|tile| tile.contains(x, y))) {

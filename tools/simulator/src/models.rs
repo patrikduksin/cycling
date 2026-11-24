@@ -18,14 +18,14 @@ const C606_BUTTONS: Fixtures = Fixtures::new(&[
     Fixture {
         id: 1,
         role: Some(Role::Move),
-        edge: Side::Left,
-        at: 750,
+        edge: Side::Bottom,
+        at: 217,
     },
     Fixture {
         id: 2,
         role: Some(Role::Act),
-        edge: Side::Right,
-        at: 750,
+        edge: Side::Bottom,
+        at: 783,
     },
 ]);
 static C606_DEVICE: Device = Device::of(Scaled::of(240, 320), &C606_BUTTONS);
@@ -65,14 +65,14 @@ const BARE_BUTTONS: Fixtures = Fixtures::new(&[
     Fixture {
         id: 1,
         role: Some(Role::Move),
-        edge: Side::Left,
-        at: 750,
+        edge: Side::Bottom,
+        at: 217,
     },
     Fixture {
         id: 2,
         role: Some(Role::Act),
-        edge: Side::Right,
-        at: 750,
+        edge: Side::Bottom,
+        at: 783,
     },
 ]);
 static BARE_DEVICE: Device = Device::of(Scaled::of(240, 320), &BARE_BUTTONS);
@@ -112,14 +112,14 @@ const SMALL_BUTTONS: Fixtures = Fixtures::new(&[
     Fixture {
         id: 1,
         role: Some(Role::Move),
-        edge: Side::Left,
-        at: 750,
+        edge: Side::Bottom,
+        at: 217,
     },
     Fixture {
         id: 2,
         role: Some(Role::Act),
-        edge: Side::Right,
-        at: 750,
+        edge: Side::Bottom,
+        at: 783,
     },
 ]);
 static SMALL_DEVICE: Device = Device::of(Scaled::of(180, 240), &SMALL_BUTTONS);
@@ -159,14 +159,14 @@ const VOLATILE_BUTTONS: Fixtures = Fixtures::new(&[
     Fixture {
         id: 1,
         role: Some(Role::Move),
-        edge: Side::Left,
-        at: 750,
+        edge: Side::Bottom,
+        at: 217,
     },
     Fixture {
         id: 2,
         role: Some(Role::Act),
-        edge: Side::Right,
-        at: 750,
+        edge: Side::Bottom,
+        at: 783,
     },
 ]);
 static VOLATILE_DEVICE: Device = Device::of(Scaled::of(240, 320), &VOLATILE_BUTTONS);
@@ -206,14 +206,14 @@ const WIDE_BUTTONS: Fixtures = Fixtures::new(&[
     Fixture {
         id: 1,
         role: Some(Role::Move),
-        edge: Side::Left,
-        at: 750,
+        edge: Side::Bottom,
+        at: 217,
     },
     Fixture {
         id: 2,
         role: Some(Role::Act),
-        edge: Side::Right,
-        at: 750,
+        edge: Side::Bottom,
+        at: 783,
     },
 ]);
 static WIDE_DEVICE: Device = Device::of(Scaled::of(240, 400), &WIDE_BUTTONS);

@@ -19,14 +19,14 @@ pub const BUTTONS: Fixtures = Fixtures::new(&[
     Fixture {
         id: 1,
         role: Some(Role::Move),
-        edge: Side::Left,
-        at: 750,
+        edge: Side::Bottom,
+        at: 217,
     },
     Fixture {
         id: 2,
         role: Some(Role::Act),
-        edge: Side::Right,
-        at: 750,
+        edge: Side::Bottom,
+        at: 783,
     },
 ]);
 pub const GPS: bool = true;

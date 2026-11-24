@@ -8,9 +8,7 @@ use crate::compose::data::ListKind;
 use crate::compose::node::What;
 use crate::compose::registry::SENSOR_SEARCH;
 use crate::screens::Device;
-use crate::screens::chrome::{ACCENT, AMBER, GREEN, RED, Rect, SECONDARY, WHITE};
-use crate::screens::cue::{Corner, RADIUS};
-use crate::screens::scaled::Panel;
+use crate::screens::chrome::{ACCENT, AMBER, GREEN, RED, SECONDARY, WHITE};
 use crate::screens::scroll;
 use crate::screens::workout::Text;
 use crate::sensors::ant::BatteryStatus;
@@ -214,9 +212,8 @@ impl Menu {
 
     /// The cue, card or search line under (`x`, `y`).
     fn target(&self, laid: &Laid, device: &Device, x: usize, y: usize) -> Option<Target> {
-        let panel = device.scaled.panel;
         let mut cues = laid.controls().shown(laid.focus());
-        if let Some(cue) = cues.find(|cue| cue_box(cue.corner(device), panel).contains(x, y)) {
+        if let Some(cue) = cues.find(|cue| cue.target(device).contains(x, y)) {
             return Some(Target::Cue(cue.role));
         }
         if laid
@@ -270,19 +267,6 @@ impl Selected {
 
     pub const fn live(self) -> bool {
         matches!(self.link_status(), LinkStatus::Live)
-    }
-}
-
-/// The box a cue's taps own in `corner`.
-const fn cue_box(corner: Corner, panel: Panel) -> Rect {
-    let (right, bottom) = (panel.width, panel.height);
-    let left = if corner.left() { 0 } else { right - RADIUS };
-    let top = if corner.top() { 0 } else { bottom - RADIUS };
-    Rect {
-        left,
-        top,
-        right: left + RADIUS,
-        bottom: top + RADIUS,
     }
 }
 

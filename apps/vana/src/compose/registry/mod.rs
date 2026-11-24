@@ -10,12 +10,13 @@ mod ride;
 mod script;
 mod scroll;
 mod sensors;
+mod sheet;
 mod statics;
 
 #[allow(unused_imports)]
 pub use {
     climb_workout::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*, sensors::*,
-    statics::*,
+    sheet::*, statics::*,
 };
 
 /// A family's block of ids and its tiles, the first at the block's start.
@@ -46,7 +47,8 @@ const FAMILIES: &[Family] = &[
     family(64, 76, scroll::TILES),
     family(76, 80, scroll::SENSORS),
     family(80, 96, script::TILES),
-    family(96, 112, sensors::TILES),
+    family(96, 104, sensors::TILES),
+    family(104, 112, sheet::TILES),
 ];
 
 const _: () = {

@@ -237,6 +237,7 @@ pub struct Scene<'v> {
     badge: Option<&'v Badge>,
     toast: Option<&'v Toast>,
     sign: Option<sign::Placed>,
+    over: Option<super::sheet::Over<'v>>,
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
@@ -320,6 +321,7 @@ struct WholePage<'v> {
     radar: bool,
     cues: &'v [Cue],
     badge: Option<&'v Badge>,
+    over: Option<super::sheet::Over<'v>>,
 }
 
 impl firmware_shell::shell::Picture for Scene<'_> {
@@ -329,6 +331,9 @@ impl firmware_shell::shell::Picture for Scene<'_> {
         self.paint_content(row);
         if let Some(sign) = &self.sign {
             sign.paint(&mut row.plain());
+        }
+        if let Some(over) = &self.over {
+            over.paint(row, self.canvas(), self.device);
         }
     }
 
@@ -346,6 +351,7 @@ impl firmware_shell::shell::Picture for Scene<'_> {
                 radar: self.radar.is_some(),
                 cues: self.cues,
                 badge: self.badge,
+                over: self.over,
             },
         );
         let toast = super::chrome::toast_band(&self.device.scaled);
@@ -456,10 +462,15 @@ impl<'v> Scene<'v> {
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> super::chrome::Shown {
         let color = self.reference_content(x, y);
-        self.sign
+        let color = self
+            .sign
             .as_ref()
             .and_then(|sign| sign.pixel(x, y, color))
-            .unwrap_or(color)
+            .unwrap_or(color);
+        match &self.over {
+            Some(over) => over.pixel(self.look(), x, y, color, self.canvas(), self.device),
+            None => color,
+        }
     }
 
     #[cfg(test)]
@@ -971,6 +982,14 @@ impl<'a> View<'a> {
         self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
     }
 
+    #[cfg(test)]
+    pub(crate) fn pull_sheet(&mut self, facts: super::sheet::Facts) {
+        let mut laids = self.laids.expect("composed first").clone();
+        laids.open_sheet(self.device);
+        laids.set_sheet_facts(facts);
+        self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
+    }
+
     /// The main ride page as the composition solved it.
     pub fn main(&self) -> Option<&'a crate::compose::builtin::Laid> {
         self.laids.map(crate::compose::builtin::Laids::main)
@@ -1239,15 +1258,12 @@ impl<'a> View<'a> {
     }
 
     fn full_screen(&self) -> bool {
-        super::cue::any_at_top(&self.cues, self.device)
-            || match self.page {
-                Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => {
-                    true
-                }
-                Page::Summary | Page::PastRide => summary::question_shown(self.after()),
-                Page::Sensors => !self.bar_has_room(),
-                _ => self.paused_screen_shown(),
-            }
+        match self.page {
+            Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => true,
+            Page::Summary | Page::PastRide => summary::question_shown(self.after()),
+            Page::Sensors => !self.bar_has_room(),
+            _ => self.paused_screen_shown(),
+        }
     }
 
     /// The scrolling list this page shows, if any.
@@ -1276,6 +1292,10 @@ impl<'a> View<'a> {
     }
 
     fn scene(&self) -> Scene<'_> {
+        let over = self.pulled().map(|(_, _, bottom)| super::sheet::Over {
+            bottom,
+            cues: &self.cues,
+        });
         let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
         let kind = match self.page {
             _ if sheet => Kind::PageUnderBar,
@@ -1311,7 +1331,7 @@ impl<'a> View<'a> {
             body: &self.body,
             painted: self.extra.painted(),
             radar,
-            cues: &self.cues,
+            cues: if over.is_some() { &[] } else { &self.cues },
             badge: self.badge.as_ref().filter(|_| !sheet),
             toast: self.toast.as_ref().filter(|_| !sheet),
             sign: match kind {
@@ -1324,7 +1344,19 @@ impl<'a> View<'a> {
                 ),
                 _ => None,
             },
+            over,
         }
+    }
+
+    fn pulled(
+        &self,
+    ) -> Option<(
+        &'a crate::compose::builtin::Laid,
+        &'a super::sheet::Facts,
+        usize,
+    )> {
+        let (laid, facts) = self.laids?.sheet_with_facts()?;
+        Some((laid, facts, super::sheet::bottom(laid, &self.device.scaled)))
     }
 
     pub fn prepare(&mut self) -> Scene<'_> {
@@ -1344,6 +1376,13 @@ impl<'a> View<'a> {
             Some(laid) => self.prepare_composed(laid),
             None => Cues::new(),
         };
+        if let Some((laid, facts, bottom)) = self.pulled() {
+            self.cues = laid.controls().shown(laid.focus()).collect();
+            let rows = if self.layout().is_some() { 0 } else { bottom };
+            if let Body::Canvas(canvas) = &mut self.body {
+                super::sheet::prepare(laid, facts, rows, canvas);
+            }
+        }
         self.scene()
     }
 

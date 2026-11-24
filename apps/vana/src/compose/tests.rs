@@ -1014,7 +1014,7 @@ fn play_and_back() -> Controls {
         move_: None,
         held: None,
     };
-    Controls::new(buttons, crate::screens::C606.corners)
+    Controls::new(buttons, crate::screens::C606.keys)
 }
 
 #[test]
@@ -1030,11 +1030,12 @@ fn a_tile_is_accepted_clear_of_its_screens_cues_or_refused_at_accept() {
                 let leaf = tile(component, arg, Size::units(width));
                 for band in [[leaf, filler], [filler, leaf]] {
                     let nodes = [
-                        Node::col(2, Size::grow(1)),
-                        filler,
+                        Node::col(3, Size::grow(1)),
+                        tile(SPACE, 0, Size::units(60)),
                         Node::row(2, Size::CONTENT),
                         band[0],
                         band[1],
+                        filler,
                     ];
                     let node = if band[0] == leaf { 3 } else { 4 };
                     if Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).is_err() {
@@ -1066,33 +1067,32 @@ fn a_tile_is_accepted_clear_of_its_screens_cues_or_refused_at_accept() {
                     );
                     assert!(solve.is_ok());
                     let device = seen.rects[node].unwrap();
-                    let clear = crate::screens::C606.corners.columns_clear_of(
-                        cues.shown(),
-                        device.rect(),
-                        at.panel,
-                    );
+                    let keys = &crate::screens::C606.keys;
+                    let clear = cues
+                        .shown()
+                        .iter()
+                        .fold(device.rect(), |rect, cue| cue.clear(keys, &at, rect));
                     let mut canvas = Canvas::default();
                     solved.prepare(&Nothing, &mut canvas);
-                    let shapes = canvas.shapes.iter().map(|shape| {
-                        let bounds = shape.bounds();
-                        (bounds.left, bounds.right)
+                    let shapes = canvas.shapes.iter().map(|shape| shape.bounds());
+                    let runs = canvas.runs.iter().map(|run| Rect {
+                        left: run.left,
+                        top: run.top,
+                        right: run.left + run.line.width() + SPILL,
+                        bottom: run.bottom(),
                     });
-                    let runs = canvas
-                        .runs
-                        .iter()
-                        .map(|run| (run.left, run.left + run.line.width() + SPILL));
-                    for (left, right) in shapes.chain(runs) {
+                    for drawn_at in shapes.chain(runs) {
                         assert!(
-                            clear.left <= left && right <= clear.right,
-                            "{}({arg}) {width} units wide draws {left}..{right}, \
-                             clear of the cues is {}..{}",
+                            !cues
+                                .shown()
+                                .iter()
+                                .any(|cue| cue.covers(drawn_at, &crate::screens::C606)),
+                            "{}({arg}) {width} units wide draws {drawn_at:?} on a tab",
                             kind.name(),
-                            clear.left,
-                            clear.right
                         );
                         drawn += 1;
                     }
-                    if clear.right.saturating_sub(clear.left) < usize::from(device.width()) {
+                    if clear != device.rect() {
                         cut += 1;
                     }
                 }
@@ -1115,11 +1115,12 @@ fn a_tile_too_wide_beside_a_cue_is_refused_by_the_screen_that_shows_it() {
     let filler = tile(SPACE, 0, Size::grow(1));
     let time = tile(VALUE, Metric::Elapsed as u8, Size::units(smallest as u8));
     let nodes = [
-        Node::col(2, Size::grow(1)),
-        filler,
+        Node::col(3, Size::grow(1)),
+        tile(SPACE, 0, Size::units(60)),
         Node::row(2, Size::CONTENT),
-        filler,
         time,
+        filler,
+        filler,
     ];
     let screen = Screen::parse(7, &bytes(&nodes), &at, Controls::FREE).unwrap();
     let mut solved = Solved::EMPTY;
@@ -1130,7 +1131,7 @@ fn a_tile_too_wide_beside_a_cue_is_refused_by_the_screen_that_shows_it() {
     };
     assert_eq!(
         (reject.place, misfit.node, misfit.axis, misfit.needs),
-        (Place::Screen(7), 4, Axis::Across, smallest)
+        (Place::Screen(7), 3, Axis::Across, smallest)
     );
     assert!(misfit.gets < misfit.needs, "{misfit:?}");
     let record = [

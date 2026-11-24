@@ -24,66 +24,42 @@ pub mod scroll;
 pub mod sensors;
 pub mod settings;
 pub mod setup;
+pub mod sheet;
 pub mod sign;
 pub mod touch;
 pub mod workout;
 pub mod workouts;
 
-use device_api::input::{Fixture, Fixtures, Role, Side};
+use device_api::input::Fixtures;
 
 const _: () = assert!(
     limits::HEIGHT <= firmware_shell::shell::MAX_HEIGHT,
     "the shell keys fewer bands than the tallest panel has"
 );
 
-/// What a device's screens are laid out for: its panel, at the scale its
-/// faces and icons are generated for, and the corners its buttons' cues
-/// take. A screen's boxes come from its tree, solved for these.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Device {
     pub scaled: scaled::Scaled,
-    pub corners: cue::Corners,
+    pub keys: cue::Keys,
 }
 
 impl Device {
+    /// Panics, at compile time in a const, when a role has no key or two
+    /// keys' tabs would overlap.
     pub const fn of(scaled: scaled::Scaled, buttons: &Fixtures) -> Self {
-        Self {
-            scaled,
-            corners: cue::Corners::of(buttons),
-        }
+        let keys = cue::Keys::of(buttons);
+        keys.assert_apart(&scaled);
+        Self { scaled, keys }
     }
 }
 
-/// The C606's buttons: BACK high and MOVE low on the left side, ACT low on
-/// the right.
-pub const C606_BUTTONS: Fixtures = Fixtures::new(&[
-    Fixture {
-        id: 0,
-        role: Some(Role::Back),
-        edge: Side::Left,
-        at: 250,
-    },
-    Fixture {
-        id: 1,
-        role: Some(Role::Move),
-        edge: Side::Left,
-        at: 750,
-    },
-    Fixture {
-        id: 2,
-        role: Some(Role::Act),
-        edge: Side::Right,
-        at: 750,
-    },
-]);
-
 /// The C606: a 240 × 320 panel at scale 1.
-pub static C606: Device = Device::of(scaled::BASE, &C606_BUTTONS);
+pub static C606: Device = Device::of(scaled::BASE, &limits::C606_BUTTONS);
 
 /// The simulator's test panels, for screens' own tests.
 #[cfg(test)]
 pub(crate) mod panels {
-    use super::{C606_BUTTONS, Device, scaled::Scaled};
+    use super::{Device, limits::C606_BUTTONS, scaled::Scaled};
 
     pub(crate) static WIDE: Device = Device::of(Scaled::of(240, 400), &C606_BUTTONS);
     pub(crate) static SMALL: Device = Device::of(Scaled::of(180, 240), &C606_BUTTONS);

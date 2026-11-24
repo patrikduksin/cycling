@@ -828,7 +828,7 @@ mod tests {
     use super::*;
     use crate::ride::log::Sample;
     use crate::screens::chrome::{CONTENT, HEIGHT, WIDTH};
-    use crate::screens::cue::RADIUS;
+    const RADIUS: usize = 42;
     use crate::screens::workout::Page;
 
     use crate::screens::Device;

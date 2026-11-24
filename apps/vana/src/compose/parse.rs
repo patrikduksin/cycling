@@ -206,7 +206,7 @@ fn unreachable_tile(tree: &Tree, buttons: &Buttons) -> Option<Why> {
         };
         let action = registry::tile(component).action(arg)?;
         let node = index as u8;
-        if buttons.reach(action) {
+        if buttons.reach(action) || action.touch_only() {
             None
         } else if buttons.move_.is_some() {
             Some(Why::NoButtonPath { node })

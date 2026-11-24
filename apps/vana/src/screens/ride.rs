@@ -900,7 +900,18 @@ mod tests {
                 let leaves = laid.leaves();
                 let above = i32::from(leaves[0].rect.top);
                 let bottom = i32::from(leaves[leaves.len() - 1].rect.bottom);
-                let below = device.scaled.panel.height as i32 - bottom;
+                let height = device.scaled.panel.height;
+                let floor = laid
+                    .controls()
+                    .cues()
+                    .into_iter()
+                    .flat_map(|cues| cues.shown())
+                    .map(|cue| cue.tab(&device.keys, &device.scaled))
+                    .filter(|tab| tab.bottom == height)
+                    .map(|tab| tab.top)
+                    .min()
+                    .unwrap_or(height);
+                let below = floor as i32 - bottom;
                 assert!(
                     (above - below).abs() <= 1,
                     "{id:?}: {above} above, {below} below"
@@ -911,7 +922,6 @@ mod tests {
 
     #[test]
     fn longest_pause_lays_out_whole_between_the_cues() {
-        use crate::screens::cue;
         for device in crate::screens::panels::ALL {
             for auto in [false, true] {
                 let mut view = View::new(Page::Ride, 0, None);
@@ -934,18 +944,16 @@ mod tests {
                 }
                 assert_eq!(canvas.shows("RIDE ON TO RESUME"), auto, "{what}");
                 assert_eq!(canvas.shows("AUTO PAUSED"), auto, "{what}");
-                let screen = device.scaled.screen();
-                let (width, height) = (screen.right, screen.bottom);
-                let reach = device.scaled.unit(cue::RADIUS + 2);
                 for run in &canvas.runs {
-                    let (left, right) = (run.columns().start, run.columns().end.min(width));
-                    let (top, bottom) = (run.top, run.bottom().min(height));
+                    let rect = crate::screens::chrome::Rect {
+                        left: run.columns().start,
+                        top: run.top,
+                        right: run.columns().end,
+                        bottom: run.bottom(),
+                    };
                     let text = core::str::from_utf8(run.line.text());
                     for cue in &cues {
-                        let corner = cue.corner(device);
-                        let dx = if corner.left() { left } else { width - right };
-                        let dy = if corner.top() { top } else { height - bottom };
-                        assert!(dx * dx + dy * dy >= reach.pow(2), "{what}: {text:?}");
+                        assert!(!cue.covers(rect, device), "{what}: {text:?}");
                     }
                 }
             }

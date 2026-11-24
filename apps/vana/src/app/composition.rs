@@ -5,7 +5,7 @@
 use super::Runtime;
 use super::navigation::To;
 use crate::compose::builtin::{Asks, Choices, Laid, Laids, ScreenId};
-use crate::compose::input::{self, Action, Focus, Go, ListAct, OnPage, Owners};
+use crate::compose::input::{self, Action, Focus, Go, ListAct, OnPage, Owners, SheetAct};
 use crate::compose::node::What;
 use crate::compose::{Flags, Screens};
 use crate::ride::course::nav::Sign;
@@ -34,6 +34,10 @@ impl Composition {
 
     pub(super) fn main(&self) -> &Laid {
         self.laids.main()
+    }
+
+    pub(super) fn laids_mut(&mut self) -> &mut Laids {
+        &mut self.laids
     }
 
     pub(super) fn show(
@@ -74,12 +78,16 @@ impl Runtime {
         };
         let shown = self.screen_id();
         let changed = super::overrides::shown(&self.overrides);
+        let sheet = self.sheet_facts(now);
         let laids = &mut self.composition.laids;
         if laids.update(choices, flags, changed) {
             let slots = choices.main_slots;
             why!("compose.solve", slots, flags);
         }
         laids.show(shown, self.device, changed);
+        if let Some(facts) = sheet {
+            laids.set_sheet_facts(facts);
+        }
     }
 
     /// Solve the screen shown for what the rider chose, keeping what the
@@ -98,12 +106,16 @@ impl Runtime {
         laids.show(shown, self.device, changed);
     }
 
-    /// A press of `role` on the built-in shown, if one is.
     pub(super) fn composed_press(&mut self, role: Role) -> Option<Pressed> {
-        if self.editing_number() {
+        let sheet = self.sheet_open();
+        if self.editing_number() && !sheet {
             return None;
         }
-        let id = self.screen_id();
+        let id = if sheet {
+            ScreenId::ControlSheet
+        } else {
+            self.screen_id()
+        };
         // A press may come before the frame that shows a screen just opened.
         self.compose_shown();
         let cursor = self.list_cursor_at();
@@ -443,5 +455,9 @@ impl<A: Ant> Owners for Carried<'_, A> {
 
     fn list(&mut self, act: ListAct) {
         why!("compose.unowned", act);
+    }
+
+    fn sheet(&mut self, act: SheetAct) {
+        self.runtime.sheet_act(act, self.ant, self.now);
     }
 }

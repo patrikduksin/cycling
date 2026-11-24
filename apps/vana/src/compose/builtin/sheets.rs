@@ -1,9 +1,9 @@
 //! NEW FTP: the FTP a test found over whatever page it shows on, the one
-//! in force under it, and SAVE?. ACT (check) saves it, BACK (back) keeps
-//! the old one.
+//! in force under it, and SAVE?. ACT (check) saves it, BACK keeps the old
+//! one; its tab would cut the FTP's full-width row, so it shows none.
 use super::question::{answer, block, gap, panel, say};
 use super::{Builtin, Choices, Nodes};
-use crate::compose::input::Buttons;
+use crate::compose::input::{Action, Button, Buttons, OnPage};
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::FTP;
 use crate::compose::tiles::line::Say;
@@ -13,7 +13,10 @@ pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Check),
-        back: answer(false, Icon::Back),
+        back: Some(Button {
+            action: Action::Page(OnPage::Answer(false)),
+            cue: None,
+        }),
         move_: None,
         held: None,
     },
@@ -52,7 +55,7 @@ mod tests {
                 view.canvas().assert_laid_out(screen, &want, &what);
                 assert!(view.canvas().shows(&std::format!("{new}")), "{what}");
                 let cues = view.prepare().cues().len();
-                assert_eq!(cues, 2, "{what}: BACK keeps, ACT saves");
+                assert_eq!(cues, 1, "{what}: ACT saves");
             }
         }
     }

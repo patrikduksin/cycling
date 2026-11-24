@@ -166,13 +166,7 @@ mod tests {
         crate::screens::check::enable(true);
         for device in panels::ALL {
             let mut confirm = shown(device, Bests::default(), Mode::Confirm);
-            let scene = confirm.prepare();
-            assert!(
-                scene.bar.is_none(),
-                "{:?}: the bar would cut the back cue",
-                device.scaled
-            );
-            scene.check_layout();
+            confirm.prepare().check_layout();
         }
         let none = shown(&crate::screens::C606, Bests::default(), Mode::Unavailable);
         none.canvas()

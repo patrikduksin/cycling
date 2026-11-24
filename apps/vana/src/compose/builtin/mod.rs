@@ -10,7 +10,7 @@ use super::solve::{MAX_LEAVES, Placed, Rect16, Scroll, Solved};
 use crate::screens::Device;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
-use crate::screens::cue::Corners;
+use crate::screens::cue::Keys;
 use crate::screens::ride::RidePage;
 use crate::screens::ride::slots::Slots;
 use crate::screens::ride::summary::Shown;
@@ -18,6 +18,7 @@ use crate::screens::workout::Page;
 
 mod bests;
 mod brand;
+mod control_sheet;
 mod discard;
 mod form;
 mod format;
@@ -110,6 +111,7 @@ pub enum ScreenId {
     PowerMeter,
     ForgetSensor,
     ReplaceSensor,
+    ControlSheet,
 }
 
 /// Which of its screens a page shows where it has more than one: its own,
@@ -125,7 +127,7 @@ pub enum Asks {
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 50;
+    pub const COUNT: usize = 51;
     pub const ALL: [Self; Self::COUNT] = [
         Self::RideMain,
         Self::RideStats,
@@ -177,6 +179,7 @@ impl ScreenId {
         Self::PowerMeter,
         Self::ForgetSensor,
         Self::ReplaceSensor,
+        Self::ControlSheet,
     ];
 
     pub const fn of(
@@ -252,10 +255,10 @@ impl ScreenId {
     }
 
     /// The buttons a changed screen `key` keeps, its built-in's, and the
-    /// cues they show in `corners`; none for a key that names no screen.
-    pub fn controls(key: u8, corners: Corners) -> Controls {
+    /// tabs they show beside `keys`; none for a key that names no screen.
+    pub fn controls(key: u8, keys: Keys) -> Controls {
         match Self::of_key(key) {
-            Some(id) => Controls::new(id.builtin().buttons, corners),
+            Some(id) => Controls::new(id.builtin().buttons, keys),
             None => Controls::FREE,
         }
     }
@@ -385,6 +388,8 @@ impl ScreenId {
             Self::ForgetSensor => sensors::FORGET,
 
             Self::ReplaceSensor => sensors::REPLACE,
+
+            Self::ControlSheet => control_sheet::BUILTIN,
         }
     }
 }
@@ -446,7 +451,7 @@ impl Laid {
         let screen = match changed {
             Some(screen) => screen.clone(),
             None => {
-                let controls = Controls::new(builtin.buttons, device.corners);
+                let controls = Controls::new(builtin.buttons, device.keys);
                 Screen::builtin(id.key(), &(builtin.tree)(&choices), device.scaled, controls)
             }
         };
@@ -617,6 +622,10 @@ impl Laid {
 pub struct Laids {
     main: Laid,
     shown: Option<Laid>,
+    sheet: Option<Laid>,
+    /// Kept here rather than in the frame's `View`, whose stack room is
+    /// spent.
+    facts: crate::screens::sheet::Facts,
     open: Option<ScreenId>,
     kept: [Focus; ScreenId::COUNT],
 }
@@ -629,6 +638,8 @@ impl Laids {
             main: Laid::new(main, device, choices, flags, changed.screen(main.key()))
                 .expect("the main page has a tree"),
             shown: None,
+            sheet: None,
+            facts: Default::default(),
             open: None,
             kept: [Focus::default(); ScreenId::COUNT],
         }
@@ -652,6 +663,8 @@ impl Laids {
         Self {
             main,
             shown: None,
+            sheet: None,
+            facts: Default::default(),
             open: None,
             kept: [Focus::default(); ScreenId::COUNT],
         }
@@ -660,6 +673,7 @@ impl Laids {
     pub fn get(&self, id: ScreenId) -> Option<&Laid> {
         match id {
             ScreenId::RideMain => Some(&self.main),
+            ScreenId::ControlSheet => self.sheet.as_ref(),
             _ => self.shown.as_ref().filter(|laid| laid.id == id),
         }
     }
@@ -667,12 +681,36 @@ impl Laids {
     pub fn get_mut(&mut self, id: ScreenId) -> Option<&mut Laid> {
         match id {
             ScreenId::RideMain => Some(&mut self.main),
+            ScreenId::ControlSheet => self.sheet.as_mut(),
             _ => self.shown.as_mut().filter(|laid| laid.id == id),
         }
     }
 
     pub fn main(&self) -> &Laid {
         &self.main
+    }
+
+    pub fn sheet(&self) -> Option<&Laid> {
+        self.sheet.as_ref()
+    }
+
+    pub fn open_sheet(&mut self, device: &Device) {
+        if self.sheet.is_none() {
+            let (choices, flags) = (self.main.choices, self.main.flags);
+            self.sheet = Laid::new(ScreenId::ControlSheet, device, choices, flags, None);
+        }
+    }
+
+    pub fn close_sheet(&mut self) {
+        self.sheet = None;
+    }
+
+    pub fn sheet_with_facts(&self) -> Option<(&Laid, &crate::screens::sheet::Facts)> {
+        Some((self.sheet.as_ref()?, &self.facts))
+    }
+
+    pub fn set_sheet_facts(&mut self, facts: crate::screens::sheet::Facts) {
+        self.facts = facts;
     }
 
     /// Solve the main page and the screen shown again if the choices, the

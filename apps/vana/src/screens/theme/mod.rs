@@ -102,7 +102,7 @@ impl Theme {
     }
 
     /// The fill of a grade in tenths of a percent, and the ink on it: the
-    /// zone fills from Z2 up, by main's climb bands.
+    /// zone fills from Z2 up.
     pub const fn steep(&self, tenths: i32) -> (u16, u16) {
         let band = match tenths {
             ..-15 => 1,

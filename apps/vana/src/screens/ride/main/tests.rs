@@ -1,4 +1,4 @@
-//! The Stats page, the first page drawn from the kit, in both looks.
+//! The Stats page in both looks.
 use crate::compose::data::Metric;
 use crate::compose::node::Flags;
 use crate::ride::log::{Sample, Status};
@@ -185,8 +185,6 @@ fn without_a_reading_a_field_has_no_fill_and_shows_a_dash() {
     assert_eq!(color(view.canvas(), "PWR 3S W"), DARK.power);
 }
 
-/// Both looks draw the same runs and shapes in the same places; only the
-/// colours differ, metric colours at night and black by day.
 #[test]
 fn both_looks_draw_one_page_in_their_own_colours() {
     let device = &crate::screens::C606;
@@ -221,7 +219,6 @@ fn both_looks_draw_one_page_in_their_own_colours() {
     assert_ne!(DARK.speed, LIGHT.speed);
 }
 
-/// By day the page paints its own white, not night's black turned over.
 #[test]
 fn the_day_look_paints_white_and_black_untransformed() {
     let device = &crate::screens::C606;
@@ -252,8 +249,6 @@ fn the_top_line_colours_the_fix_and_the_battery_by_level() {
     assert_eq!(satellite, Some(DARK.warn), "a fix still being found");
 }
 
-/// Every extreme reading, on every panel, beside a radar or not, shows
-/// whole inside the page and clear of every other.
 #[test]
 fn extreme_readings_never_overlap_or_clip() {
     for device in ALL {

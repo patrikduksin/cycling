@@ -629,8 +629,6 @@ mod tests {
         }
     }
 
-    /// Faces given lowercase draw it; the others draw a lowercase letter as
-    /// its capital, and a character past their table as a space.
     #[test]
     fn sentence_case_faces_draw_lowercase_and_caps_faces_its_capitals() {
         for face in [&NOTE, &LABEL, &HEADING] {

@@ -250,7 +250,7 @@ impl Runtime {
             || (sheet.is_none() && page == Page::Boot);
         let animated = matches!(
             page,
-            Page::Ride | Page::Ready | Page::EndRide | Page::DiscardRide | Page::Summary
+            Page::Ride | Page::EndRide | Page::DiscardRide | Page::Summary
         ) || sheet.is_some_and(PowerSheet::animated)
             || self.readings.battery.charging();
         let pace_ms = if motion {
@@ -283,7 +283,6 @@ impl Runtime {
         }
         let first_page = self.first_page();
         let navigation = &mut self.navigation;
-        navigation.lapse_returns();
         let first_frame = navigation.first_frame_at(now);
         if navigation.page() == Page::Boot && now.saturating_sub(first_frame) >= BRAND_MS {
             why!("frame.brand_over", first_frame, first_page);
@@ -315,9 +314,6 @@ impl Runtime {
             why!("frame.workout_missing");
             self.navigation.toast("WORKOUT MISSING", Tone::Warn, now);
         }
-        if status == Status::Recording {
-            self.history_ride_started();
-        }
         // A page the rider turned off, or the workout page once its workout
         // is gone, gives way to the main page.
         if !self.ride_pages().contains(self.navigation.ride_page()) {
@@ -332,12 +328,7 @@ impl Runtime {
         let radar_paired = ant.channel(device_type::RADAR, now).is_some();
         self.navigation.expire_toast(now);
         match page {
-            Page::Ready | Page::Home | Page::Sensors => self.refresh_sensor_menu(ant, now),
-            Page::Phone => {
-                // The codes stay readable while a phone connects.
-                system.activity(now);
-                self.phone_joined();
-            }
+            Page::Home | Page::Sensors => self.refresh_sensor_menu(ant, now),
             // Keep the screen lit while riding; a finished ride may dim and idle off.
             Page::Ride if self.recorder_busy() => system.activity(now),
             _ => {}
@@ -352,9 +343,9 @@ impl Runtime {
     /// shows it opens.
     fn refresh_chart(&mut self) {
         let laids = self.composition.laids();
-        let profile = [ScreenId::SummaryElevation, ScreenId::PastElevation]
-            .into_iter()
-            .find_map(|id| laids.get(id)?.box_of(PROFILE));
+        let profile = laids
+            .get(ScreenId::SummaryElevation)
+            .and_then(|laid| laid.box_of(PROFILE));
         if let Some(profile) = profile {
             self.chart
                 .refresh(self.ride.trace(), summary::chart_rect(profile));
@@ -379,7 +370,7 @@ impl Runtime {
                 if reached_panel(drawn) {
                     let drawn = self.drawn_at(now);
                     self.timing.first_frame(drawn);
-                    if matches!(page, Page::Home | Page::Setup) {
+                    if page == Page::Home {
                         self.timing.first_ready(drawn);
                     }
                     if page == Page::Format {

@@ -1,12 +1,12 @@
 //! What tiles read: a frame's view, each number in its base unit, and the
 //! gliding graphics alone for asking where a glide lands.
 use super::chrome::SECONDARY;
-use super::ride::{ClimbRoad, GAUGE_WIDTH, LapBar, Mark, Training, gauges};
+use super::ride::{ClimbRoad, GAUGE_WIDTH, Mark, Training, gauges};
 use super::settings::{NOTES, STATUS, VALUES};
 use super::workout::Page;
 use super::workout::{Graphics, View};
 use crate::compose::data::{
-    Count, Data, Edited, Effort, Entry, Glance, ListKind, Listed, Metric, OnGauge, PageData, Shares,
+    Count, Data, Edited, Effort, Entry, ListKind, Listed, Metric, OnGauge, PageData, Shares,
 };
 use crate::ride::zones::TrainingProfile;
 
@@ -45,17 +45,6 @@ impl Data for View<'_> {
             Metric::ClimbDistance | Metric::ClimbGain | Metric::ToTop | Metric::UpToGo => {
                 super::ride::climb::reading(self, metric)
             }
-            Metric::LapTime
-            | Metric::LapDistance
-            | Metric::LapPower
-            | Metric::LapSpeed
-            | Metric::LapHeart
-            | Metric::LapNumber
-            | Metric::PrevLapNumber
-            | Metric::PrevLapTime
-            | Metric::PrevLapPower
-            | Metric::SpeedDiff
-            | Metric::PowerDiff => self.lap_metric(metric),
         }
     }
 
@@ -72,7 +61,6 @@ impl Data for View<'_> {
     fn list(&self, list: ListKind) -> u16 {
         match list {
             ListKind::Workouts => self.picker().count() as u16,
-            ListKind::Rides => self.rides().count as u16,
             ListKind::Settings => self.sections.rows(self.cursor).0.len() as u16,
             ListKind::Sensors | ListKind::Nearby => {
                 self.sensor_pages().map_or(0, |menu| menu.count(list))
@@ -88,14 +76,6 @@ impl Data for View<'_> {
                     offset: self.scroll,
                     focus: Some(picker.cursor as u16),
                     pressed: picker.pressed.map(|index| index as u16),
-                }
-            }
-            ListKind::Rides => {
-                let rides = self.rides();
-                Listed {
-                    offset: self.scroll,
-                    focus: Some(rides.cursor as u16),
-                    pressed: rides.pressed.map(|index| index as u16),
                 }
             }
             ListKind::Settings => {
@@ -121,9 +101,7 @@ impl Data for View<'_> {
                 let sections = self.sections;
                 sections.title(sections.section(self.cursor).0)
             }
-            ListKind::Rides | ListKind::Workouts | ListKind::Sensors | ListKind::Nearby => {
-                list.name()
-            }
+            ListKind::Workouts | ListKind::Sensors | ListKind::Nearby => list.name(),
         }
     }
 
@@ -150,14 +128,9 @@ impl Data for View<'_> {
         self.sensor_pages()
     }
 
-    fn glance(&self) -> Glance {
-        self.rides().glance
-    }
-
     fn entry(&self, list: ListKind, index: u16) -> Option<Entry<'_>> {
         match list {
             ListKind::Workouts => self.picker().entry(usize::from(index)),
-            ListKind::Rides => self.rides().entry(usize::from(index)),
             ListKind::Settings => {
                 let rows = self.sections.rows(self.cursor).0;
                 let slot = usize::from(index);
@@ -207,49 +180,14 @@ impl Data for View<'_> {
         match self.page {
             Page::Boot => PageData::Brand(self.reveal),
             Page::Home => self.home().map_or(PageData::None, PageData::Home),
-            Page::Ready => PageData::Ready(self.readiness()),
-            Page::Setup => PageData::Setup {
-                step: self.setup_step(),
-                notes: self.lines(),
-            },
-            Page::Phone => PageData::Phone {
-                lines: self.lines(),
-                qr: self.qr(),
-                light: self.light,
-            },
             _ => PageData::None,
         }
     }
 
     fn count(&self, count: Count) -> Option<i32> {
-        use super::form::Mode as FormMode;
-        let form = || match self.form() {
-            FormMode::Form { form, left_out } => Some((form, left_out)),
-            _ => None,
-        };
-        let mark = |index| super::bests::mark(self.bests(), index);
-        let int = |value: u32| i32::try_from(value).unwrap_or(i32::MAX);
         match count {
             Count::Unsaved => Some(i32::from(self.unsaved)),
             Count::Goes => self.format.goes().map(i32::from),
-            Count::BestsNote => self.bests_mode().note().map(i32::from),
-            Count::Best(index) => Some(int(mark(index).value)),
-            Count::BestDay(index) => Some(i32::from(mark(index).day)),
-            Count::BestPerKg(index) => {
-                let watts = mark(index).value;
-                (index < 4 && watts != 0)
-                    .then(|| self.rider.watts_per_kg_tenths(watts))
-                    .flatten()
-                    .map(int)
-            }
-            Count::FormNote => super::form::note(self.form()).map(i32::from),
-            Count::Fitness => form().map(|(form, _)| i32::from(form.fitness)),
-            Count::Fatigue => form().map(|(form, _)| i32::from(form.fatigue)),
-            Count::Form => form().map(|(form, _)| i32::from(form.form)),
-            Count::FormWeek(week) => form()
-                .and_then(|(form, _)| form.trend.get(usize::from(week)).copied())
-                .map(i32::from),
-            Count::LeftOut => form().map(|(_, left_out)| i32::from(left_out)),
             Count::FtpNew => self.ftp_offer.map(|(new, _)| i32::from(new)),
             Count::FtpOld => self.ftp_offer.map(|(_, old)| i32::from(old)),
             Count::Seconds
@@ -266,8 +204,7 @@ impl Data for View<'_> {
 
     fn summary(&self) -> Option<super::ride::summary::Facts<'_>> {
         use super::workout::Page;
-        matches!(self.page, Page::Summary | Page::PastRide)
-            .then(|| super::ride::summary::facts(self))
+        (self.page == Page::Summary).then(|| super::ride::summary::facts(self))
     }
 
     fn zone_time(&self, effort: Effort) -> Option<Shares> {
@@ -276,10 +213,6 @@ impl Data for View<'_> {
             Effort::Power => shares(&time.power_ms),
             Effort::Heart => shares(&time.heart_ms),
         }
-    }
-
-    fn laps(&self) -> Option<(&[LapBar], LapBar)> {
-        Some((self.extra.lap_bars()?.as_slice(), self.extra.lap()?.into()))
     }
 
     fn auto_paused(&self) -> bool {
@@ -323,35 +256,6 @@ impl Data for View<'_> {
                 }
             })
         })
-    }
-}
-
-impl View<'_> {
-    /// The open lap's readings and the last finished lap's, while the lap
-    /// page shows them.
-    fn lap_metric(&self, metric: Metric) -> Option<i32> {
-        let lap = self.extra.lap()?;
-        let previous = self.extra.previous_lap()?;
-        let int = |value: u64| i32::try_from(value).unwrap_or(i32::MAX);
-        let tenths = |mm_s: u32| i32::try_from(u64::from(mm_s) * 36 / 1000).unwrap_or(i32::MAX);
-        match metric {
-            Metric::LapTime => Some(int(lap.time_ms / 1000)),
-            Metric::LapDistance => Some(int(lap.distance_mm / 1000)),
-            Metric::LapPower => lap.avg_power().map(i32::from),
-            Metric::LapSpeed => lap.avg_speed_mm_s().map(|mm_s| int(u64::from(mm_s))),
-            Metric::LapHeart => lap.avg_heart_bpm().map(i32::from),
-            Metric::LapNumber => Some(i32::from(lap.number)),
-            Metric::PrevLapNumber => previous.map(|previous| i32::from(previous.number)),
-            Metric::PrevLapTime => previous.map(|previous| int(previous.time_ms / 1000)),
-            Metric::PrevLapPower => previous?.avg_power().map(i32::from),
-            Metric::SpeedDiff => {
-                Some(tenths(lap.avg_speed_mm_s()?) - tenths(previous?.avg_speed_mm_s()?))
-            }
-            Metric::PowerDiff => {
-                Some(i32::from(lap.avg_power()?) - i32::from(previous?.avg_power()?))
-            }
-            _ => None,
-        }
     }
 }
 

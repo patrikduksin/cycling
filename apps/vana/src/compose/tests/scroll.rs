@@ -2,11 +2,11 @@
 //! any offset, and MOVE reaches every stop past it.
 use super::{bytes, panels, tile};
 use crate::compose::builtin::{Choices, Laid, ScreenId};
-use crate::compose::data::{Data, Effort, Entry, ListKind, Listed, Metric, Nothing};
+use crate::compose::data::{Data, Effort, Entry, ListKind, Listed, Metric};
 use crate::compose::input::{self, Action, Controls, Cursor, Focus, ListAct};
 use crate::compose::node::{Flags, Node, Size};
 use crate::compose::parse::Screen;
-use crate::compose::registry::{ENTRY, HEADING, PAD, SPACE};
+use crate::compose::registry::{ENTRY, PAD, SPACE};
 use crate::compose::reject::{Misfit, Why};
 use crate::compose::solve::Solved;
 use crate::compose::tiles::entry::Line;
@@ -14,7 +14,6 @@ use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
 use crate::screens::chrome::layout::text;
 use crate::screens::scaled::Scaled;
-use crate::screens::scroll::Layout;
 use device_api::input::Role;
 use std::string::String;
 use std::vec::Vec;
@@ -69,12 +68,6 @@ fn solved(screen: &Screen) -> Solved<'_> {
     solved
 }
 
-/// The canvas rows a viewport of `page` shows.
-fn shown(page: &Layout) -> core::ops::Range<usize> {
-    let top = page.canvas_row(page.top, 0).unwrap();
-    top..top + page.viewport()
-}
-
 /// Every text the canvas inks, and where.
 fn texts(canvas: &Canvas) -> Vec<(String, Rect)> {
     canvas.runs.iter().filter_map(text).collect()
@@ -90,7 +83,7 @@ fn inside(outer: Rect, inner: Rect) -> bool {
 /// A screen that is one scroll, of cards of two lines.
 fn full_width() -> [Node; 4] {
     [
-        Node::scroll(ListKind::Rides, Size::grow(1)),
+        Node::scroll(ListKind::Workouts, Size::grow(1)),
         Node::col(2, Size::units(90)),
         tile(ENTRY, Line::Title as u8, Size::CONTENT),
         tile(ENTRY, Line::Detail as u8, Size::CONTENT),
@@ -98,11 +91,11 @@ fn full_width() -> [Node; 4] {
 }
 
 #[test]
-fn a_long_history_draws_every_card_in_view_at_every_offset() {
+fn a_long_list_draws_every_card_in_view_at_every_offset() {
     for at in panels() {
         let device = crate::screens::Device::of(at, &crate::screens::limits::C606_BUTTONS);
         let laid = Laid::new(
-            ScreenId::History,
+            ScreenId::Workouts,
             &device,
             Choices::default(),
             Flags::NONE,
@@ -122,7 +115,7 @@ fn a_long_history_draws_every_card_in_view_at_every_offset() {
             };
             let mut canvas = Canvas::default();
             laid.prepare(&data, &mut canvas);
-            canvas.assert_kept("2,000 rides");
+            canvas.assert_kept("2,000 items");
             let texts = texts(&canvas);
             let whole: Vec<usize> = page
                 .visible(count, offset)
@@ -191,70 +184,11 @@ fn a_scroll_too_short_for_one_item_and_its_gaps_is_refused_at_accept() {
 }
 
 #[test]
-fn an_empty_list_s_words_count_against_the_canvas_at_accept() {
-    for at in panels() {
-        let mut nodes = std::vec![Node::col(15, Size::grow(1))];
-        let heading = tile(HEADING, ListKind::Workouts as u8, Size::CONTENT);
-        nodes.extend(core::iter::repeat_n(heading, 14));
-        nodes.push(Node::scroll(ListKind::Rides, Size::units(80)));
-        nodes.push(tile(SPACE, 0, Size::units(12)));
-        let reject = Screen::parse(0, &bytes(&nodes), &at, Controls::FREE).unwrap_err();
-        assert!(
-            matches!(reject.why, Why::Canvas { .. }),
-            "{:?}: {reject}",
-            at.panel
-        );
-    }
-}
-
-#[test]
-fn an_empty_list_s_words_show_inside_its_viewport_or_it_is_refused() {
-    for at in panels() {
-        let short = [
-            Node::col(2, Size::grow(1)),
-            Node::scroll(ListKind::Rides, Size::units(24)),
-            tile(SPACE, 0, Size::units(8)),
-            tile(SPACE, 0, Size::grow(1)),
-        ];
-        let reject = Screen::parse(0, &bytes(&short), &at, Controls::FREE).unwrap_err();
-        assert!(
-            matches!(reject.why, Why::Misfit(Misfit { node: 1, .. })),
-            "{:?}: {reject}",
-            at.panel
-        );
-        let device = crate::screens::Device::of(at, &crate::screens::limits::C606_BUTTONS);
-        let laid = Laid::new(
-            ScreenId::History,
-            &device,
-            Choices::default(),
-            Flags::NONE,
-            None,
-        )
-        .unwrap();
-        let page = *laid.page().unwrap();
-        let mut canvas = Canvas::default();
-        laid.prepare(&Nothing, &mut canvas);
-        let rows = shown(&page);
-        for line in ["NO RIDES YET", "SAVED RIDES SHOW HERE"] {
-            let (_, ink) = texts(&canvas)
-                .into_iter()
-                .find(|(name, _)| name == line)
-                .unwrap();
-            assert!(
-                rows.contains(&ink.top) && ink.bottom <= rows.end,
-                "{:?}: {line} at {ink:?} outside {rows:?}",
-                at.panel
-            );
-        }
-    }
-}
-
-#[test]
 fn move_past_a_list_s_last_item_reaches_the_next_stop_and_the_ring_wraps() {
     for at in panels() {
         let nodes = [
             Node::col(2, Size::grow(1)),
-            Node::scroll(ListKind::Rides, Size::grow(1)),
+            Node::scroll(ListKind::Workouts, Size::grow(1)),
             tile(SPACE, 0, Size::units(90)),
             tile(PAD, 0, Size::CONTENT),
         ];
@@ -355,36 +289,5 @@ fn a_scroll_whose_template_a_flag_hides_draws_its_cards_inside_its_box() {
                 at.panel
             );
         }
-    }
-}
-
-#[test]
-fn an_empty_list_s_words_are_measured_in_the_width_they_draw_in() {
-    use crate::compose::list::gutter;
-    use firmware_shell::rendering::font::FaceRole;
-    // One unit a pixel, so a spacer of units leaves the scroll exact pixels.
-    let at = crate::screens::scaled::BASE;
-    let words = at
-        .face(FaceRole::Caption)
-        .fit_width(b"SAVED RIDES SHOW HERE")
-        .max(at.face(FaceRole::Body).fit_width(b"NO RIDES YET"));
-    let scroll_of = |width: usize| {
-        [
-            Node::row(2, Size::grow(1)),
-            Node::col(1, Size::grow(1)),
-            Node::scroll(ListKind::Rides, Size::grow(1)),
-            tile(SPACE, 0, Size::units(80)),
-            tile(SPACE, 0, Size::units((at.panel.width - width) as u8)),
-        ]
-    };
-    // The words fill the box but not the width between its gutters.
-    let narrow = Screen::parse(0, &bytes(&scroll_of(words)), &at, Controls::FREE).unwrap_err();
-    assert!(matches!(narrow.why, Why::Misfit(_)), "{narrow}");
-    let screen = parse(&scroll_of(words + 2 * usize::from(gutter(&at))), &at);
-    let mut canvas = Canvas::default();
-    solved(&screen).prepare(&Nothing, &mut canvas);
-    let texts: Vec<String> = texts(&canvas).into_iter().map(|(text, _)| text).collect();
-    for line in ["NO RIDES YET", "SAVED RIDES SHOW HERE"] {
-        assert!(texts.iter().any(|text| text == line), "{texts:?}");
     }
 }

@@ -6,7 +6,7 @@ use super::navigation::To;
 use crate::ride::current::Ended;
 use crate::ride::log::{Sample, Status};
 use crate::ride::medium::Medium;
-use crate::ride::settle::{self, End, Hide, Saved};
+use crate::ride::settle::{self, End, Saved};
 use crate::ride::storage::RideStorage;
 use crate::screens::workout::Page;
 use crate::workout::ftp::Source;
@@ -39,11 +39,10 @@ impl Runtime {
         if self.ride.pending() || self.ride.moving() {
             return;
         }
-        // Rolling off starts a ride from Ready or the ride screen.
-        let ready = matches!(self.navigation.page(), Page::Ride | Page::Ready);
+        let starts = matches!(self.navigation.page(), Page::Ride | Page::Home);
         let motion = self.readings.motion;
         let automatic = self.preferences.options.auto_pause;
-        if let Some(call) = self.ride.auto_update(now, motion, ready, automatic) {
+        if let Some(call) = self.ride.auto_update(now, motion, starts, automatic) {
             self.ride_auto(call, now);
         }
     }
@@ -61,7 +60,7 @@ impl Runtime {
         for medium in serviced.reset.into_iter().flatten() {
             // The reset has reported its outcome already; a card that
             // refuses keeps the old records, as a card that is out does.
-            let _ = settle::reset(medium, &mut self.facts, &mut self.deleted, bulk, now);
+            let _ = settle::reset(medium, bulk);
         }
         if self.ride.open_pass(&serviced, now, &sample) {
             self.notices.clear_lap_toast();
@@ -96,17 +95,8 @@ impl Runtime {
                 .flatten()
                 .last()
                 .copied(),
-            store_id: self.store(medium),
-            totals: ride.totals(),
             efforts: ride.efforts(),
-            climbing: ride.climbing(),
-            active_ms: ride.active_ms(now),
             player,
-            zone: self.preferences.options.zone,
-            profile: self.preferences.profile,
-            recovery: self.recovery.reading(now),
-            utc_ms: self.readings.live.utc_ms,
-            now,
         };
         let end = |Ended { medium, discarded }| {
             if discarded {
@@ -115,16 +105,7 @@ impl Runtime {
                 End::Finished(saved(medium))
             }
         };
-        let settled = settle::settle(
-            ended.map(|ended| ended.map(end)),
-            &mut self.bests,
-            &mut self.facts,
-            &mut self.deleted,
-            bulk,
-        );
-        if settled.hide == Hide::Hidden {
-            self.history.home_last = Some(0);
-        }
+        let settled = settle::settle(ended.map(|ended| ended.map(end)), bulk);
         if let Some(claimed) = settled.claimed {
             self.training.ftp.set(Source::RideSummary, claimed.ftp);
         }

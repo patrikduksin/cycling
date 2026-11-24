@@ -26,7 +26,6 @@ terrain = { path = "../../packages/terrain" }
 wamr = { path = "../../packages/wamr" }
 heapless.workspace = true
 libm = "0.2.16"
-qrcodegen-no-heap = "=1.8.1"
 log = { version = "=0.4.35", default-features = false }
 
 [dev-dependencies]

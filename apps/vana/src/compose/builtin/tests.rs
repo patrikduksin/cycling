@@ -40,10 +40,8 @@ fn every_built_in_is_accepted_on_every_panel_for_every_button_arrangement() {
     assert_eq!(arrangements.len(), 120);
     let mut refused = Vec::new();
     let mut accepted = 0;
-    for id in ScreenId::ALL {
-        // #517 deletes these; their full-width rows miss a few pixels
-        // beside a side key's tab.
-        let c606_only = matches!(id, ScreenId::Ready | ScreenId::Sheets);
+    for &id in ScreenId::ALL {
+        let c606_only = id == ScreenId::Sheets;
         let builtin = id.builtin();
         if id.deck() {
             let next = builtin.buttons.move_.map(|button| button.action);
@@ -79,7 +77,7 @@ fn every_built_in_is_accepted_on_every_panel_for_every_button_arrangement() {
 
 #[test]
 fn every_screen_maps_to_its_own_id() {
-    for (index, id) in ScreenId::ALL.into_iter().enumerate() {
+    for (index, &id) in ScreenId::ALL.iter().enumerate() {
         assert_eq!(usize::from(id.key()), index);
     }
 }

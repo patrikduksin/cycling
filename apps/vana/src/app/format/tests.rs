@@ -102,12 +102,12 @@ fn every_state_and_event_steps_as_the_table_says() {
             Unread,
             Go::Stay,
         ),
-        (Unread, read(true, true), Failed, Go::Ready { clear: None }),
+        (Unread, read(true, true), Failed, Go::Failed { clear: None }),
         (
             Unread,
             read(false, false),
             Failed,
-            Go::Ready { clear: None },
+            Go::Failed { clear: None },
         ),
         (Unread, confirm(every), Unread, Go::Stay),
         (Unread, press(ACT, 9_000), Unread, Go::Stay),
@@ -241,7 +241,7 @@ fn every_state_and_event_steps_as_the_table_says() {
             wiping,
             Event::IntentNotRecorded,
             Failed,
-            Go::Ready { clear: None },
+            Go::Failed { clear: None },
         ),
         (
             begun,
@@ -259,13 +259,13 @@ fn every_state_and_event_steps_as_the_table_says() {
             running(Stage::Abandon, RIDES),
             Event::Wrote,
             Failed,
-            Go::Ready { clear: None },
+            Go::Failed { clear: None },
         ),
         (
             running(Stage::Abandon, RIDES),
             Event::WriteFailed,
             Failed,
-            Go::Ready { clear: None },
+            Go::Failed { clear: None },
         ),
         (Done, confirm(every), Done, Go::Stay),
         (Done, read(true, true), Done, Go::Stay),
@@ -321,7 +321,7 @@ fn a_clear_keeps_its_token_through_the_wipe_and_hands_it_to_the_ending() {
             let (after, go) = step(clearing(stage), event, false);
             match (after, go) {
                 (Running { clear, .. }, Go::Stay) => assert_eq!(clear, Some(TOKEN)),
-                (_, Go::Ready { clear } | Go::JournalEmptied { clear }) => {
+                (_, Go::Failed { clear } | Go::JournalEmptied { clear }) => {
                     assert_eq!(clear, Some(TOKEN), "{stage:?} {event:?}");
                     endings.push(go);
                 }
@@ -329,7 +329,7 @@ fn a_clear_keeps_its_token_through_the_wipe_and_hands_it_to_the_ending() {
             }
         }
     }
-    assert!(endings.contains(&Go::Ready { clear: Some(TOKEN) }));
+    assert!(endings.contains(&Go::Failed { clear: Some(TOKEN) }));
     assert!(endings.contains(&Go::JournalEmptied { clear: Some(TOKEN) }));
 }
 

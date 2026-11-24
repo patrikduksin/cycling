@@ -1021,8 +1021,6 @@ fn session(memory: firmware_services::trace::origin::Memory, redacted: bool) -> 
         ("terrain cache", memory.terrain),
         ("ride track", memory.track),
         ("phone session", memory.phone),
-        ("ride index", memory.ride_index),
-        ("ride facts", memory.ride_facts),
     ];
     let missing: Vec<&str> = blocks
         .into_iter()

@@ -13,8 +13,6 @@ use super::ride::RidePage;
 pub enum Row {
     Ftp,
     Threshold,
-    Bests,
-    Form,
     Weight,
     Age,
     Sex,
@@ -30,7 +28,6 @@ pub enum Row {
     WheelMode,
     MainLeft,
     MainRight,
-    PageLap,
     PageClimb,
     PageMap,
     Sounds,
@@ -43,7 +40,6 @@ pub enum Row {
     PowerHigh,
     PowerLow,
     Sensors,
-    Phone,
     Storage,
     Firmware,
 }
@@ -66,20 +62,11 @@ pub enum Kind {
 pub enum SettingsAction {
     /// The sensor menu.
     Sensors,
-    /// Connect phone: send rides to a phone over Wi-Fi.
-    ConnectPhone,
-    /// The rider's personal bests.
-    Bests,
-    /// Fitness, fatigue and form.
-    Form,
 }
 
 /// Sections in order, each with its title and the rows it holds.
 pub const SECTIONS: [(&str, &[Row]); 11] = [
-    (
-        "PROFILE",
-        &[Row::Ftp, Row::Threshold, Row::Bests, Row::Form],
-    ),
+    ("PROFILE", &[Row::Ftp, Row::Threshold]),
     ("BODY", &[Row::Weight, Row::Age, Row::Sex]),
     (
         "DISPLAY",
@@ -97,7 +84,7 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
         &[Row::AutoPause, Row::AutoLap, Row::Wheel, Row::WheelMode],
     ),
     ("MAIN PAGE", &[Row::MainLeft, Row::MainRight]),
-    ("RIDE PAGES", &[Row::PageLap, Row::PageClimb, Row::PageMap]),
+    ("RIDE PAGES", &[Row::PageClimb, Row::PageMap]),
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",
@@ -112,10 +99,7 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
         "LIMITS",
         &[Row::HeartHigh, Row::HeartLow, Row::PowerHigh, Row::PowerLow],
     ),
-    (
-        "DEVICE",
-        &[Row::Sensors, Row::Phone, Row::Storage, Row::Firmware],
-    ),
+    ("DEVICE", &[Row::Sensors, Row::Storage, Row::Firmware]),
 ];
 
 /// The most rows a section holds; more than four scroll.
@@ -127,30 +111,19 @@ const _: () = {
         i += 1;
     }
 };
-const NO_PHONE: [(&str, &[Row]); 11] = {
-    let mut sections = SECTIONS;
-    sections[SECTIONS.len() - 1] = ("DEVICE", &[Row::Sensors, Row::Storage, Row::Firmware]);
-    sections
-};
 
 /// The sections this device shows; cursor positions count their rows in
 /// order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sections {
     All,
-    NoPhone,
 }
 
 impl Sections {
     fn table(self) -> &'static [(&'static str, &'static [Row])] {
         match self {
             Self::All => &SECTIONS,
-            Self::NoPhone => &NO_PHONE,
         }
-    }
-
-    pub fn phone(self) -> bool {
-        self.field(Row::Phone).is_some()
     }
 
     pub fn count(self) -> usize {
@@ -218,8 +191,6 @@ impl Row {
         match self {
             Self::Ftp => "FTP WATTS",
             Self::Threshold => "LTHR BPM",
-            Self::Bests => "BESTS",
-            Self::Form => "FORM",
             Self::Weight => "WEIGHT KG",
             Self::Age => "AGE YEARS",
             Self::Sex => "SEX",
@@ -235,7 +206,6 @@ impl Row {
             Self::WheelMode => "WHEEL MODE",
             Self::MainLeft => "LOWER LEFT",
             Self::MainRight => "LOWER RIGHT",
-            Self::PageLap => "LAP",
             Self::PageClimb => "CLIMB",
             Self::PageMap => "MAP",
             Self::Sounds => "SOUNDS",
@@ -248,7 +218,6 @@ impl Row {
             Self::PowerHigh => "POWER ABOVE",
             Self::PowerLow => "POWER BELOW",
             Self::Sensors => "SENSORS",
-            Self::Phone => "PHONE",
             Self::Storage => "STORAGE",
             Self::Firmware => "FIRMWARE",
         }
@@ -257,7 +226,6 @@ impl Row {
     /// The ride page a `RIDE PAGES` row switches.
     pub const fn ride_page(self) -> Option<RidePage> {
         match self {
-            Self::PageLap => Some(RidePage::Lap),
             Self::PageClimb => Some(RidePage::Climb),
             Self::PageMap => Some(RidePage::Map),
             _ => None,
@@ -267,9 +235,6 @@ impl Row {
     pub const fn action(self) -> Option<SettingsAction> {
         match self {
             Self::Sensors => Some(SettingsAction::Sensors),
-            Self::Phone => Some(SettingsAction::ConnectPhone),
-            Self::Bests => Some(SettingsAction::Bests),
-            Self::Form => Some(SettingsAction::Form),
             _ => None,
         }
     }
@@ -288,7 +253,6 @@ impl Row {
             | Self::WheelMode
             | Self::MainLeft
             | Self::MainRight
-            | Self::PageLap
             | Self::PageClimb
             | Self::PageMap
             | Self::Sounds
@@ -301,7 +265,7 @@ impl Row {
             | Self::PowerHigh
             | Self::PowerLow
             | Self::Sex => Kind::Choice,
-            Self::Sensors | Self::Phone | Self::Bests | Self::Form => Kind::Open,
+            Self::Sensors => Kind::Open,
             Self::Storage | Self::Firmware => Kind::Info,
         }
     }

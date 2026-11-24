@@ -276,10 +276,7 @@ impl View {
     }
 
     fn marks(self) -> bool {
-        matches!(
-            self.page,
-            Page::Ride | Page::Ready | Page::Summary | Page::Home
-        )
+        matches!(self.page, Page::Ride | Page::Summary | Page::Home)
     }
 }
 
@@ -319,7 +316,7 @@ mod tests {
         focus: Focus::Screen,
     };
     const NEXT: View = View {
-        ride: (RidePage::Lap, Follow::Idle),
+        ride: (RidePage::Climb, Follow::Idle),
         ..RIDE
     };
     const SETTINGS: View = View {

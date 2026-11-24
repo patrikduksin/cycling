@@ -78,7 +78,7 @@ impl Runtime {
             }
             SheetAct::Sensors => {
                 self.close_sheet();
-                self.open_sensors(false, ant, now);
+                self.open_sensors(ant, now);
             }
         }
     }

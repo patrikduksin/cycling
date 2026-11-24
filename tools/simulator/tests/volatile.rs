@@ -33,7 +33,6 @@ fn ride(sim: &mut Sim, watts: f64, secs: u64) {
 fn cold_boot(sim: &mut Sim) {
     sim.cut_power();
     sim.wait_usable();
-    sim.skip_setup();
     sim.pair(&["POWER METER"]);
 }
 
@@ -81,13 +80,6 @@ fn a_cold_boot_with_the_card_in_starts_ride_ids_again_without_old_records() {
     let second = ride_ids(&mut sim);
     assert_eq!(second.len(), 1);
     assert_eq!(second[0], first[0], "the new ride takes the old id");
-    sim.home("RIDES");
-    sim.press(Role::Act);
-    assert_eq!(sim.vana_page(), "past_ride");
-    sim.wait_gone("READING", seconds(5)).unwrap();
-    sim.expect_field("AVG W", "150");
-    sim.expect_text("0:00:30");
-    sim.checkpoint("the new ride read back");
 }
 
 #[test]
@@ -96,7 +88,6 @@ fn a_forced_reboot_loses_the_rides_in_memory_and_boots_ready() {
     ride(&mut sim, 200.0, 60);
     sim.crash();
     sim.wait_usable();
-    sim.skip_setup();
     assert!(ride_ids(&mut sim).is_empty());
     sim.expect_no_text("NOT SAVED");
     assert_eq!(sim.command("RESTART").0, "ACCEPTED", "nothing left to lose");

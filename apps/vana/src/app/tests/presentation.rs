@@ -185,55 +185,6 @@ fn a_new_startup_status_draws_at_once_where_it_shows() {
 }
 
 #[test]
-fn ride_opens_ready_which_waits_for_act_to_start() {
-    let mut screen = Screen::new();
-    let mut radio = Radio::new();
-    let heart = radio.connected(HEART_RATE, 0);
-    let mut runtime = restored(&[heart]);
-    radio.data(HEART_RATE, [0; 8], 6000);
-    assert!(screen.present(&mut runtime, &radio, 6000));
-    assert!(screen.present(&mut runtime, &radio, 6500));
-    assert!(runtime.navigation.page() == Page::Home);
-    runtime.input_received(press(Role::Act), 7000, 7000, &mut radio);
-    assert!(runtime.navigation.page() == Page::Ready);
-
-    assert!(screen.present(&mut runtime, &radio, 7000));
-    let readiness = runtime.readiness(
-        crate::screens::chrome::Gps::Off,
-        Some(crate::screens::chrome::Battery {
-            percent: 80,
-            ..Default::default()
-        }),
-        7000,
-    );
-    let title = |line: crate::screens::ready::Line| {
-        std::string::String::from(readiness.checks[line as usize].title.as_str())
-    };
-    use crate::screens::ready::Line;
-    assert_eq!(title(Line::Gps), "NO GPS");
-    assert_eq!(title(Line::Battery), "BATTERY 80%");
-    assert_eq!(title(Line::Sensors), "1 SENSOR LIVE");
-    assert_eq!(readiness.checks[Line::Sensors as usize].hint.as_str(), "HR");
-    // The panel shows the Ready screen as the view lays it out.
-    let mut view = crate::screens::workout::View::new(Page::Ready, 0, None);
-    view.compose_main();
-    view.show_ready(runtime.readiness(crate::screens::chrome::Gps::Off, None, 7000));
-    view.prepare();
-    let content = crate::screens::chrome::CONTENT.top..crate::screens::chrome::TOAST.top;
-    assert!(
-        content
-            .into_iter()
-            .all(|y| (0..WIDTH).all(|x| screen.panel.pixel(x, y) == view.pixel(x, y)))
-    );
-
-    // Ready stays until the rider acts: no timer moves on.
-    assert!(screen.present(&mut runtime, &radio, 30_000));
-    assert!(runtime.navigation.page() == Page::Ready);
-    runtime.input_received(press(Role::Back), 30_500, 30_500, &mut radio);
-    assert!(runtime.navigation.page() == Page::Home);
-}
-
-#[test]
 fn radar_beeps_sound_only_on_the_ride_page() {
     use device_api::sound::{Pattern, Snapshot, Sound, State};
     /// Played ids, and when the buzzer is free again (500 ms per sound).

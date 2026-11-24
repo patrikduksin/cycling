@@ -11,8 +11,8 @@ code that implements these rules lives in `apps/vana/src/screens/chrome.rs`
 `apps/vana/src/screens/canvas.rs` (a prepared screen of text runs and shapes)
 and `packages/shell/src/rendering/font` (type).
 
-Every screen uses it: Home, Sensors, Workouts, Ready, the ride pages, the
-paused screen, End ride, the ride summary, Settings, Connect phone, the brand
+Every screen uses it: Home, Sensors, Workouts, the ride pages, the
+paused screen, End ride, the ride summary, Settings, the brand
 reveal, the power sheets and the charge shown while the device is off on USB
 power. None draws in the 5 × 7 bitmap font.
 
@@ -100,7 +100,7 @@ rules at a scale step:
 - A screen splits a box into rows or columns: fixed units, the height of a
   face's line or capitals, and shares of what is left. A panel taller or wider
   than its step gives the extra space to the shares, so readings keep their
-  size and gain room around them: Home's RIDE card, FORM's trend and the map
+  size and gain room around them: Home's RIDE card and the map
   grow, and lists show more cards.
 - Every screen lays out from the panel and draws at the panel's size. Each
   device's build lays the screens out once for its panel, into one static
@@ -235,10 +235,6 @@ pulled down towards a luma of 90, about 4:1 against white, in proportion to
 its chroma. Greys keep the plain inversion. The brand frame at power on and
 the power sheets take the look too. In dark mode the row maps nothing.
 
-QR codes stay dark modules on a light panel. The Connect phone screen paints
-its panel and modules pre-inverted in the light look, so the look maps them
-back.
-
 ### Metric colours
 
 A metric's number always uses its own colour, on every page and in every chart.
@@ -311,7 +307,6 @@ two roles' buttons are nearest the same corner does not build.
 | --- | --- | --- |
 | Play | `GREEN`, black icon | Start or resume (ACT) |
 | Check | `GREEN`, black icon | Yes, or Done (ACT) |
-| Send | `GREEN`, black icon | Send a saved ride to the phone (ACT) |
 | Stop | `RAISED`, white icon | End the ride: asks first (BACK) |
 | Back | `RAISED`, white icon | No, go back (BACK) |
 | Trash | `RED`, white icon | Throw a ride away or forget a sensor: beside MOVE it asks first, beside ACT it answers (or asks, on a sensor's page) |
@@ -320,16 +315,16 @@ two roles' buttons are nearest the same corner does not build.
 The summary's FTP offer uses two of them at once: Check beside ACT takes the
 suggested FTP, Back beside BACK keeps the one in force. END RIDE? uses three:
 Back, Check and, with a FILES store to note it on, Trash beside MOVE, which
-asks DISCARD RIDE?. DISCARD RIDE?, a saved ride's DELETE RIDE? and a boot's
+asks DISCARD RIDE?. DISCARD RIDE? and a boot's
 FORMAT STORAGE? ([volumes](mmc-volumes.md#format)) put Trash beside ACT.
 A screen with a cue in a top corner shows without the status bar, which
 would cut the cue. On the C606 that is every screen with a back cue: the
 paused screen, END RIDE?, DISCARD RIDE?, LOSE n UNSAVED RIDES?, the FTP offer,
-DELETE RIDE?, FORMAT STORAGE?, CLEAR BESTS? and a sensor's pages. The
+FORMAT STORAGE? and a sensor's pages. The
 layout check fails any frame that draws a cue under the status bar.
 
-Only Ready, the paused screen, End ride, Discard ride, LOSE n UNSAVED RIDES?, the
-summary, a saved ride, FORMAT STORAGE?, CLEAR BESTS? and a sensor's pages
+Only the paused screen, End ride, Discard ride, LOSE n UNSAVED RIDES?, the
+summary, FORMAT STORAGE? and a sensor's pages
 (its detail and FORGET SENSOR?) show cues. Ride pages
 never do: their buttons keep fixed roles. Content stays clear of the
 corners the screen's own cues take on that device, wherever the buttons put
@@ -480,7 +475,7 @@ Only one toast shows at a time. From highest priority to lowest:
    40% charge, and is silent when unknown, stale or above 95%. It restarts on
    charging, a rise of 2 steps that holds or a fall of over 20 points; a one
    point flicker is ignored and a smaller fall counts as one moment. A battery
-   level toast keeps it back for 30 s. Ready rarely shows it without a ride or an
+   level toast keeps it back for 30 s. It rarely shows without a ride or an
    hour of use behind it, since nothing is stored between boots. Limits
    and reminders keep 3 s apart; the radar's beeps never wait. The sunset
    alerts, SUNSET IN 30 MIN, SUNSET - LIGHTS ON, and TURN BACK BY 17:40 or
@@ -577,9 +572,8 @@ Applied to the cycling-specific charts:
 | Workout (workout page) | One bar per played step across the chart's box inside its gutters, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity, scaled so the hardest step nearly fills the chart. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the theme's zone colour of the target's middle, Z3's for cadence and the unlit colour without a target. Steps already ridden keep a third of their colour over the background; the step on now and those ahead are full colour. A 2 px line in the text colour runs the chart's height where the ride is now. |
 | Target band (main page) | During a workout, a 2 px `WHITE` bar under the power or heart gauge spans the step's target. |
 | Track (map) | See [Map page](#map-page) below. |
-| Lap comparison (laps) | One vertical bar per lap across the page's full width, each centred in an equal slot, up to 24 px wide with at least 3 px between bars, on one `TERTIARY` baseline. Height is proportional to the lap's average power, or its speed on a ride without power, in that metric's colour. Finished laps are drawn at 25%, the open lap in full colour, and the best lap gets a 2 px `WHITE` cap. The oldest lap is on the left and the open lap on the right; the 16 kept laps and the open one fit. |
 
-The time-in-zone bars, the profile and the lap bars reach into the toast band.
+The time-in-zone bars and the profile reach into the toast band.
 They are the least important part of their page, and a toast covers them for
 a moment only.
 
@@ -737,7 +731,7 @@ Acting on a row does one of three things:
 - a choice steps to its next value at once (brightness auto/25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, mode normal/saver, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
   km/at start, wheel mode auto/manual, the main page's two lower readings, ride pages (STATS, LAP, CLIMB, MAP) on/off, sounds on/off);
-- an action opens a page (SENSORS, BESTS, FORM) or Connect phone (PHONE).
+- an action opens a page (SENSORS).
 
 On a device without Wi-Fi (its access point reports `Unsupported`) DEVICE
 holds SENSORS, STORAGE and FIRMWARE only: no PHONE row and no gap, and MOVE,
@@ -760,44 +754,6 @@ Saturday of April at 24:00, UTC-4 otherwise. Its note says which is in force,
 such as UTC-4 NOW. UTC-3 (Magallanes, Aysén) and UTC-4 hold all year. The
 shell's own `TIMEZONE` terminal setting does not move VANA's clock.
 
-### Bests
-
-BESTS, the third row of PROFILE, opens the rider's all-time bests;
-[UX flows](ux-flows.md#bests) says what counts as a best and what each
-state means. Each best is a row: a `CAPTION` label over the day it was set,
-with the value in `BODY` at the right. The 5 s, 1, 5 and 20 min power bests
-come first in `POWER`, then the longest ride and the longest ride time in
-`SPEED` and the most ascent in `GRADE`. With a weight set, each power best
-also shows its W/KG as a `CAPTION` on the label's line. A best not set shows
-`--` in `TERTIARY`; one set before the clock was known shows no day. The
-page has no cues.
-
-A problem replaces the list with an `AMBER` headline in `BODY` and a grey
-`CAPTION` line under it. BESTS NOT FORMATTED, the longest headline, steps
-down to `CAPTION` where it does not fit in `BODY`. CLEAR BESTS? is a
-`WHITE` headline in `TITLE` (`BODY` where `TITLE` does not fit), with the
-check cue beside ACT and the back cue beside BACK.
-
-On the ride summary, a new best has the reading's metric colour and `BEST` in
-its caption: BEST TIME and BEST KM (`SPEED`) and BEST ASC M (`GRADE`) on page
-1, and a `POWER` `BEST` caption under each new best-power bar on the
-best-power page (page 3, or page 4 after an elevation page).
-
-### Form
-
-FORM, the fourth row of PROFILE, opens fitness, fatigue and form;
-[UX flows](ux-flows.md#form) says how the numbers are worked out and the
-range of each verdict. FITNESS and FATIGUE are a `CAPTION` over a `BODY`
-value in `POWER` (training stress is power's colour), and FORM stands beside
-its verdict. Only the ends of the range take a colour: FRESH is `GREEN` and
-VERY TIRED is `RED`. RESTED, EVEN and BUILDING are `WHITE`, since the cost of
-training is not a warning. The six weekly bars are 24 px wide and stand on a
-`TERTIARY` zero line, each in the colour of its own week's verdict and to a
-fixed scale (50 points is 36 px) so weeks compare. `CAPTION`s name only the
-ends, 6 WEEKS AGO and NOW, and the note on rides without power is grey.
-Where there is nothing to show, the page says why in a `BODY` headline and a
-grey line. The page has no cues.
-
 ### Main page readings
 
 MAIN PAGE chooses the two readings on the main page's last line
@@ -810,23 +766,6 @@ reading with no data yet shows `--`.
 
 RIDE PAGES turns the optional ride pages on and off
 ([UX flows](ux-flows.md#choosing-the-ride-pages)).
-
-## First-run setup
-
-A device with no saved preferences opens setup where Home would be, as soon
-as Home would. Its pages carry step dots, a `TITLE`, two short `SECONDARY`
-lines and two cards: WELCOME (SET UP, SKIP SETUP), POWER (SET FTP, I DON'T
-KNOW), HEART (SET LTHR, I DON'T KNOW), SENSORS (PAIR SENSORS, LATER) and READY
-(RIDE, HOME). A card's note shows the value in force, such as 215 W.
-
-- SET FTP and SET LTHR open the Settings editor; finishing it (BACK) goes on.
-- I DON'T KNOW keeps the default, which Settings can change later.
-- PAIR SENSORS opens the sensor menu; leaving it opens READY.
-- BACK leaves setup for Home at any page, so a ride never waits for setup.
-  The next start resumes at the same page. SKIP SETUP, RIDE and HOME finish
-  setup for good.
-
-Setup asks for no units: every screen is metric.
 
 ## Sounds
 
@@ -841,7 +780,7 @@ holding TopLeft to reboot are in [UX flows](ux-flows.md#buttons).
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left extends the step by a minute (500 m for a distance step) |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home (RIDE starts the ride), the row on Sensors, or the ride on Rides; a cue acts as its button; on Workouts, the workout's ride starts; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left extends the step by a minute (500 m for a distance step) |
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
 | Long press | Still for 1 s, then lifted | On the map, stops following the course (COURSE OFF; [UX flows](ux-flows.md#map)) |
@@ -870,7 +809,7 @@ activating a control, and scrolling never moves it.
 
 ### Lists that scroll
 
-Rides, Workouts and a Settings section are pages of cards that scroll under
+Workouts and a Settings section are pages of cards that scroll under
 the finger, with the motion of iOS's `UIScrollView`:
 
 - The page follows the finger pixel for pixel once it has travelled 10 px.
@@ -885,7 +824,7 @@ the finger, with the motion of iOS's `UIScrollView`:
   wobbling.
 - A finger on a moving page stops it, and that touch is no tap.
 
-Rides and Workouts scroll their title with the page; once it has gone under
+Workouts scrolls its title with the page; once it has gone under
 the status bar, the page's name and the focus's place (`3/44`) pin in a band
 at the top, over a `CARD` hairline. A Settings section keeps its headline and
 save status still and scrolls its rows between them.

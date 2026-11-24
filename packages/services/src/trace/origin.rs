@@ -14,8 +14,6 @@ pub struct Memory {
     pub terrain: bool,
     pub track: bool,
     pub phone: bool,
-    pub ride_index: bool,
-    pub ride_facts: bool,
 }
 
 impl Memory {
@@ -23,8 +21,6 @@ impl Memory {
         terrain: true,
         track: true,
         phone: true,
-        ride_index: true,
-        ride_facts: true,
     };
 }
 
@@ -207,13 +203,7 @@ pub fn generations(bulk: &mut impl ReadWrite, sector: &mut volume::Sector) -> Ge
 
 impl Wire<'_> for Memory {
     fn put(&self, w: &mut Writer) {
-        let bits = [
-            self.terrain,
-            self.track,
-            self.phone,
-            self.ride_index,
-            self.ride_facts,
-        ];
+        let bits = [self.terrain, self.track, self.phone];
         let byte = bits
             .iter()
             .enumerate()
@@ -227,8 +217,6 @@ impl Wire<'_> for Memory {
             terrain: bit(0),
             track: bit(1),
             phone: bit(2),
-            ride_index: bit(3),
-            ride_facts: bit(4),
         }
     }
 }

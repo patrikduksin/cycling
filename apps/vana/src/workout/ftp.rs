@@ -1,5 +1,13 @@
-use crate::kept::bests::suggest_ftp;
 use crate::ride::zones::TrainingProfile;
+
+const FTP_SHARE_PCT: u32 = 95;
+const FTP_GAIN_PCT: u32 = 3;
+
+pub fn suggest_ftp(best_20_min: u16, ftp_watts: u16) -> Option<u16> {
+    let suggested = (u32::from(best_20_min) * FTP_SHARE_PCT + 50) / 100;
+    let enough = suggested * 100 >= u32::from(ftp_watts) * (100 + FTP_GAIN_PCT);
+    (enough && suggested > 0).then_some(suggested.min(u32::from(u16::MAX)) as u16)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -76,6 +84,15 @@ mod tests {
         candidates.set(Source::WorkoutTest, Some(230));
         candidates.set(Source::RideSummary, Some(BEST));
         candidates
+    }
+
+    #[test]
+    fn an_ftp_is_suggested_only_for_a_clear_gain() {
+        assert_eq!(suggest_ftp(258, 215), Some(245));
+        assert_eq!(suggest_ftp(266, 245), Some(253));
+        assert_eq!(suggest_ftp(265, 245), None);
+        assert_eq!(suggest_ftp(200, 215), None);
+        assert_eq!(suggest_ftp(0, 215), None);
     }
 
     #[test]

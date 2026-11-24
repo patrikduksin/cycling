@@ -183,8 +183,8 @@ mod tests {
             (
                 "nothing else moved",
                 (Main, Follow::Idle),
-                (Lap, Follow::Idle),
-                (Lap, Follow::Idle),
+                (Map, Follow::Idle),
+                (Map, Follow::Idle),
                 (Main, Follow::Idle),
             ),
             (
@@ -204,8 +204,8 @@ mod tests {
             (
                 "a climb page that came up stays and goes back to the page from before",
                 (Main, Follow::Idle),
-                (Lap, Follow::Idle),
-                (Climb, shown(Lap)),
+                (Map, Follow::Idle),
+                (Climb, shown(Map)),
                 (Climb, shown(Main)),
             ),
         ];
@@ -214,7 +214,7 @@ mod tests {
         }
     }
 
-    use RidePage::{Climb, Lap, Main};
+    use RidePage::{Climb, Main, Map};
     use Road::{Ahead, Clear, Climbing};
 
     const SHOWN_MAIN: Follow = Follow::Shown { back_to: Main };
@@ -261,8 +261,8 @@ mod tests {
             (
                 "a climb under way opens",
                 Follow::Idle,
-                road(Clear, Climbing, Lap),
-                show(Lap),
+                road(Clear, Climbing, Map),
+                show(Map),
             ),
             (
                 "already there is the rider's",

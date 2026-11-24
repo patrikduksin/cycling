@@ -21,7 +21,6 @@ impl Runtime {
     pub(super) fn page_list(&self) -> Option<List> {
         let navigation = &self.navigation;
         match navigation.page() {
-            Page::History => Some(List::Rides),
             Page::Workouts if self.ftp_sheet().is_none() => Some(List::Workouts),
             Page::Settings
                 if !(navigation.editing() && navigation.setting().kind() == Kind::Number) =>
@@ -35,7 +34,6 @@ impl Runtime {
     /// The page of cards the list's built-in scrolls.
     pub(super) fn list_layout(&self, list: List) -> Layout {
         match list {
-            List::Rides => self.composed_page(ScreenId::History),
             List::Workouts => self.composed_page(ScreenId::Workouts),
             List::Settings => self.composed_page(ScreenId::Settings),
         }
@@ -53,7 +51,6 @@ impl Runtime {
         match act {
             // Held, MOVE pages by the cards a list shows at rest.
             ListAct::Step => match list {
-                List::Rides => self.list_move(list, crate::screens::history::SHOWN, held, now),
                 List::Workouts => {
                     self.list_move(list, crate::screens::workouts::VISIBLE, held, now)
                 }
@@ -70,8 +67,11 @@ impl Runtime {
 
     fn list_chosen(&mut self, list: List, index: usize, now: u64, ant: &mut impl Ant) {
         match list {
-            List::Workouts => self.choose_workout(index),
-            List::Rides => self.open_past_ride(index),
+            List::Workouts => {
+                self.choose_workout(index);
+                self.navigation.go(To::Page(Page::Home));
+                self.ride_press(device_api::input::Role::Act, false, now, now);
+            }
             List::Settings => {
                 self.set_list_cursor(List::Settings, index);
                 self.act_on_setting(now, ant);
@@ -81,7 +81,6 @@ impl Runtime {
 
     pub(super) fn list_count(&self, list: List) -> usize {
         match list {
-            List::Rides => self.history_count(),
             List::Workouts => self.training.rows(),
             List::Settings => {
                 let navigation = &self.navigation;
@@ -97,7 +96,6 @@ impl Runtime {
     /// The focused card's index in the list.
     pub(super) fn list_cursor(&self, list: List) -> usize {
         match list {
-            List::Rides => self.history.cursor,
             List::Workouts => self.training.picker_cursor,
             List::Settings => {
                 let (field, sections) =
@@ -109,7 +107,6 @@ impl Runtime {
 
     fn set_list_cursor(&mut self, list: List, index: usize) {
         match list {
-            List::Rides => self.history.cursor = index,
             List::Workouts => self.training.picker_cursor = index,
             List::Settings => {
                 let navigation = &self.navigation;
@@ -121,7 +118,6 @@ impl Runtime {
 
     pub(super) fn kinetic(&self, list: List) -> &Kinetic {
         match list {
-            List::Rides => &self.history.scroll,
             List::Workouts => &self.training.picker_scroll,
             List::Settings => self.navigation.settings_scroll(),
         }
@@ -129,7 +125,6 @@ impl Runtime {
 
     pub(super) fn kinetic_mut(&mut self, list: List) -> &mut Kinetic {
         match list {
-            List::Rides => &mut self.history.scroll,
             List::Workouts => &mut self.training.picker_scroll,
             List::Settings => self.navigation.settings_scroll_mut(),
         }
@@ -209,7 +204,7 @@ impl Runtime {
                 let navigation = &self.navigation;
                 navigation.settings_field() + 1 == navigation.sections().fields()
             }
-            List::Rides | List::Workouts => cursor + 1 >= count,
+            List::Workouts => cursor + 1 >= count,
         };
         let layout = self.list_layout(list);
         if count == 0 || (last && layout.whole(cursor, self.list_rest(list))) {
@@ -224,7 +219,7 @@ impl Runtime {
     fn list_enter(&mut self, list: List, now: u64) {
         match list {
             List::Settings => self.navigation.go(To::Field(0)),
-            List::Rides | List::Workouts => self.set_list_cursor(list, 0),
+            List::Workouts => self.set_list_cursor(list, 0),
         }
         self.kinetic_mut(list).reveal(0.0, now);
     }

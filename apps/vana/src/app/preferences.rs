@@ -16,7 +16,7 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::{AppPreferences, Source};
 use firmware_shell::shell::{BrightnessChoice, Shell};
 
-const VERSION: u8 = 14;
+const VERSION: u8 = 15;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
@@ -538,13 +538,6 @@ impl Preferences {
         }
     }
 
-    /// Save a pending edit without waiting for edits to settle.
-    pub(super) fn settle_now(&mut self, now: u64) {
-        if self.changed_at.is_some() {
-            self.changed_at = Some(now.saturating_sub(DEBOUNCE_MS));
-        }
-    }
-
     /// The record as it would be saved now.
     pub(super) fn record(&self) -> Record {
         Record {
@@ -749,8 +742,8 @@ mod tests {
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                14, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 1, 0, 1
+                15, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 1, 0, 1
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -789,7 +782,7 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                14, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 1, 40, 7, 0, 5, 0, 0b110, 10, 2, 3, 1, 4,
+                15, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 1, 40, 7, 0, 5, 0, 0b110, 10, 2, 3, 3,
                 0xff, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6,
                 2, 1, 0
             ]
@@ -802,7 +795,7 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 85);
+        assert_eq!(bytes.len(), 84);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
     }
@@ -1006,11 +999,11 @@ mod tests {
         );
         assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
         let hidden = Options {
-            deck: Deck::default().toggled(RidePage::Lap),
+            deck: Deck::default().toggled(RidePage::Climb),
             ..Options::default()
         };
         assert_eq!(hidden.encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
-        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [2, 4, 0xff]);
+        assert_eq!(hidden.encode()[4..4 + Deck::LENGTH], [3, 0xff]);
         assert_eq!(Options::decode(&hidden.encode()), Some(hidden));
         const FLAGS: usize = 0;
         const AUTO_LAP: usize = 1;

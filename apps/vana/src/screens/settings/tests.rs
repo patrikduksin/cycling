@@ -66,7 +66,7 @@ fn panels(view: &View) -> std::vec::Vec<(Rect, u16)> {
 
 #[test]
 fn rows_walk_every_section_in_order() {
-    for (sections, fields) in [(Sections::All, 35), (Sections::NoPhone, 34)] {
+    for (sections, fields) in [(Sections::All, 31)] {
         assert_eq!(sections.fields(), fields);
         for index in 0..fields {
             assert_eq!(sections.field(sections.row(index)), Some(index));
@@ -89,25 +89,11 @@ fn rows_walk_every_section_in_order() {
 }
 
 #[test]
-fn without_wifi_device_drops_only_the_phone_row() {
-    let (all, bare) = (Sections::All, Sections::NoPhone);
-    assert!(all.phone() && !bare.phone());
-    let rows = |sections: Sections| (0..sections.fields()).map(move |i| sections.row(i));
-    assert!(rows(all).filter(|row| *row != Row::Phone).eq(rows(bare)));
-    let device = bare.field(Row::Sensors).unwrap();
-    assert_eq!(
-        bare.rows(device).0,
-        [Row::Sensors, Row::Storage, Row::Firmware]
-    );
-    assert_eq!(bare.title(bare.section(device).0), "DEVICE");
-}
-
-#[test]
 fn rings_the_focused_row_and_fills_the_edited_number() {
     let list = page(&crate::screens::C606);
     let mut moving = profile(1, false);
     let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
-    assert_eq!(colors, [CARD, ACCENT, RAISED, CARD, CARD], "no pads");
+    assert_eq!(colors, [CARD, ACCENT, RAISED], "no pads");
     let left = list.column.left;
     let second = list.top + list.column.rect(1).top;
     assert_eq!(moving.pixel(left + 6, second + 20), RAISED);
@@ -256,5 +242,5 @@ fn a_row_under_a_resting_finger_is_pressed() {
     view.press_setting(Some(1));
     view.prepare();
     let colors: std::vec::Vec<_> = panels(&view).iter().map(|(_, c)| *c).collect();
-    assert_eq!(colors, [ACCENT, RAISED, PRESSED, CARD, CARD]);
+    assert_eq!(colors, [ACCENT, RAISED, PRESSED]);
 }

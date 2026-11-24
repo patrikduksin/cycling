@@ -125,7 +125,7 @@ fn the_other_bikes_power_meter_is_not_zeroed_through_the_live_one() {
     assert_eq!(sends(&radio), 0);
     // The note belongs to the spare's page, not the live meter's.
     let mut now = 1_000;
-    runtime.open_sensors(false, &mut radio, now);
+    runtime.open_sensors(&mut radio, now);
     while runtime.menu.diagnostics().focus != Some(power_meter()) {
         assert!(now < 10_000, "the live meter has a row");
         runtime.input_received(press(Role::Move), now, now, &mut radio);

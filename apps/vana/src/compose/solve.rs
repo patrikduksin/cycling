@@ -464,12 +464,9 @@ impl<'a> Solver<'a> {
                     }
                     want
                 }
-                // A card's slot holds its template, or what the list says
-                // while empty, with gaps above and below and a gutter either
-                // side.
-                What::Scroll { list } => {
+                What::Scroll { .. } => {
                     let (across, down) = (index(Axis::Across), index(Axis::Down));
-                    let mut want = super::list::empty_size(list, at);
+                    let mut want = [0, 0];
                     for child in self.children(i) {
                         want[across] = want[across].max(self.want[child][across]);
                         let item = self.want[child][down].max(self.item_length(child, at));
@@ -848,7 +845,7 @@ impl Frame {
                         items: items as u8,
                     });
                 }
-                let (shapes, runs) = super::list::most(list, self.rect, template, &tiles, at);
+                let (shapes, runs) = super::list::most(self.rect, template, &tiles, at);
                 cost.shapes = base.shapes + shapes;
                 cost.runs = base.runs + runs;
                 if !self.hidden {

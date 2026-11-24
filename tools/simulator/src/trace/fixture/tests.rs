@@ -151,7 +151,6 @@ fn a_replay_reads_the_card_the_recording_wrote() {
     let mut sim = Sim::new();
     sim.fit_bulk(Presence::Ready);
     sim.wait_usable();
-    sim.skip_setup();
     sim.init_bulk();
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();

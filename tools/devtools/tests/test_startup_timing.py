@@ -120,14 +120,19 @@ def test_ride_refuses_before_any_press_when_a_ride_is_recording(monkeypatch, tmp
 class Vana:
     """A tiny model of VANA's pages, buttons and recorder behind `RIDE STATUS`."""
 
-    def __init__(self, page='home', state='ready', cursor=0, ignore_save=False):
+    def __init__(self, page='home', state='ready', cursor=0, ignore_save=False, pauses=None):
         self.page, self.state, self.cursor = page, state, cursor
         self.rides, self.ignore_save = 0, ignore_save
+        # How many pause presses take before the rest are ignored; None takes all.
+        self.pauses = pauses
         self.edited = False
         self.presses = []
         self.session = None
 
-    def command(self, command):
+    def command(self, command, statuses=('OK',)):
+        # As the runner does: VANA answers a queued ride mutation ACCEPTED.
+        if command in ('RIDE PAUSE', 'RIDE FINISH') and 'ACCEPTED' not in statuses:
+            raise RuntimeError(f'{command.split()[0]} returned ACCEPTED')
         if command == 'RIDE STATUS':
             return {
                 'state': self.state,
@@ -135,6 +140,10 @@ class Vana:
                 'page': self.page,
                 'home_cursor': str(self.cursor),
             }
+        if command == 'RIDE PAUSE' and self.state == 'recording':
+            self.state = 'paused'
+        elif command == 'RIDE FINISH' and self.state == 'paused':
+            self.page, self.state, self.rides = 'home', 'saved', self.rides + 1
         return {'recording': 'false'}
 
     def open_session(self):
@@ -153,14 +162,17 @@ class Vana:
             self.edited = True
         elif self.page == 'home':
             if button == 'bottom-left':
-                self.cursor = (self.cursor + 1) % 5
-            elif button == 'bottom-right':
-                self.page = ('ready', 'sensors', 'workouts', 'settings', 'history')[self.cursor]
-        elif self.page == 'ready':
-            if button == 'bottom-right':
+                self.cursor = (self.cursor + 1) % 4
+            elif button == 'bottom-right' and self.cursor == 0:
                 self.page, self.state = 'ride', 'recording'
+            elif button == 'bottom-right':
+                self.page = ('sensors', 'workouts', 'settings')[self.cursor - 1]
         elif self.page == 'ride':
-            if button == 'bottom-right':
+            if button == 'bottom-right' and self.state == 'recording' and self.pauses is not None:
+                if self.pauses > 0:
+                    self.pauses -= 1
+                    self.state = 'paused'
+            elif button == 'bottom-right':
                 self.state = {'recording': 'paused', 'paused': 'recording'}.get(self.state, 'recording')
             elif button == 'top-left' and self.state == 'paused':
                 self.page = 'end_ride'
@@ -179,12 +191,21 @@ def test_ride_refuses_away_from_home_without_pressing():
         assert not vana.edited
 
 
-def test_ride_walks_home_to_ready_and_ends_with_the_ride_saved():
-    vana = Vana(cursor=4)
+def test_ride_starts_from_home_and_ends_with_the_ride_saved():
+    vana = Vana(cursor=3)
     startup_timing.ride(vana)
     assert vana.presses[:2] == ['bottom-left', 'bottom-right']
     assert (vana.page, vana.state, vana.rides, vana.edited) == ('home', 'saved', 1, False)
     assert vana.session is None
+
+
+@pytest.mark.parametrize('pauses', [0, 1])
+def test_a_ride_stopped_by_an_ignored_press_is_saved_from_the_console(pauses):
+    # 0: the first pause is ignored; 1: the pause after the resume is.
+    vana = Vana(pauses=pauses)
+    with pytest.raises(RuntimeError, match='state=paused'):
+        startup_timing.ride(vana)
+    assert (vana.state, vana.rides, vana.session) == ('saved', 1, None)
 
 
 def test_ride_reports_a_ride_that_did_not_save():

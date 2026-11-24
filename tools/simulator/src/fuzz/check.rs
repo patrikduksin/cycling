@@ -146,8 +146,7 @@ fn media(observation: &Observation) -> [(&'static str, &[Ride]); 2] {
     ]
 }
 
-/// Pages where a press can discard or delete a ride.
-const REMOVING_PAGES: [&str; 2] = ["discard_ride", "past_ride"];
+const REMOVING_PAGES: [&str; 1] = ["discard_ride"];
 
 fn samples_survive(moment: &Moment) -> Verdict {
     if matches!(moment.step, Some(Step::Press(_) | Step::Hold(..)))

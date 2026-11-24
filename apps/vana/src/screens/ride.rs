@@ -26,7 +26,6 @@ use firmware_shell::shell::Parts;
 
 pub mod climb;
 pub mod elevation;
-mod lap;
 mod main;
 pub mod map;
 pub mod slots;
@@ -39,7 +38,6 @@ pub(super) use zones::{GAUGE_WIDTH, Mark, Marks, gauges, marks};
 
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent, Road as ClimbRoad};
 pub use elevation::Chart as ElevationChart;
-pub use lap::{LapBar, LapBars};
 pub use map::{
     Cache as MapCache, Fetched, Filled as FilledMap, Frame as MapFrame, Track, Zoom as MapZoom,
 };
@@ -78,9 +76,6 @@ pub const fn strip(at: &Scaled) -> Strip {
         body: radar.right,
     }
 }
-
-/// The text's right margin from the body's right edge.
-pub(crate) const TEXT_RIGHT: u16 = 8;
 
 /// The regions a page drawn from a canvas lays out in, named, in its
 /// canvas's columns: the radar strip while a radar is paired, then the
@@ -140,8 +135,6 @@ pub enum RidePage {
     /// the ride's climbing, distance and NP.
     #[default]
     Main,
-    /// The open lap against the last finished one.
-    Lap,
     /// Grade, power and heart rate, and the climb near or under way on its
     /// profile, or the ride's elevation.
     Climb,
@@ -153,15 +146,14 @@ pub enum RidePage {
 
 impl RidePage {
     /// The pages of a free ride.
-    pub const ALL: [Self; 4] = [Self::Main, Self::Lap, Self::Climb, Self::Map];
+    pub const ALL: [Self; 3] = [Self::Main, Self::Climb, Self::Map];
     /// The pages while a workout is chosen or running.
-    pub const TRAINING: [Self; 5] = [Self::Workout, Self::Main, Self::Lap, Self::Climb, Self::Map];
+    pub const TRAINING: [Self; 4] = [Self::Workout, Self::Main, Self::Climb, Self::Map];
 
     /// The page as a trace names it.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Main => "ride/main",
-            Self::Lap => "ride/lap",
             Self::Climb => "ride/climb",
             Self::Workout => "ride/workout",
             Self::Map => "ride/map",
@@ -179,7 +171,6 @@ impl RidePage {
     pub fn readings(self) -> Option<heapless::Vec<&'static str, 7>> {
         let id = match self {
             Self::Main => ScreenId::RideMain,
-            Self::Lap => ScreenId::RideLap,
             Self::Climb => ScreenId::RideClimb,
             Self::Workout => ScreenId::RideWorkout,
             Self::Map => return Some(READINGS.into_iter().filter(|&r| r == "dist").collect()),
@@ -239,7 +230,7 @@ fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
 impl Deck {
     /// The optional pages in Settings' order; a page turned back on returns
     /// to its place in it.
-    pub const OPTIONAL: [RidePage; 3] = [RidePage::Lap, RidePage::Climb, RidePage::Map];
+    pub const OPTIONAL: [RidePage; 2] = [RidePage::Climb, RidePage::Map];
     /// Bytes a record stores: each optional page shown by its index, in
     /// order, then [`Self::END`].
     pub const LENGTH: usize = Self::OPTIONAL.len();
@@ -498,7 +489,7 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         }
     }
     match page {
-        RidePage::Main | RidePage::Lap => {}
+        RidePage::Main => {}
         RidePage::Workout => workout::chart_parts(scene.chart(), parts),
         RidePage::Climb => climb::chart_parts(scene.climb(), parts),
         RidePage::Map => {
@@ -841,8 +832,7 @@ pub(crate) fn largest_box(device: &super::Device, component: u8) -> Rect {
 mod tests {
     use super::*;
     use crate::compose::builtin::{Choices, Laid, ScreenId};
-    use crate::compose::node::{Flags, What};
-    use crate::compose::registry::{self, SPACE, STATUS};
+    use crate::compose::node::Flags;
     use crate::screens::workout::Page;
 
     /// `view` solved and drawn, as the runtime shows its page.
@@ -850,51 +840,6 @@ mod tests {
         view.compose_main();
         view.prepare();
         view
-    }
-
-    /// The balance rule on `id`: the room its tiles leave down its column
-    /// is even gaps, above the first row and below the last as well as
-    /// between them, on every panel, with and without a radar. A chart
-    /// ends the column above it.
-    pub(super) fn balanced(id: ScreenId) {
-        for device in crate::screens::panels::ALL {
-            for flags in [Flags::NONE, Flags::RADAR] {
-                let laid = Laid::new(id, device, Choices::default(), flags, None).unwrap();
-                let nodes = laid.screen().tree().nodes();
-                let (mut start, mut end) = (0, device.scaled.panel.height as i32);
-                let mut rows: std::vec::Vec<(i32, i32)> = std::vec::Vec::new();
-                for placed in laid.leaves() {
-                    let Some(What::Leaf { component, .. }) = nodes[usize::from(placed.node)].what()
-                    else {
-                        continue;
-                    };
-                    let (top, bottom) = (i32::from(placed.rect.top), i32::from(placed.rect.bottom));
-                    match component {
-                        STATUS => start = bottom,
-                        SPACE => {}
-                        _ if registry::tile(component).heavy() => end = top,
-                        _ => match rows.iter_mut().find(|row| top < row.1 && row.0 < bottom) {
-                            Some(row) => *row = (row.0.min(top), row.1.max(bottom)),
-                            None => rows.push((top, bottom)),
-                        },
-                    }
-                }
-                rows.sort();
-                let mut edges = std::vec![start];
-                for (top, bottom) in &rows {
-                    edges.extend([*top, *bottom]);
-                }
-                edges.push(end);
-                let gaps: std::vec::Vec<i32> =
-                    edges.chunks(2).map(|pair| pair[1] - pair[0]).collect();
-                let (least, most) = (gaps.iter().min().unwrap(), gaps.iter().max().unwrap());
-                assert!(
-                    most - least <= 1 && *least > 0,
-                    "{id:?} {flags} on {:?}: gaps {gaps:?}",
-                    device.scaled.panel
-                );
-            }
-        }
     }
 
     #[test]
@@ -1035,7 +980,6 @@ mod tests {
         let at = &crate::screens::scaled::BASE;
         map.update(&track, map::ground(at, map::ground_rect(at)));
         match page {
-            Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
             Some(RidePage::Climb) => view.show_climb(ClimbLent::NONE),
             Some(RidePage::Map) => view.show_map(map.filled()),
             _ => {}
@@ -1108,13 +1052,12 @@ mod tests {
         let free = Deck::default().shown(false);
         assert_eq!(free.pages(), RidePage::ALL);
         assert_eq!(RidePage::default(), RidePage::Main);
-        assert_eq!(free.next(RidePage::Main), Some(RidePage::Lap));
-        assert_eq!(free.next(RidePage::Lap), Some(RidePage::Climb));
+        assert_eq!(free.next(RidePage::Main), Some(RidePage::Climb));
         assert_eq!(free.next(RidePage::Climb), Some(RidePage::Map));
         assert_eq!(free.next(RidePage::Map), None);
         assert_eq!(free.following(RidePage::Map), RidePage::Main);
         assert_eq!(free.preceding(RidePage::Main), RidePage::Map);
-        assert_eq!(free.preceding(RidePage::Lap), RidePage::Main);
+        assert_eq!(free.preceding(RidePage::Climb), RidePage::Main);
         let training = Deck::default().shown(true);
         assert_eq!(training.pages(), RidePage::TRAINING);
         assert_eq!(training.following(RidePage::Workout), RidePage::Main);
@@ -1202,29 +1145,17 @@ mod tests {
             let deck = choice(&hidden);
             assert_eq!(Deck::decode(deck.encode()), Some(deck), "{hidden:?}");
         }
-        assert_eq!(Deck::default().encode(), [1, 2, 4]);
-        assert_eq!(choice(&Deck::OPTIONAL).encode(), [0xff; 3]);
-        let reordered = Deck::decode([4, 1, 0xff]).unwrap();
+        assert_eq!(Deck::default().encode(), [1, 3]);
+        assert_eq!(choice(&Deck::OPTIONAL).encode(), [0xff; 2]);
+        let reordered = Deck::decode([3, 1]).unwrap();
         assert_eq!(
             reordered.pages(),
-            [RidePage::Main, RidePage::Map, RidePage::Lap]
+            [RidePage::Main, RidePage::Map, RidePage::Climb]
         );
-        assert_eq!(
-            reordered.showing(RidePage::Climb).pages(),
-            [
-                RidePage::Main,
-                RidePage::Map,
-                RidePage::Lap,
-                RidePage::Climb
-            ]
-        );
-        for bytes in [
-            [0, 0xff, 0xff],
-            [3, 0xff, 0xff],
-            [1, 1, 0xff],
-            [0xff, 1, 0xff],
-            [5, 0xff, 0xff],
-        ] {
+        let map_only = Deck::decode([3, 0xff]).unwrap();
+        assert_eq!(map_only.pages(), [RidePage::Main, RidePage::Map]);
+        assert_eq!(map_only.showing(RidePage::Climb).pages(), RidePage::ALL);
+        for bytes in [[0, 0xff], [2, 0xff], [1, 1], [0xff, 1], [5, 0xff]] {
             assert_eq!(Deck::decode(bytes), None, "{bytes:?}");
         }
     }

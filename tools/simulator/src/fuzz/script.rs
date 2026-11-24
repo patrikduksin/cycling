@@ -82,7 +82,6 @@ thread_local! {
 pub enum Call {
     FitBulk(Presence),
     WaitUsable,
-    SkipSetup,
     AntSensor(Sensor),
     RideRoute(Road),
     RideAt {
@@ -157,7 +156,6 @@ impl Call {
             Self::WaitUsable => {
                 sim.wait_usable();
             }
-            Self::SkipSetup => sim.skip_setup(),
             Self::AntSensor(sensor) => {
                 let (kind, number, _) = ant(*sensor);
                 sim.ant_sensor(kind, number);
@@ -225,7 +223,6 @@ impl Call {
         match self {
             Self::FitBulk(presence) => format!("sim.fit_bulk(Presence::{presence:?});"),
             Self::WaitUsable => "sim.wait_usable();".into(),
-            Self::SkipSetup => "sim.skip_setup();".into(),
             Self::AntSensor(sensor) => format!(
                 "sim.ant_sensor(device_type::{}, {});",
                 device_type_const_name(ant(*sensor).0),
@@ -255,13 +252,9 @@ impl Call {
                         format!("(device_type::{}, {number})", device_type_const_name(kind))
                     })
                     .collect();
-                let setup = match kept.setup {
-                    Some(step) => format!("Some(SetupStep::{step:?})"),
-                    None => "None".into(),
-                };
                 let profile = kept.profile;
                 format!(
-                    "sim.keep_preferences(&Kept {{\n        setup: {setup},\n        profile: TrainingProfile {{ ftp_watts: {}, lthr_bpm: {} }},\n        sensors: vec![{}],\n    }});",
+                    "sim.keep_preferences(&Kept {{\n        profile: TrainingProfile {{ ftp_watts: {}, lthr_bpm: {} }},\n        sensors: vec![{}],\n    }});",
                     profile.ftp_watts,
                     profile.lthr_bpm,
                     sensors.join(", ")
@@ -312,7 +305,7 @@ pub fn prepare(setup: &Setup, road: Road) -> Vec<Call> {
     }
     let home = setup.start == Start::Home;
     match &setup.start {
-        Start::Home => calls.extend([Call::WaitUsable, Call::SkipSetup]),
+        Start::Home => calls.push(Call::WaitUsable),
         Start::PowerOn(kept) => {
             if setup.card == Card::Ready {
                 calls.push(Call::FormatRides);
@@ -411,7 +404,6 @@ pub fn print(name: &str, calls: &[Call], then: &str) -> String {
         ("Route::", "shell_simulator::route::Route"),
         ("Side::", "shell_simulator::world::{Side, Vehicle}"),
         ("Kept {", "shell_simulator::sim::Kept"),
-        ("SetupStep::", "vana::screens::setup::Step as SetupStep"),
         ("TrainingProfile {", "vana::ride::zones::TrainingProfile"),
     ] {
         if uses(named) {

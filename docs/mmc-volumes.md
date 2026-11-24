@@ -7,7 +7,7 @@ so code using one volume cannot reach another one or the table.
 | Volume | Default size | Owner | Holds |
 | --- | --- | --- | --- |
 | `RIDES` | 1 GiB, about 2,330 h | VANA (`apps/vana/src/ride/bulk.rs`) | The sector log of bulk rides ([ride recording](ride-recording.md)) |
-| `FILES` | 256 MiB | `firmware_services::files` | Up to 128 named files of at most 1 MiB: workouts, workout records, ride facts, bests, the course, companion settings |
+| `FILES` | 256 MiB | `firmware_services::files` | Up to 128 named files of at most 1 MiB: workouts, workout records, the course, companion settings |
 | `TERRAIN` | 1.25 GiB | `firmware_services::pack` | One opaque pack written by the host and read by the firmware |
 | `STORE` | the rest, about 260 MiB | `firmware_services::store` | Growable append-only files in directories, such as ride traces in `traces/` |
 
@@ -60,8 +60,7 @@ Home or setup, never over a ride:
   question is drawn counts, so a button held through boot does nothing.
 - BACK keeps everything. Stores of the current version keep working, the
   ready page says `STORAGE NOT FORMATTED` / `OFF AND ON TO FORMAT` where a
-  ride cannot record, settings say `NOT SAVED: DATA KEPT`, BESTS says
-  `BESTS NOT FORMATTED` and offers no CLEAR BESTS, `RIDE INIT` and
+  ride cannot record, settings say `NOT SAVED: DATA KEPT`, `RIDE INIT` and
   `RIDE CLEAR CONFIRM` answer `FOREIGN` over a foreign ride log, and the next
   boot asks again.
 
@@ -69,11 +68,10 @@ Home or setup, never over a ride:
 store, foreign or not; with no card, only the internal journal and the
 settings. `FORMAT`, or `cycling format`, reports
 each store as `current`, `blank`, `foreign` or `unusable`, in the order the
-wipe takes them: `table`, `rides`, `files`, `records` (the facts, deleted
-rides, bests and workout outcomes VANA writes into FILES), `traces` (STORE),
-`internal` and `settings`. Each record's owner (`kept/facts/record.rs`,
-`kept/deleted.rs`, `kept/bests.rs`, `workout/history.rs`) decides what its file
-holds, and a file that names the owner but carries another version byte is
+wipe takes them: `table`, `rides`, `files`, `records` (the workout
+outcomes VANA writes into FILES), `traces` (STORE), `internal` and
+`settings`. Their owner, `workout/history.rs`, decides what its files hold,
+and a file that names the owner but carries another version byte is
 foreign.
 
 What the wipe leaves alone:
@@ -118,13 +116,12 @@ everything as it was, and the offer comes back. `RIDE CLEAR CONFIRM` on the
 internal journal runs this wipe for the journal alone, so a Clear cut by
 power is finished at the next boot and never reads as another version's.
 
-A wipe of the internal journal also forgets what `FILES` records of its rides
-(workout outcomes, facts and deleted rides), since its next rides number from
-1 again, unless `FILES` goes in the same wipe. A card that is missing,
-foreign or unusable during the wipe keeps those records, and a new ride of
-the same number, start and length may show as deleted. A card that refuses
-a read or write while the records go fails the wipe, as any card stage does,
-and the records it kept do the same.
+A wipe of the internal journal also forgets the workout outcomes `FILES`
+records of its rides, since its next rides number from 1 again, unless
+`FILES` goes in the same wipe. A card that is missing, foreign or unusable
+during the wipe keeps those records. A card that refuses a read or write
+while the records go fails the wipe, as any card stage does, and the records
+it kept do the same.
 
 A wipe whose write fails, as a dead card's does, settles the intent, stops
 and shows the ready page with `STORAGE NOT FORMATTED`, and a Clear waiting

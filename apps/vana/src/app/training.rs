@@ -275,17 +275,12 @@ impl Runtime {
         picker
     }
 
-    /// MOVE focuses the next card (held, the next page of cards; past the
-    /// last it wraps to the first), ACT chooses it for Ready, BACK goes Home.
-    /// Either press first brings a focus that scrolled away back into view.
-    /// Choose picker row `row`: Ready names it, and the next ride plays it.
     pub(super) fn choose_workout(&mut self, row: usize) {
         let Some(id) = self.training.row(row) else {
             return;
         };
         self.training.picker_cursor = row;
         self.training.selected = id;
-        self.navigation.go(To::Page(Page::Ready));
     }
 
     /// Yes saves a test's FTP, no keeps the one in force.
@@ -443,7 +438,6 @@ impl Runtime {
                 if self.recorder_busy() {
                     return "STATE";
                 }
-                // As choosing it on the picker: Ready names it.
                 self.choose_workout(row);
                 self.display.redraw();
                 write!(output, "selected={row}")

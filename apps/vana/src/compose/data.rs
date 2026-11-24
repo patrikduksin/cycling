@@ -1,8 +1,5 @@
-use crate::ride::week::{DAYS, Weeks};
-use crate::screens::chrome::{
-    ACCENT, Battery, CADENCE, GRADE, Gps, HEART, POWER, SECONDARY, SPEED, WHITE,
-};
-use crate::screens::ride::{self, ClimbRoad as Road, LapBar, Training};
+use crate::screens::chrome::{Battery, CADENCE, GRADE, Gps, HEART, POWER, SECONDARY, SPEED, WHITE};
+use crate::screens::ride::{self, ClimbRoad as Road, Training};
 use crate::screens::theme::{self, Theme};
 use crate::screens::workout::Text;
 use core::fmt::Write;
@@ -26,10 +23,6 @@ pub trait Data {
     /// The item a list's template draws, as the list hands it to its tiles.
     fn row(&self) -> Option<Row> {
         None
-    }
-    /// This week and last at a glance.
-    fn glance(&self) -> Glance {
-        Glance::UNKNOWN
     }
     /// What the list's heading says: its name, or the section a list of
     /// sections shows.
@@ -55,10 +48,6 @@ pub trait Data {
     }
     /// The ride's time in each of the effort's zones, none before any.
     fn zone_time(&self, _: Effort) -> Option<Shares> {
-        None
-    }
-    /// The finished laps, oldest first, and the open lap.
-    fn laps(&self) -> Option<(&[LapBar], LapBar)> {
         None
     }
     /// The ride paused itself and resumes when it moves.
@@ -131,30 +120,12 @@ pub enum Reads {
     Target,
 }
 
-/// The numbers the static screens state: the questions, the sheets, BESTS
-/// and FORM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Count {
     /// Rides the phone has not confirmed.
     Unsaved,
     /// What formatting takes, as its place in `format::Goes::ALL`.
     Goes,
-    /// Why BESTS shows a note, as its place in `bests::NOTES`.
-    BestsNote,
-    /// A best by its place on BESTS: its value, the day it was set, and
-    /// watts a kilo in tenths for a power best.
-    Best(u8),
-    BestDay(u8),
-    BestPerKg(u8),
-    /// Why FORM shows a note, as its place in `form::NOTES`.
-    FormNote,
-    Fitness,
-    Fatigue,
-    Form,
-    /// Form at the end of a week of the trend, oldest first.
-    FormWeek(u8),
-    /// 1 when rides without power are left out of FORM.
-    LeftOut,
     /// The FTP the sheet offers, and the one in force.
     FtpNew,
     FtpOld,
@@ -209,72 +180,6 @@ pub struct Edited<'a> {
     pub value: &'a str,
     pub note: &'a str,
     pub step: u16,
-}
-
-/// The rides' week, or none while the clock is unknown, and whether the
-/// index is still reading rides, so the week may grow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Glance {
-    pub week: Option<Week>,
-    pub reading: bool,
-}
-
-impl Glance {
-    pub const UNKNOWN: Self = Self {
-        week: None,
-        reading: false,
-    };
-
-    pub fn of(weeks: Option<&Weeks>, reading: bool) -> Self {
-        Self {
-            week: weeks.map(Week::of),
-            reading,
-        }
-    }
-}
-
-/// This week as its glance shows it, with last week's distance: a frame
-/// keeps this, not the weeks.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Week {
-    pub rides: u32,
-    pub distance_mm: u64,
-    pub active_ms: u64,
-    /// The stress of the rides that had power; none without one.
-    pub stress: Option<u32>,
-    pub last_mm: u64,
-    /// Monday 0.
-    pub today: u8,
-    /// Each day's distance in metres, Monday first.
-    pub day_m: [u32; DAYS],
-    /// The days ridden, Monday the lowest bit.
-    pub ridden: u8,
-}
-
-impl Week {
-    pub fn of(weeks: &Weeks) -> Self {
-        let this = &weeks.this;
-        let mut ridden = 0;
-        for (day, &rides) in this.day_rides.iter().enumerate() {
-            ridden |= u8::from(rides > 0) << day;
-        }
-        Self {
-            rides: this.rides,
-            distance_mm: this.distance_mm,
-            active_ms: this.active_ms,
-            stress: (this.powered > 0).then_some(this.stress),
-            last_mm: weeks.last.distance_mm,
-            today: weeks.today as u8,
-            day_m: this
-                .day_mm
-                .map(|mm| u32::try_from(mm / 1000).unwrap_or(u32::MAX)),
-            ridden,
-        }
-    }
-
-    pub const fn rode(&self, day: usize) -> bool {
-        self.ridden & (1 << day) != 0
-    }
 }
 
 /// The item a template's tiles draw.
@@ -358,29 +263,6 @@ pub enum Metric {
     Intensity,
     /// The training stress score.
     Stress,
-    /// Seconds of the open lap.
-    LapTime,
-    /// Millimetres.
-    LapDistance,
-    /// Watts.
-    LapPower,
-    /// Millimetres a second.
-    LapSpeed,
-    /// Beats a minute.
-    LapHeart,
-    /// The open lap's number, from 1.
-    LapNumber,
-    /// The last finished lap's number.
-    PrevLapNumber,
-    /// Seconds.
-    PrevLapTime,
-    /// Watts.
-    PrevLapPower,
-    /// The open lap's average speed less the last finished lap's, in tenths
-    /// of a km/h, each side truncated as a speed reads.
-    SpeedDiff,
-    /// The open lap's average power less the last finished lap's, in watts.
-    PowerDiff,
     /// Seconds the ride has been paused.
     Paused,
     /// Metres above the sea.
@@ -396,7 +278,7 @@ pub enum Metric {
 }
 
 impl Metric {
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 24] = [
         Self::Cadence,
         Self::Distance,
         Self::NormalizedPower,
@@ -415,17 +297,6 @@ impl Metric {
         Self::MaxSpeed,
         Self::Intensity,
         Self::Stress,
-        Self::LapTime,
-        Self::LapDistance,
-        Self::LapPower,
-        Self::LapSpeed,
-        Self::LapHeart,
-        Self::LapNumber,
-        Self::PrevLapNumber,
-        Self::PrevLapTime,
-        Self::PrevLapPower,
-        Self::SpeedDiff,
-        Self::PowerDiff,
         Self::Paused,
         Self::Altitude,
         Self::ClimbDistance,
@@ -487,17 +358,6 @@ impl Metric {
             Self::MaxSpeed => "MAX SPEED",
             Self::Intensity => "IF",
             Self::Stress => "TSS",
-            Self::LapTime => "LAP TIME",
-            Self::LapDistance => "LAP KM",
-            Self::LapPower => "LAP W",
-            Self::LapSpeed => "LAP KM/H",
-            Self::LapHeart => "LAP BPM",
-            Self::LapNumber => "LAP",
-            Self::PrevLapNumber => "PREV LAP",
-            Self::PrevLapTime => "PREV LAP",
-            Self::PrevLapPower => "PREV W",
-            Self::SpeedDiff => "KM/H DIFF",
-            Self::PowerDiff => "W DIFF",
             Self::Paused => "PAUSED",
             Self::Altitude => "ALTITUDE",
             Self::ClimbDistance => "CLIMB DIST",
@@ -534,20 +394,11 @@ impl Metric {
             Self::Ascent | Self::Altitude | Self::ClimbGain | Self::UpToGo => "M",
             Self::ClimbDistance | Self::ToTop => "KM",
             Self::Speed => "KM/H",
-            Self::Power | Self::LapPower | Self::PrevLapPower | Self::PowerDiff => "W",
-            Self::Heart | Self::LapHeart => "BPM",
-            Self::MaxSpeed | Self::LapSpeed | Self::SpeedDiff => "KM/H",
-            Self::LapDistance => "KM",
+            Self::Power => "W",
+            Self::Heart => "BPM",
+            Self::MaxSpeed => "KM/H",
             Self::Stress => "TSS",
-            Self::Elapsed
-            | Self::Grade
-            | Self::Moving
-            | Self::Intensity
-            | Self::LapTime
-            | Self::LapNumber
-            | Self::PrevLapNumber
-            | Self::PrevLapTime
-            | Self::Paused => "",
+            Self::Elapsed | Self::Grade | Self::Moving | Self::Intensity | Self::Paused => "",
         }
     }
 
@@ -568,9 +419,6 @@ impl Metric {
             | Self::Work
             | Self::Elapsed
             | Self::Moving
-            | Self::LapTime
-            | Self::LapDistance
-            | Self::PrevLapTime
             | Self::Altitude
             | Self::ClimbDistance
             | Self::ClimbGain
@@ -580,14 +428,11 @@ impl Metric {
             | Self::AvgPower
             | Self::Power
             | Self::Intensity
-            | Self::Stress
-            | Self::LapPower
-            | Self::PrevLapPower => POWER,
-            Self::AvgHeart | Self::Heart | Self::LapHeart => HEART,
-            Self::AvgSpeed | Self::Speed | Self::MaxSpeed | Self::LapSpeed => SPEED,
+            | Self::Stress => POWER,
+            Self::AvgHeart | Self::Heart => HEART,
+            Self::AvgSpeed | Self::Speed | Self::MaxSpeed => SPEED,
             Self::Ascent | Self::Grade => GRADE,
-            Self::LapNumber | Self::PrevLapNumber => ACCENT,
-            Self::SpeedDiff | Self::PowerDiff | Self::Paused => SECONDARY,
+            Self::Paused => SECONDARY,
         }
     }
 
@@ -611,28 +456,18 @@ impl Metric {
     /// to shed, as whole watts past 999, has its looks measured on its end.
     pub(crate) const fn ends(self) -> (i32, i32) {
         match self {
-            Self::Speed | Self::AvgSpeed | Self::MaxSpeed | Self::LapSpeed => {
+            Self::Speed | Self::AvgSpeed | Self::MaxSpeed => {
                 (0, crate::ride::gps_speed::MAX_SPEED_MM_S as i32)
             }
-            Self::Power
-            | Self::AvgPower
-            | Self::NormalizedPower
-            | Self::LapPower
-            | Self::PrevLapPower
-            | Self::Stress
-            | Self::LapNumber
-            | Self::PrevLapNumber => (0, 9999),
-            Self::Heart | Self::AvgHeart | Self::Cadence | Self::LapHeart => (0, 999),
-            Self::Distance | Self::LapDistance => (0, 9_999_900),
+            Self::Power | Self::AvgPower | Self::NormalizedPower | Self::Stress => (0, 9999),
+            Self::Heart | Self::AvgHeart | Self::Cadence => (0, 999),
+            Self::Distance => (0, 9_999_900),
             Self::ClimbDistance | Self::ToTop => (0, 999_900),
             Self::Altitude => (-999, 9999),
             Self::ClimbGain | Self::UpToGo => (0, 9999),
-            Self::Elapsed | Self::Moving | Self::LapTime | Self::PrevLapTime | Self::Paused => {
-                (0, 99 * 3600 + 59 * 60 + 59)
-            }
-            Self::Grade | Self::SpeedDiff => (-999, 999),
+            Self::Elapsed | Self::Moving | Self::Paused => (0, 99 * 3600 + 59 * 60 + 59),
+            Self::Grade => (-999, 999),
             Self::Intensity => (0, 999),
-            Self::PowerDiff => (-9999, 9999),
             Self::Kcal => (0, 999_499),
             Self::Work | Self::Ascent => (0, 99_999),
         }
@@ -644,10 +479,8 @@ impl Metric {
     /// count goes to thousands past 9999.
     pub(crate) const fn turn(self) -> Option<i32> {
         match self {
-            Self::Speed | Self::AvgSpeed | Self::MaxSpeed | Self::LapSpeed => {
-                Some(SPEED_TENTHS_MOST)
-            }
-            Self::Distance | Self::LapDistance => Some(99_994),
+            Self::Speed | Self::AvgSpeed | Self::MaxSpeed => Some(SPEED_TENTHS_MOST),
+            Self::Distance => Some(99_994),
             Self::Kcal => Some(WHOLE),
             _ => None,
         }
@@ -673,30 +506,24 @@ impl Metric {
         let whole = |out: &mut Text<12>| ride::whole(out, value);
         let unsigned = value.map(|value| value.max(0) as u32);
         match self {
-            Self::Speed | Self::AvgSpeed | Self::MaxSpeed | Self::LapSpeed => match unsigned {
+            Self::Speed | Self::AvgSpeed | Self::MaxSpeed => match unsigned {
                 Some(mm_s) if mm_s > SPEED_TENTHS_MOST as u32 => {
                     let _ = write!(out, "{}", u64::from(mm_s) * 36 / 10_000);
                 }
                 _ => ride::speed(out, unsigned),
             },
-            Self::Distance | Self::LapDistance => {
-                ride::kilometres(out, u64::from(unsigned.unwrap_or(0)) * 1000)
-            }
+            Self::Distance => ride::kilometres(out, u64::from(unsigned.unwrap_or(0)) * 1000),
             Self::ClimbDistance | Self::ToTop => match unsigned {
                 Some(metres) => ride::kilometres(out, u64::from(metres) * 1000),
                 None => whole(out),
             },
             Self::Elapsed => ride::elapsed(out, u64::from(unsigned.unwrap_or(0))),
-            Self::Moving | Self::LapTime | Self::PrevLapTime | Self::Paused => match unsigned {
+            Self::Moving | Self::Paused => match unsigned {
                 Some(seconds) => ride::lap_time(out, u64::from(seconds)),
                 None => whole(out),
             },
             Self::Grade => ride::grade(out, value),
             Self::Intensity => hundredths(out, unsigned),
-            Self::SpeedDiff => signed(out, value, |out, tenths| {
-                write!(out, "{}.{}", tenths / 10, tenths % 10)
-            }),
-            Self::PowerDiff => signed(out, value, |out, watts| write!(out, "{watts}")),
             Self::Kcal => thousands(out, unsigned),
             Self::Cadence
             | Self::NormalizedPower
@@ -707,11 +534,6 @@ impl Metric {
             | Self::Power
             | Self::Heart
             | Self::Stress
-            | Self::LapPower
-            | Self::LapHeart
-            | Self::LapNumber
-            | Self::PrevLapNumber
-            | Self::PrevLapPower
             | Self::Altitude
             | Self::ClimbGain
             | Self::UpToGo => whole(out),
@@ -730,23 +552,6 @@ fn hundredths(out: &mut Text<12>, value: Option<u32>) {
         Some(v) => write!(out, "{}.{:02}", v / 100, v % 100),
         None => out.push_str("--"),
     };
-}
-
-fn signed(
-    out: &mut Text<12>,
-    value: Option<i32>,
-    magnitude: impl FnOnce(&mut Text<12>, u32) -> core::fmt::Result,
-) {
-    let Some(delta) = value else {
-        let _ = out.push_str("--");
-        return;
-    };
-    let _ = out.push_str(match delta {
-        1.. => "+",
-        ..0 => "-",
-        0 => "",
-    });
-    let _ = magnitude(out, delta.unsigned_abs());
 }
 
 /// A count that must fit four digits: whole up to 9999, then to the nearest
@@ -814,7 +619,6 @@ const SECTION_TITLES: [&str; crate::screens::settings::SECTIONS.len()] = {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ListKind {
-    Rides,
     Workouts,
     Settings,
     /// The saved sensors, then ADD SENSOR.
@@ -827,7 +631,6 @@ impl ListKind {
     /// What its heading calls it.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Rides => "RIDES",
             Self::Workouts => "WORKOUTS",
             Self::Settings => "SETTINGS",
             Self::Sensors => "SENSORS",
@@ -838,7 +641,6 @@ impl ListKind {
     /// Every heading the list may show, for its widest.
     pub const fn headings(self) -> &'static [&'static str] {
         match self {
-            Self::Rides => &["RIDES"],
             Self::Workouts => &["WORKOUTS"],
             Self::Settings => &SECTION_TITLES,
             Self::Sensors => &["SENSORS"],
@@ -855,29 +657,18 @@ impl ListKind {
     /// shows more at once.
     pub const fn most_in_view(self) -> usize {
         match self {
-            Self::Rides => 6,
             Self::Workouts | Self::Settings | Self::Sensors | Self::Nearby => {
                 super::list::MOST_IN_VIEW
             }
         }
     }
 
-    /// What the viewport says while the list is empty: a line and a caption
-    /// under it.
-    pub const fn empty(self) -> Option<(&'static str, &'static str)> {
-        match self {
-            Self::Rides => Some(("NO RIDES YET", "SAVED RIDES SHOW HERE")),
-            Self::Workouts | Self::Settings | Self::Sensors | Self::Nearby => None,
-        }
-    }
-
     pub const fn from_id(id: u8) -> Option<Self> {
         match id {
-            0 => Some(Self::Rides),
-            1 => Some(Self::Workouts),
-            2 => Some(Self::Settings),
-            3 => Some(Self::Sensors),
-            4 => Some(Self::Nearby),
+            0 => Some(Self::Workouts),
+            1 => Some(Self::Settings),
+            2 => Some(Self::Sensors),
+            3 => Some(Self::Nearby),
             _ => None,
         }
     }
@@ -943,19 +734,6 @@ mod tests {
 pub enum PageData<'a> {
     None,
     Home(&'a crate::screens::home::Home),
-    Ready(&'a crate::screens::ready::Readiness),
-    /// The step shown and the note beside each card.
-    Setup {
-        step: crate::screens::setup::Step,
-        notes: &'a [Text<38>],
-    },
-    /// The lines, by `screens::phone`'s indices, and the code.
-    Phone {
-        lines: &'a [Text<38>],
-        qr: Option<&'a crate::screens::qr::Placed>,
-        /// The light look, whose palette the code's panel must undo.
-        light: bool,
-    },
     /// The reveal's progress, in thousandths.
     Brand(u16),
 }

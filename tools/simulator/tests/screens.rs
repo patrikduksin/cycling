@@ -6,7 +6,7 @@ use shell_simulator::bulk::Presence;
 use shell_simulator::devices::Model;
 use shell_simulator::models::{C606, SMALL, WIDE};
 use shell_simulator::route::{Point, Route};
-use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
+use shell_simulator::sim::{NoteKind, Sim, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::app::Store;
 
@@ -39,7 +39,6 @@ impl Walk {
         let mut walk = Self::fresh(world);
         walk.guide(|sim| {
             sim.wait_usable();
-            sim.skip_setup();
             if !kinds.is_empty() {
                 sim.pair(kinds);
             }
@@ -195,29 +194,6 @@ fn first_run() {
     walk.cell("brand", "boot");
     walk.guide(|sim| {
         sim.wait_usable();
-        sim.expect_text("WELCOME");
-    });
-    walk.cell("setup", "welcome");
-    walk.guide(|sim| {
-        sim.press(Role::Act);
-        sim.expect_text("SET FTP");
-    });
-    walk.cell("setup", "power");
-    for (next, variant) in [
-        ("SET LTHR", "heart"),
-        ("PAIR SENSORS", "sensors"),
-        ("RIDE", "done"),
-    ] {
-        walk.guide(|sim| {
-            sim.press(Role::Move);
-            sim.press(Role::Act);
-            sim.expect_text(next);
-        });
-        walk.cell("setup", variant);
-    }
-    walk.guide(|sim| {
-        sim.press(Role::Move);
-        sim.press(Role::Act);
         assert!(sim.on_home(), "{}", sim.screen().text());
     });
     walk.cell("home", "no-sensors");
@@ -249,17 +225,6 @@ fn menus() {
         sim.press(Role::Back);
         sim.press(Role::Back);
         assert!(sim.on_home(), "{}", sim.screen().text());
-        sim.home("RIDE");
-        sim.expect_text("READY");
-    });
-    walk.cell("ready", "free-ride");
-    walk.guide(|sim| {
-        sim.press(Role::Back);
-        sim.choose_workout("VO2 MAX 5X3");
-    });
-    walk.cell("ready", "workout");
-    walk.guide(|sim| {
-        sim.press(Role::Back);
         sim.home("TRAIN");
         sim.expect_text("WORKOUTS");
     });
@@ -303,7 +268,7 @@ fn settings() {
     });
     walk.cell("settings", "body");
     walk.guide(|sim| {
-        for _ in moved..11 {
+        for _ in moved..9 {
             sim.press(Role::Move);
         }
         sim.advance(seconds(1));
@@ -316,74 +281,6 @@ fn settings() {
         sim.wait_for("SAVED", seconds(5)).unwrap();
     });
     walk.cell("settings", "display-saver");
-}
-
-#[test]
-fn bests_and_form() {
-    let mut walk = Walk::paired(with_files, &KINDS);
-    let bests_row = |sim: &mut Sim| {
-        sim.home("SETTINGS");
-        sim.press(Role::Move);
-        sim.press(Role::Move);
-    };
-    walk.guide(|sim| {
-        bests_row(sim);
-        sim.press(Role::Act);
-        sim.expect_text("BESTS NOT KEPT");
-    });
-    walk.cell("bests", "not-kept");
-    walk.guide(|sim| {
-        sim.press(Role::Back);
-        sim.press(Role::Move);
-        sim.press(Role::Act);
-        sim.wait_for("NO POWER RIDES", seconds(30)).unwrap();
-    });
-    walk.cell("form", "no-rides");
-    walk.guide(|sim| {
-        sim.press(Role::Back);
-        sim.press(Role::Back);
-        assert!(sim.on_home(), "{}", sim.screen().text());
-    });
-    walk.all(|sim| {
-        sim.init_bulk();
-        sim.init_volumes();
-        sim.put_file("notes.txt", b"x");
-        sim.ride_at(30.0, 240.0, 140.0, 90.0);
-    });
-    walk.guide(Sim::start_ride);
-    walk.advance(minutes(6));
-    walk.guide(|sim| {
-        sim.stop_ride();
-        sim.expect_text("NEW BESTS");
-    });
-    walk.cell("summary", "new-bests");
-    walk.guide(|sim| {
-        for _ in 0..4 {
-            if sim.screen().contains("RIDE SAVED") {
-                break;
-            }
-            sim.press(Role::Move);
-        }
-        sim.done();
-        bests_row(sim);
-        sim.press(Role::Act);
-        sim.expect_text("LONGEST RIDE");
-    });
-    walk.cell("bests", "kept");
-    walk.guide(|sim| {
-        sim.press(Role::Act);
-        sim.expect_text("CLEAR BESTS?");
-    });
-    walk.cell("bests", "clear");
-    walk.guide(|sim| {
-        sim.press(Role::Back);
-        sim.expect_text("LONGEST RIDE");
-        sim.press(Role::Back);
-        sim.press(Role::Move);
-        sim.press(Role::Act);
-        sim.wait_for("FATIGUE", seconds(60)).unwrap();
-    });
-    walk.cell("form", "rides");
 }
 
 fn riding(world: fn(Model) -> Sim) -> Walk {
@@ -401,11 +298,7 @@ fn riding(world: fn(Model) -> Sim) -> Walk {
 #[test]
 fn a_free_ride() {
     let mut walk = riding(with_files);
-    let pages = [
-        ("ride-main", "ride/main"),
-        ("ride-lap", "ride/lap"),
-        ("ride-map", "ride/map"),
-    ];
+    let pages = [("ride-main", "ride/main"), ("ride-map", "ride/map")];
     for (screen, page) in pages {
         walk.guide(|sim| sim.ride_page(page));
         walk.cell(screen, "free-ride");
@@ -446,7 +339,7 @@ fn a_saver_ride() {
     let mut walk = Walk::paired(world, &KINDS);
     walk.guide(|sim| {
         sim.home("SETTINGS");
-        for _ in 0..11 {
+        for _ in 0..9 {
             sim.press(Role::Move);
         }
         sim.expect_field("MODE", "NORMAL");
@@ -495,9 +388,7 @@ fn a_climb_and_its_summary() {
 fn a_workout() {
     let mut walk = Walk::paired(world, &KINDS);
     walk.guide(|sim| {
-        sim.choose_workout("FTP TEST 20 MIN");
-        sim.press(Role::Act);
-        sim.wait_for("RECORDING", seconds(2)).unwrap();
+        sim.start_workout("FTP TEST 20 MIN");
     });
     walk.all(|sim| sim.ride_at(30.0, 150.0, 142.0, 90.0));
     walk.advance(seconds(30));
@@ -579,7 +470,7 @@ fn on_course(route: fn(Model) -> Sim) -> Walk {
     });
     walk.guide(|sim| {
         sim.home("RIDE");
-        sim.expect_text("READY");
+        sim.wait_for("RECORDING", seconds(2)).unwrap();
     });
     walk
 }
@@ -595,11 +486,6 @@ fn course_world(model: Model, waypoints: &[Waypoint]) -> Sim {
 #[test]
 fn a_course() {
     let mut walk = on_course(|model| course_world(model, &COURSE));
-    walk.cell("ready", "course");
-    walk.guide(|sim| {
-        sim.press(Role::Act);
-        sim.wait_for("RECORDING", seconds(2)).unwrap();
-    });
     walk.all(|sim| sim.ride_at(30.0, 210.0, 142.0, 88.0));
     walk.ride_to(300.0);
     walk.cell("ride-main", "course-ahead");
@@ -620,102 +506,12 @@ fn a_course() {
 fn off_course() {
     let mut walk =
         on_course(|model| course_world(model, &[waypoint(0.0, 0.0), waypoint(0.0, 1_400.0)]));
-    walk.guide(|sim| {
-        sim.press(Role::Act);
-        sim.wait_for("RECORDING", seconds(2)).unwrap();
-    });
     walk.all(|sim| sim.ride_at(30.0, 210.0, 142.0, 88.0));
     while !walk.guide.screen().contains("TURN BACK") {
         assert!(walk.guide.world().distance_m < 1_350.0, "never off course");
         walk.advance(seconds(1));
     }
     walk.cell("ride-main", "off-course");
-}
-
-#[test]
-fn history() {
-    let mut walk = Walk::paired(world, &["HEART RATE"]);
-    walk.guide(|sim| {
-        sim.home("RIDES");
-        sim.expect_text("NO RIDES YET");
-    });
-    walk.cell("history", "empty");
-    let mut walk = Walk::paired(world, &["HEART RATE"]);
-    walk.all(|sim| {
-        sim.ride_at(20.0, 150.0, 120.0, 80.0);
-        for _ in 0..8 {
-            for (command, then) in [("START", seconds(60)), ("PAUSE", 500), ("FINISH", 500)] {
-                let (_, ride) = sim.command("RIDE STATUS");
-                if command != "PAUSE" || !ride.contains("state=paused") {
-                    let (status, out) = sim.command(&format!("RIDE INTERNAL {command}"));
-                    assert_eq!(status, "ACCEPTED", "{command}: {out} {ride}");
-                }
-                sim.advance(then);
-            }
-        }
-        sim.advance(seconds(3));
-    });
-    walk.guide(|sim| {
-        sim.home("RIDES");
-        sim.wait_for("1/8", seconds(5)).unwrap();
-        sim.advance(seconds(1));
-    });
-    walk.cell("history", "rides");
-    walk.guide(|sim| {
-        for _ in 0..7 {
-            sim.press(Role::Move);
-        }
-        sim.wait_for("8/8", seconds(2)).unwrap();
-        sim.advance(seconds(2));
-    });
-    walk.cell("history", "scrolled");
-}
-
-#[test]
-fn a_saved_ride_and_the_phone() {
-    let mut walk = Walk::paired(with_files, &KINDS);
-    walk.all(|sim| {
-        sim.init_bulk();
-        sim.format_files();
-    });
-    walk.guide(Sim::start_ride);
-    walk.all(|sim| sim.ride_at(28.0, 230.0, 142.0, 88.0));
-    walk.advance(seconds(60));
-    walk.guide(|sim| {
-        sim.stop_ride();
-        sim.done();
-        sim.home("RIDES");
-        sim.press(Role::Act);
-        sim.wait_gone("READING", seconds(5)).unwrap();
-        sim.expect_text("SAVED RIDE");
-    });
-    walk.cell("past-ride", "overview");
-    for (variant, text) in [
-        ("effort", "NP W"),
-        ("elevation", "DESCENT M"),
-        ("best-power", "BEST POWER W"),
-        ("delete", "IT GOES FROM YOUR RIDES"),
-    ] {
-        walk.guide(|sim| {
-            sim.press(Role::Move);
-            sim.expect_text(text);
-        });
-        walk.cell("past-ride", variant);
-    }
-    walk.guide(|sim| {
-        sim.press(Role::Move);
-        sim.expect_text("SAVED RIDE");
-        sim.press(Role::Act);
-        sim.advance(seconds(1));
-        sim.expect_text("JOIN VANA WI-FI");
-    });
-    walk.cell("phone", "join");
-    walk.all(|sim| {
-        sim.device.sim_mut().access_point.clients = 1;
-        sim.advance(seconds(1));
-    });
-    walk.guide(|sim| sim.expect_text("OPEN YOUR RIDES"));
-    walk.cell("phone", "open");
 }
 
 #[test]

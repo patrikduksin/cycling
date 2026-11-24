@@ -1,7 +1,5 @@
 use super::Runtime;
 use super::preferences::Stored;
-use crate::kept::facts::record as facts;
-use crate::kept::{bests, deleted};
 use crate::ride::Contents;
 use crate::ride::log::Status;
 use crate::workout::history;
@@ -38,8 +36,6 @@ pub enum Store {
     Table = 0,
     Rides = 1,
     Files = 2,
-    /// The tables VANA writes into FILES: facts, deleted rides, bests and
-    /// workout outcomes.
     Records = 3,
     /// The STORE volume.
     Traces = 4,
@@ -180,12 +176,7 @@ fn in_volume<B: ReadWrite>(
 
 #[inline(never)]
 fn records(bulk: &mut impl ReadWrite) -> Health {
-    let held = [
-        facts::contents(bulk).ok(),
-        deleted::contents(bulk).ok(),
-        bests::contents(bulk).ok(),
-        history::contents(bulk).ok(),
-    ];
+    let held = [history::contents(bulk).ok()];
     if held.contains(&Some(Contents::Foreign)) {
         Health::Foreign
     } else if held.contains(&None) {

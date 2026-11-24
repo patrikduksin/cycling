@@ -285,7 +285,7 @@ pub(super) enum Go {
     Stay,
     Question,
     FirstPage,
-    Ready { clear: Option<u32> },
+    Failed { clear: Option<u32> },
     JournalEmptied { clear: Option<u32> },
 }
 
@@ -300,7 +300,7 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
         (Unread, Event::IntentAtBoot(Found::Pending(scope))) => (Resuming { scope }, Go::Stay),
         // An unread intent may still name a pending wipe, so rides stay
         // blocked until a boot reads it.
-        (Unread, Event::Read { .. }) => (Failed, Go::Ready { clear: None }),
+        (Unread, Event::Read { .. }) => (Failed, Go::Failed { clear: None }),
         (Resuming { scope }, Event::Read { card, .. }) => {
             let resumed = match scope.reachable(card) {
                 Some(reachable) => Format::from_stage(Some(Stage::RESUMED), reachable, true, None),
@@ -380,7 +380,7 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
                 ..
             },
             Event::Wrote | Event::WriteFailed,
-        ) => (Failed, Go::Ready { clear }),
+        ) => (Failed, Go::Failed { clear }),
         (
             Running {
                 stage: Stage::JournalSector(index),
@@ -429,12 +429,23 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
         ),
         // An intent that was not recorded may still name a wipe begun
         // earlier, so it is not settled.
-        (Running { clear, .. }, Event::IntentNotRecorded) => (Failed, Go::Ready { clear }),
+        (Running { clear, .. }, Event::IntentNotRecorded) => (Failed, Go::Failed { clear }),
         _ => (format, Go::Stay),
     }
 }
 
 impl Runtime {
+    pub(super) fn first_page(&self) -> Page {
+        if matches!(
+            self.format,
+            Format::Offered { .. } | Format::Resuming { .. } | Format::Running { .. }
+        ) {
+            Page::Format
+        } else {
+            Page::Home
+        }
+    }
+
     /// From the first FORMAT write until the restart, or until a wipe of
     /// the internal journal alone ends, the app's own storage work stops:
     /// boot scans, recording and indexing. A resumed wipe lets the boot
@@ -470,9 +481,9 @@ impl Runtime {
             Go::Stay => return self.display_after(format),
             Go::Question => Page::Format,
             Go::FirstPage => self.first_page(),
-            Go::Ready { clear } => {
+            Go::Failed { clear } => {
                 self.ride.wipe_failed(clear);
-                Page::Ready
+                Page::Home
             }
             Go::JournalEmptied { clear } => {
                 self.ride.wiped(clear);
@@ -553,10 +564,8 @@ impl Runtime {
             self.probe_storage(bulk);
             let health = self.storage_health();
             if health.settled() {
-                let hub = matches!(
-                    self.navigation.page(),
-                    Page::Boot | Page::Home | Page::Setup
-                ) && !self.ride.open();
+                let hub =
+                    matches!(self.navigation.page(), Page::Boot | Page::Home) && !self.ride.open();
                 let foreign = Scope::foreign(&health);
                 let card = self.card_access();
                 self.format_event(Event::Read { foreign, hub, card });
@@ -603,7 +612,7 @@ impl Runtime {
                 }
                 wiped
             }
-            Stage::ForgetInternalRides => self.forget_internal_rides(bulk, now).is_ok(),
+            Stage::ForgetInternalRides => self.forget_internal_rides(bulk).is_ok(),
             Stage::Settings => {
                 self.preferences.stored = Stored::Foreign;
                 system.erase_settings()
@@ -616,21 +625,11 @@ impl Runtime {
         }
     }
 
-    fn forget_internal_rides(
-        &mut self,
-        bulk: &mut impl ReadWrite,
-        now: u64,
-    ) -> Result<(), CardRefused> {
+    fn forget_internal_rides(&mut self, bulk: &mut impl ReadWrite) -> Result<(), CardRefused> {
         self.ride.forget_moved_ride();
         match self.card_access() {
             CardAccess::Out => Ok(()),
-            CardAccess::Writable => crate::ride::settle::reset(
-                Medium::Internal,
-                &mut self.facts,
-                &mut self.deleted,
-                bulk,
-                now,
-            ),
+            CardAccess::Writable => crate::ride::settle::reset(Medium::Internal, bulk),
         }
     }
 }

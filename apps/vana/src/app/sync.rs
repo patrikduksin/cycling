@@ -107,14 +107,10 @@ impl Runtime {
         self.sync.protects(medium, newest)
     }
 
-    /// DISCARD RIDE? is offered: FILES can note the hidden ride, and the
-    /// ride is not protected.
     pub(super) fn can_discard(&self) -> bool {
-        self.deleted.writable()
-            && self
-                .ride
-                .volatile_ride()
-                .is_none_or(|id| !self.sync.protects(Medium::Internal, id))
+        self.ride
+            .volatile_ride()
+            .is_none_or(|id| !self.sync.protects(Medium::Internal, id))
     }
 
     /// The host asked to clear the internal journal under `token`. With

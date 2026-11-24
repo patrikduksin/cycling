@@ -9,27 +9,20 @@
 //! the cards in view, where they show in the viewport from canvas row
 //! `PAGE` (`screens::scroll`), so however long the list no card's rows
 //! leave the canvas.
-use super::data::{Data, Edited, Effort, Entry, Glance, ListKind, Listed, Metric, OnGauge, Row};
+use super::data::{Data, Edited, Effort, Entry, ListKind, Listed, Metric, OnGauge, Row};
 use super::input::{Action, Focus, ListAct};
 use super::node::What;
 use super::parse::Tree;
 use super::registry;
 use super::solve::{Placed, Rect16, Scroll};
 use crate::screens::canvas::{Canvas, Shape};
-use crate::screens::chrome::{ACCENT, Align, CARD, PRESSED, RAISED, Rect, SECONDARY, WHITE};
+use crate::screens::chrome::{ACCENT, CARD, PRESSED, RAISED, Rect, SECONDARY};
 use crate::screens::scaled::Scaled;
 use crate::screens::scroll::{Column, Layout, PAGE};
-use firmware_shell::rendering::font::FaceRole;
 
 const GAP_UNITS: usize = 8;
 const RADIUS_UNITS: usize = 12;
 const RING_UNITS: usize = 3;
-/// An empty list's line, from the first card's top to its capitals' end,
-/// and the caption's under it.
-const EMPTY_UNITS: usize = 40;
-const EMPTY_CAPTION_UNITS: usize = 24;
-/// What an empty list says costs the canvas a run a line.
-const EMPTY_RUNS: u16 = 2;
 /// The scroll bar's columns, this far right of the cards, in the gutter.
 const BAR_GAP_UNITS: usize = 4;
 const BAR_UNITS: usize = 3;
@@ -57,19 +50,6 @@ pub fn gap(at: &Scaled) -> u16 {
 /// room, which holds the focus ring's too.
 pub fn gutter(at: &Scaled) -> u16 {
     (at.unit(BAR_GAP_UNITS) + at.unit(BAR_UNITS)) as u16
-}
-
-/// What a card's slot must hold for `list` beside its template, across and
-/// down from the card's top: the words of a list that says something while
-/// empty, in the faces `nothing` draws them in.
-pub fn empty_size(list: ListKind, at: &Scaled) -> [u16; 2] {
-    let Some((line, caption)) = list.empty() else {
-        return [0, 0];
-    };
-    let line = at.face(FaceRole::Body).fit_width(line.as_bytes());
-    let caption = at.face(FaceRole::Caption).fit_width(caption.as_bytes());
-    let down = at.unit(EMPTY_UNITS + EMPTY_CAPTION_UNITS);
-    [line.max(caption) as u16, down as u16]
 }
 
 /// Where a scroll of `viewport` places its template before a tile of it is
@@ -117,21 +97,10 @@ pub fn in_view(viewport: Rect16, template: Rect16, at: &Scaled) -> usize {
 /// scroll bar, or what the list says while empty. `prepare` leaves out the
 /// rest the same way, so a tall panel's cards fit the canvas beside what
 /// stays put.
-pub fn most(
-    list: ListKind,
-    viewport: Rect16,
-    template: Rect16,
-    tiles: &[Costed],
-    at: &Scaled,
-) -> (u16, u16) {
+pub fn most(viewport: Rect16, template: Rect16, tiles: &[Costed], at: &Scaled) -> (u16, u16) {
     let (item, length) = (template.height(), viewport.height());
     let pitch = item + gap(at);
-    let empty = if list.empty().is_some() {
-        EMPTY_RUNS
-    } else {
-        0
-    };
-    let mut most = (0, empty);
+    let mut most = (0, 0);
     for start in 0..pitch {
         let end = start + length;
         // The focus ring round one card, and the scroll bar's track and
@@ -171,11 +140,6 @@ pub fn prepare(
     let page = scroll.page(at);
     let listed = data.listed(list);
     let (count, offset) = (data.list(list), listed.offset);
-    if count == 0
-        && let Some(empty) = list.empty()
-    {
-        nothing(&page, offset, empty, at, out);
-    }
     bar(&page, usize::from(count), offset, at, out);
     // The canvas rows the viewport shows: tiles wholly outside them are
     // left out.
@@ -239,33 +203,6 @@ fn bar(page: &Layout, count: usize, offset: i32, at: &Scaled, out: &mut Canvas) 
             color,
         });
     }
-}
-
-/// An empty list's line and the caption under it, centred where the first
-/// card would sit, which accept leaves room for in the viewport.
-fn nothing(
-    page: &Layout,
-    offset: i32,
-    (line, caption): (&str, &str),
-    at: &Scaled,
-    out: &mut Canvas,
-) {
-    let column = page.column;
-    let (left, width) = (column.left, column.right - column.left);
-    let middle = left + width / 2;
-    let base = page.on_canvas(0, offset).top + at.unit(EMPTY_UNITS);
-    let body = at.face(FaceRole::Body);
-    out.fit(
-        &[body],
-        line.as_bytes(),
-        width,
-        middle,
-        base,
-        Align::Center,
-        WHITE,
-    );
-    let under = base + at.unit(EMPTY_CAPTION_UNITS);
-    out.caption(at, caption.as_bytes(), width, middle, under, Align::Center);
 }
 
 /// A card: raised and ringed while focused, darker under a finger.
@@ -353,10 +290,6 @@ impl Data for Item<'_> {
 
     fn row(&self) -> Option<Row> {
         Some(self.row)
-    }
-
-    fn glance(&self) -> Glance {
-        self.data.glance()
     }
 
     fn heading(&self, list: ListKind) -> &str {

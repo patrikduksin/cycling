@@ -1,10 +1,6 @@
 use super::*;
-use crate::ride::elevation::Trace;
 use crate::ride::log::{LapStart, commit_word, encode};
-use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::rider::Rider;
-use crate::ride::totals::Efforts;
-use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::testing::Draw;
 use firmware_services::fit::{FIT_EPOCH_UNIX_S, crc16};
 use std::collections::BTreeMap;
@@ -376,25 +372,32 @@ fn body() -> Rider {
     Rider::decode([75, 30, 1]).unwrap()
 }
 
-/// The ride's totals as its saved summary adds them up, through the replay.
 fn summary_totals(slots: &[Slot]) -> Totals {
-    let entries: Vec<Entry> = slots
-        .iter()
-        .map(|slot| log::decode(slot).unwrap())
-        .collect();
     let mut totals = Totals::default();
-    let mut sums = Sums {
-        totals: &mut totals,
-        zone_time: &mut ZoneTime::default(),
-        efforts: &mut Efforts::default(),
-        trace: &mut Trace::default(),
-    };
-    let mut replay = Replay::new(3, entries.len());
-    let profile = TrainingProfile::default();
-    while replay.step(64, &profile, &mut sums, |index| entries.get(index).copied())
-        == Progress::Reading
-    {}
-    replay.totals(totals)
+    let mut timeline = log::Timeline::default();
+    let step_mm = |sample: &Sample, ms: u64| u64::from(sample.speed_mm_s.unwrap_or(0)) * ms / 1000;
+    for entry in slots.iter().map(|slot| log::decode(slot).unwrap()) {
+        let mut hold = |timeline: &mut log::Timeline| {
+            if let Some((elapsed, held)) = timeline.hold(entry.active_ms) {
+                totals.add(elapsed, step_mm(&held, elapsed), &held, None);
+            }
+        };
+        match entry.kind {
+            Kind::Samples => {
+                for sample in &entry.samples[..usize::from(entry.count)] {
+                    let (_, elapsed) = timeline.sample(sample);
+                    totals.add(elapsed, step_mm(sample, elapsed), sample, None);
+                }
+            }
+            Kind::Start | Kind::Resume => timeline.start(entry.active_ms),
+            Kind::Pause => {
+                hold(&mut timeline);
+                timeline.pause();
+            }
+            Kind::Finish | Kind::Recovered | Kind::Full => hold(&mut timeline),
+        }
+    }
+    totals
 }
 
 fn journal(samples: &[Sample]) -> Vec<Slot> {

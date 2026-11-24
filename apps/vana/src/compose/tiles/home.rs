@@ -1,23 +1,41 @@
-//! Home's cards: one big RIDE card with the start button and what is still
-//! starting, the sensors at a glance, TRAIN (workouts) and SETTINGS side by
-//! side, and the saved rides with the last one's numbers. Each opens its
-//! page; the focused card is raised inside an accent ring, its title white.
 use crate::compose::data::{Data, PageData};
 use crate::compose::input::{Action, Go};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Arg, Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
-use crate::screens::chrome::{AMBER, Align, BLACK, CARD, GREEN, MUTED, Rect, SECONDARY, WHITE};
-use crate::screens::home::{
-    Home, ICONS, NONE_SAVED, UNCOUNTED, last_ride, saved, short_name, this_week,
+use crate::screens::chrome::{
+    ACCENT, AMBER, Align, BLACK, CARD, GREEN, MUTED, RAISED, Rect, SECONDARY, WHITE,
 };
+use crate::screens::home::{Home, ICONS, short_name};
 use crate::screens::icons::{Sensor, Size, StaticIcon};
 use crate::screens::scaled::Scaled;
 use crate::screens::workout::Page;
 use crate::workout::model::WIDEST_NAME;
+use device_api::input::Role;
 use firmware_shell::rendering::font::{Face, FaceRole, SPILL};
 
 pub struct HomeCard;
+
+fn panel(out: &mut Canvas, rect: Rect, (radius, ring): (usize, usize), focused: bool) {
+    if focused {
+        out.shape(Shape::Panel {
+            rect,
+            radius,
+            color: ACCENT,
+        });
+        out.shape(Shape::Panel {
+            rect: rect.inset(ring),
+            radius: radius - ring,
+            color: RAISED,
+        });
+    } else {
+        out.shape(Shape::Panel {
+            rect,
+            radius,
+            color: CARD,
+        });
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Card {
@@ -25,32 +43,17 @@ pub enum Card {
     Sensors,
     Train,
     Settings,
-    Rides,
 }
 
 impl Card {
-    const ALL: [Self; 5] = [
-        Self::Ride,
-        Self::Sensors,
-        Self::Train,
-        Self::Settings,
-        Self::Rides,
-    ];
+    const ALL: [Self; 4] = [Self::Ride, Self::Sensors, Self::Train, Self::Settings];
 
-    const fn opens(self) -> Page {
+    const fn action(self) -> Action {
         match self {
-            Self::Ride => Page::Ready,
-            Self::Sensors => Page::Sensors,
-            Self::Train => Page::Workouts,
-            Self::Settings => Page::Settings,
-            Self::Rides => Page::History,
-        }
-    }
-
-    const fn radius(self) -> usize {
-        match self {
-            Self::Rides => 12,
-            _ => 18,
+            Self::Ride => Action::Ride(Role::Act),
+            Self::Sensors => Action::Go(Go::Open(Page::Sensors)),
+            Self::Train => Action::Go(Go::Open(Page::Workouts)),
+            Self::Settings => Action::Go(Go::Open(Page::Settings)),
         }
     }
 }
@@ -70,11 +73,11 @@ impl Arg for Card {
             Self::Sensors => "SENSORS",
             Self::Train => "TRAIN",
             Self::Settings => "SETTINGS",
-            Self::Rides => "RIDES",
         }
     }
 }
 
+const CORNER_UNITS: usize = 18;
 const RING_UNITS: usize = 3;
 /// Text keeps this far from a card's sides.
 const INSET_UNITS: usize = 16;
@@ -85,7 +88,6 @@ const STATUS_UNITS: usize = 88;
 const RIDE_UNITS: usize = 84;
 const SENSORS_UNITS: usize = 78;
 const SMALL_UNITS: usize = 40;
-const RIDES_UNITS: usize = 32;
 /// The sensor icons' pitch, and the rows from the sensors card's top to
 /// its title, its icons and their names.
 const PITCH_UNITS: usize = 52;
@@ -105,13 +107,12 @@ fn draw(
         return;
     };
     let rect = placed.rect.rect();
-    let corners = (at.unit(card.radius()), at.unit(RING_UNITS));
-    super::choice::card(out, rect, corners, focused, Some(CARD));
+    let corners = (at.unit(CORNER_UNITS), at.unit(RING_UNITS));
+    panel(out, rect, corners, focused);
     let title = if focused { WHITE } else { MUTED };
-    let [body, caption] = [FaceRole::Body, FaceRole::Caption].map(|role| at.face(role));
+    let caption = at.face(FaceRole::Caption);
     let inset = at.unit(INSET_UNITS);
     let (left, right) = (rect.left + inset, rect.right - inset);
-    let middle = rect.top + (rect.height() + body.cap as usize) / 2;
     match card {
         Card::Ride => ride(home, rect, at, out, title),
         Card::Sensors => sensors(home, rect, at, out, title),
@@ -126,29 +127,6 @@ fn draw(
                 middle,
                 Align::Left,
                 title,
-            );
-        }
-        Card::Rides => {
-            let rides = out.fit(
-                &[body],
-                b"RIDES",
-                right - left,
-                left,
-                middle,
-                Align::Left,
-                title,
-            );
-            // The last ride keeps its numbers: they step down a size to fit.
-            let room = right.saturating_sub(rides.right() + SPILL + at.unit(8));
-            let base = middle + at.unit(3) + caption.fit_height() - body.fit_height();
-            out.fit(
-                &[caption],
-                home.last.as_bytes(),
-                room,
-                right,
-                base,
-                Align::Right,
-                SECONDARY,
             );
         }
     }
@@ -352,7 +330,7 @@ impl Tile for HomeCard {
     const NAME: &'static str = "home card";
 
     fn forms(card: Card, at: &Scaled) -> Forms {
-        let [body, caption] = [FaceRole::Body, FaceRole::Caption].map(|role| at.face(role));
+        let caption = at.face(FaceRole::Caption);
         let (width, height, shapes, runs) = match card {
             Card::Ride => (
                 at.unit(STATUS_UNITS + 8)
@@ -376,23 +354,6 @@ impl Tile for HomeCard {
                 2,
                 1,
             ),
-            Card::Rides => {
-                let lines = [this_week(u64::MAX), last_ride(u64::MAX), saved(usize::MAX)];
-                let fixed = [NONE_SAVED, UNCOUNTED].map(str::as_bytes);
-                let widest = lines
-                    .iter()
-                    .map(|line| line.as_bytes())
-                    .chain(fixed)
-                    .map(|line| caption.fit_width(line))
-                    .max()
-                    .unwrap_or_default();
-                (
-                    2 * at.unit(INSET_UNITS) + body.width(b"RIDES") + SPILL + at.unit(8) + widest,
-                    RIDES_UNITS,
-                    2,
-                    2,
-                )
-            }
         };
         forms(&[Form {
             width: width as u16,
@@ -411,6 +372,6 @@ impl Tile for HomeCard {
     }
 
     fn action(card: Card) -> Option<Action> {
-        Some(Action::Go(Go::Open(card.opens())))
+        Some(card.action())
     }
 }

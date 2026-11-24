@@ -224,10 +224,6 @@ Laps:
 - Lap time is recorded time, so a pause adds none. Lap averages follow the ride
   totals: power counts zeros, speed is lap distance over moving time, heart rate
   counts seconds with a reading.
-- The lap page shows the open lap's time, number, distance and average power,
-  speed and heart rate, then the previous lap's time and average power. Speed
-  and power deltas against the previous lap are green with `+` when higher and
-  `SECONDARY` with `-` when lower.
 - Laps restart with each ride, stay visible after saving, and keep the last 16
   summaries in RAM. The journal keeps where each lap began, so FIT, JSON and
   GPX exports and saved rides have them, and a ride recovered after power loss
@@ -350,13 +346,6 @@ the rider sees):
   `memory = "psram"` or `"ram"` in the device manifest) is not durable. The
   device fills it with the erased byte at every boot, so the journal keeps the
   same format and scans empty. Rides on the bulk log are always durable.
-- A volatile internal journal gets a fresh random store id each time it starts
-  empty: at boot, and when a clear or FORMAT's wipe of it ends. Its ride ids
-  restart at 1 each time, so a FILES record of an earlier boot's ride 1, kept
-  on the card, would otherwise name this boot's ride 1. The store id goes into those records
-  (see the hidden-ride table below), and an old record never matches a new
-  ride. A durable internal journal has store id 0, and a clear drops its
-  records instead.
 - A ride is protected from the pass its recording starts on a volatile
   journal, a continuation segment included. The protected set lives in RAM,
   up to 16 rides (`app/sync.rs`).
@@ -436,11 +425,6 @@ Training profile:
   FTP) and training stress score (`TSS`: seconds with power × NP² / (FTP² ×
   36), so an hour at FTP is 100). Both wait for normalized power's first 30 s
   and use the FTP of the profile.
-- The ride index also keeps each saved ride's normalized power and time with
-  power (four bytes, in memory, rebuilt after every boot) and works out its TSS
-  for the rides list's TSS, at the FTP the ride's facts kept (see Ride facts),
-  else at the profile's FTP now. A ride without power has no effort and adds
-  nothing.
 - `PROFILE`, `PROFILE FTP watts` and `PROFILE LTHR bpm`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record
@@ -461,7 +445,7 @@ While a radar is paired, the ride pages keep a strip on their left edge for it:
 ## Structured training
 
 The TRAIN card on Home opens the workout picker: FREE RIDE, the built-ins,
-then uploads. MOVE focuses the next workout (held, the next page of four), ACT chooses it and opens Ready,
+then uploads. MOVE focuses the next workout (held, the next page of four), ACT starts its ride,
 and BACK returns Home. Ready names the chosen workout under its headline, and
 a tap on that line opens the picker again to change it. A chosen workout plays
 on the next ride; BACK from Ready drops it.
@@ -491,34 +475,6 @@ moves to the main page; one on another page stays there.
 
 `WORKOUT STATUS` reports the step, target, reading, compliance, laps and the
 time on target.
-
-### Personal bests
-
-The rider's all-time bests (5 s, 1, 5 and 20 min power, longest ride by
-distance and by time, most ascent) are ride history, so they live in
-`bests.dat` on the FILES volume (`kept::bests`), not in the preference record.
-When a live ride finishes, VANA reads the file, merges the ride and writes it
-back with the same synchronous write as the workout outcome; a ride that
-cannot be stored claims no best. A ride never formats the store: without a
-card, a FILES volume or a formatted store, bests are not kept. Only the host's
-`files format` and [FORMAT](mmc-volumes.md#format) format FILES, and both
-erase the bests. A file that does not decode is never
-merged into; only CLEAR BESTS replaces it. A file of another version is
-foreign: never merged into nor replaced, CLEAR BESTS included, until FORMAT
-erases it. A write the store refuses leaves the merged bests in memory for the
-next write, and a read that failed only this time is retried with the ride's
-outcome waiting (one outcome is kept).
-
-| Bytes | Field |
-| --- | --- |
-| 0..4 | magic `VBST` |
-| 4 | version, 2 |
-| 5 | body length before the CRC, 38 |
-| 6..38 | four power marks (watts and day, u16 each), distance in metres (u32) and day (u16), time in seconds (u32) and day (u16), ascent in metres (u16) and day (u16), little-endian |
-| 38..42 | CRC32 of bytes 0..38 |
-
-A day is days since 1970-01-01 in the clock's time zone, 0 when the clock was
-unknown; a value of 0 is no best.
 
 ### Course
 
@@ -647,7 +603,7 @@ VANA lists `workouts/` at boot, each time the picker opens and on
 8 by file name, in name order after the built-ins. Files that do not decode
 are counted as `skipped`. A ride reads its workout's steps from FILES when it
 starts. If the file is gone by then, the ride runs free and shows WORKOUT
-MISSING. `WORKOUT SELECT row` chooses a picker row and opens Ready.
+MISSING. `WORKOUT SELECT row` chooses a picker row for the next ride.
 `WORKOUT DELETE n` deletes upload `n`'s file.
 
 When a ride with a workout is saved, VANA writes how the workout went beside
@@ -659,136 +615,6 @@ record (`apps/vana/src/workout/history.rs`). The newest 32 are kept. A save
 never replaces or rotates out a file of another version or shape; it is
 refused instead. `WORKOUT HISTORY INTERNAL|BULK id` reports one. A
 ride recovered after a power cut has no record.
-
-### Ride facts
-
-When a ride is saved, VANA keeps what the journal does not hold in one table
-on FILES, `rides/facts.tbl`: the FTP and LTHR
-in force, the climbs it finished and their gain, and its start time. Once the
-summary has measured the heart-rate recovery, the ride is saved again with it.
-The rides list's TSS and FORM use the kept FTP, and a saved ride read back
-shows the recovery and the climbs. After boot, and each time the card becomes
-ready, VANA reads the table into PSRAM four sectors per tick while no ride is
-open or being written.
-
-- The table keeps the newest 1000 saved rides, 32 KB: FORM's 120 days at eight
-  rides a day. It takes one FILES directory entry, whatever it holds.
-- The store cannot append in place, so each save writes the whole table again,
-  copy-on-write, with the ride last. It drops the ride's earlier record,
-  records that fail their CRC and, past 1000, the oldest saved. A cut leaves
-  the old table or the new one; every earlier ride stays.
-- A record applies to a journal ride only when its journal, ride id and start
-  second match. Clearing or initializing a journal drops its records once the
-  clear succeeds, as its ride ids start over; a clear that fails keeps them
-  with the rides. The start time keeps a record off a later ride with its id,
-  so a ride whose start time is unknown (no clock) gets no facts.
-- A ride that moved from the MMC onto internal flash is two journal rides.
-  Its facts go with the part that finished on internal flash; the MMC part
-  counts at the FTP now.
-- Facts give way to every other file: a ride saves its workout record first,
-  and a new table never takes the last free directory entry.
-- Without a card, a FILES volume or a formatted store, nothing is
-  written and every reader shows the ride as one without facts: TSS at the
-  FTP now, no climbs and no HR recovery. A
-  write the store refuses is logged and the ride is not held up for it. A
-  table whose header fails its CRC keeps its slots, and the next save writes
-  it again with a fresh header, copy-on-write. A `rides/facts.tbl` without
-  the magic, of another table version or stride, or not a whole number of
-  slots, is foreign: it is left as it is and nothing is saved over it.
-- Past 1000 rides the table drops the oldest saved and the memory the oldest
-  start: the same ride unless rides were saved out of start order, and each
-  boot reads the table again.
-
-The table, defined in
-[kept/facts/record.rs](../apps/vana/src/kept/facts/record.rs), is a header
-and then one 32-byte slot per ride, oldest saved first. Each slot ends in the
-CRC32 of the bytes before it:
-
-| Header bytes | Field |
-| --- | --- |
-| 0..4 | magic `VFTB` |
-| 4 | table version, 2 |
-| 6..8 | stride, 32 |
-
-| Slot bytes | Field |
-| --- | --- |
-| 0 | record version, 2 |
-| 2 | journal: `i` internal, `b` bulk |
-| 3 | flags: 1 profile, 2 HR recovery, 4 climbs |
-| 4..8 | ride id |
-| 8..16 | ride start, UTC ms |
-| 16..20 | FTP (W) and LTHR (BPM), u16 each |
-| 20..22 | HR recovery, BPM fallen (i16) |
-| 22..26 | climbs finished and their gain in m, u16 each |
-| 28..32 | CRC32 of the slot's bytes before it |
-
-A table holding a slot of another record version is foreign: it is read
-without that slot and never rewritten.
-
-### Discarded and deleted rides
-
-The rider can discard a ride on END RIDE? and delete a saved ride from its
-last page ([UX flows](ux-flows.md#end-ride)). Neither erases anything. One
-table on FILES, `rides/deleted.tbl`, names the hidden rides. The rides list,
-the ride count, the week's distance and TSS, FORM and the phone's
-`/api/activities` leave them out, and a FIT request for one answers 404
-`deleted`. Removing the file shows every ride again. After boot, each time
-the card becomes ready, and when END RIDE? or the list opens without a table
-read, VANA reads the table into PSRAM in one step while no ride is being
-written.
-
-- A discarded ride is saved as any other, with its Finish record, and then
-  hidden. Once hidden, its bests, facts and workout record are never written.
-  If the table write fails, Home says NOT DISCARDED and the ride is kept as
-  any other, with its bests, facts and workout record. A power cut between
-  the Finish and the table leaves a saved ride without them, as a cut at
-  that moment does to any ride. The rider can delete it later.
-- A deleted ride keeps the bests it set: `bests.dat` does not record which
-  ride set a best. CLEAR BESTS starts over.
-- A record hides the ride whose journal, store id, ride id, start
-  second and ride time all match. An undated ride matches too, as the key
-  needs no clock. A new bulk log on the card has a new store id, as does a
-  volatile internal journal each time it starts empty. Clearing or
-  initializing a journal drops its records once the clear succeeds, as its
-  ride ids start over.
-- The phone knows a ride by its journal and id. It takes the list's ride of
-  that id, or, before the ride index has read it, any record of that id.
-- The table keeps up to 256 rides, 8 KB, and never drops one on its own. A
-  delete past that says NOT DELETED, as does any write the store refuses.
-- A save writes the table again, copy-on-write, its slots byte for byte and
-  in their order with the new one last. A table that only gains rides
-  therefore only grows at its end. A cut leaves the old table or the new one.
-- Without a card, a FILES volume or a formatted store, nothing is
-  hidden, END RIDE? has no discard cue and a saved ride has no delete page.
-  Neither shows once the table is full or the card is out or has failed. A
-  failed read hides nothing and is tried again 5 s later; the list and the
-  totals count every ride meanwhile.
-- The records of internal-journal rides are on the card too. Another card
-  shows those rides again. A
-  `rides/deleted.tbl` without the magic, with a damaged header, or of another
-  version or stride is read as hiding nothing and never written over.
-
-The table, defined in [kept/deleted.rs](../apps/vana/src/kept/deleted.rs),
-is a header and then one 32-byte slot per hidden ride, each ending in the
-CRC32 of the bytes before it:
-
-| Header bytes | Field |
-| --- | --- |
-| 0..4 | magic `VDEL` |
-| 4 | table version, 2 |
-| 6..8 | stride, 32 |
-
-| Slot bytes | Field |
-| --- | --- |
-| 0 | record version, 2 |
-| 1 | why: 1 discarded at the end, 2 deleted on VANA |
-| 2 | journal: `i` internal, `b` bulk |
-| 4..8 | ride id |
-| 8..12 | ride start, UTC seconds; 0 unknown |
-| 12..16 | ride time, seconds |
-| 16..24 | the journal's store id: the bulk log's, a volatile internal journal's, or 0 for a durable internal journal |
-| 24..28 | when it was hidden, UTC seconds; 0 unknown |
-| 28..32 | CRC32 of bytes 0..28 |
 
 ## What this does not prove
 

@@ -359,7 +359,6 @@ impl Lift {
             }
         }
         Kept {
-            setup: vana::screens::setup::Step::stored(now.setup),
             profile: record.profile,
             sensors,
         }

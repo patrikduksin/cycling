@@ -1,6 +1,3 @@
-//! Home: the RIDE card, which takes the spare rows, then the sensors, TRAIN
-//! and SETTINGS side by side, and the saved rides, all evenly apart. MOVE
-//! steps the cards, ACT or a tap opens one, BACK asks to turn off.
 use super::{BAR_UNITS, Builtin, Choices, Nodes};
 use crate::compose::input::{Action, Button, Buttons, Go};
 use crate::compose::node::{Node, Size};
@@ -38,7 +35,7 @@ fn tree(_: &Choices) -> Nodes {
         space(BAR_UNITS),
         Node::row(3, grow),
         space(SIDE_UNITS),
-        Node::col(9, grow),
+        Node::col(7, grow),
         space(GAP_UNITS),
         card(Card::Ride, grow),
         space(GAP_UNITS),
@@ -48,8 +45,6 @@ fn tree(_: &Choices) -> Nodes {
         card(Card::Train, content),
         space(GAP_UNITS),
         card(Card::Settings, grow),
-        space(GAP_UNITS),
-        card(Card::Rides, content),
         space(GAP_UNITS),
         space(SIDE_UNITS),
     ]

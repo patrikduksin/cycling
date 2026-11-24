@@ -9,7 +9,6 @@ use device_api::{
     sensors::Snapshot,
 };
 
-mod bests;
 mod calibration;
 mod climb_page;
 pub use crate::ride::course::stored::Finder as CourseFinder;
@@ -19,11 +18,7 @@ pub use course::{Crumb, MapFrame, MapWork, RideTrack, TRACK_CRUMBS, Timed};
 mod commands;
 mod course;
 mod cues;
-mod deleted;
-mod facts;
-mod form;
 mod format;
-mod history;
 mod input;
 pub(crate) mod intent;
 #[cfg(any(test, feature = "invariants"))]
@@ -35,6 +30,8 @@ mod mode;
 mod motion;
 mod navigation;
 mod night;
+mod offer;
+mod option;
 mod overrides;
 pub use overrides::Overrides;
 mod pace;
@@ -53,7 +50,6 @@ mod readings;
 mod recording;
 mod ride_control;
 mod seen;
-mod setup;
 mod sheet;
 mod storage;
 mod sync;
@@ -116,10 +112,6 @@ pub struct Runtime {
     /// The summary's heart-rate recovery, measured after the finish.
     recovery: crate::ride::recovery::Recovery,
     preferences: preferences::Preferences,
-    bests: crate::kept::bests::Kept,
-    facts: crate::kept::facts::store::Kept,
-    deleted: crate::kept::deleted::Hidden,
-    form: form::Kept,
     format: format::Format,
     card_probe: Option<storage::StorageHealth>,
     power: power::Power,
@@ -127,7 +119,6 @@ pub struct Runtime {
     training: training::Training,
     cues: cues::Cues,
     marks: mark::Marks,
-    history: history::History,
     night: night::Night,
     /// The look-ahead's state lives in the block composition gives it.
     lookahead: Option<&'static mut lookahead::Terrain>,
@@ -177,17 +168,12 @@ impl firmware_services::why::State for Runtime {
         out.owner("notices", &self.notices);
         out.owner("recovery", &self.recovery);
         out.owner("preferences", &self.preferences);
-        out.owner("bests", &self.bests);
-        out.owner("facts", &self.facts);
-        out.owner("deleted", &self.deleted);
-        out.owner("form", &self.form);
         out.owner("format", &self.format);
         out.owner("power", &self.power);
         out.owner("timing", &self.timing);
         out.owner("training", &self.training);
         out.owner("cues", &self.cues);
         out.owner("marks", &self.marks);
-        out.owner("history", &self.history);
         out.owner("night", &self.night);
         if let Some(lookahead) = &self.lookahead {
             out.owner("lookahead", &**lookahead);
@@ -228,10 +214,6 @@ impl Runtime {
             notices: ride_control::Notices::default(),
             recovery: crate::ride::recovery::Recovery::default(),
             preferences: preferences::Preferences::default(),
-            bests: crate::kept::bests::Kept::default(),
-            facts: crate::kept::facts::store::Kept::default(),
-            deleted: crate::kept::deleted::Hidden::default(),
-            form: form::Kept::default(),
             format: format::Format::default(),
             card_probe: None,
             power: power::Power::default(),
@@ -239,7 +221,6 @@ impl Runtime {
             training: training::Training::default(),
             cues: cues::Cues::default(),
             marks: mark::Marks::default(),
-            history: history::History::default(),
             night: night::Night::default(),
             lookahead: None,
             motion: motion::Motion::default(),
@@ -472,14 +453,8 @@ impl Runtime {
             return;
         }
         self.record(store, bulk, now, sample);
-        self.replay_step(store, bulk);
         self.service_workouts(bulk);
-        self.service_bests(bulk, now);
-        self.service_facts(bulk, now);
-        self.service_deleted(bulk, now);
         self.service_course(bulk, now);
-        self.directory_step(store, bulk);
-        self.service_form();
         self.observe_track(store, bulk, now);
         self.follow_road();
         self.storage_worked = store.touched || bulk.touched;

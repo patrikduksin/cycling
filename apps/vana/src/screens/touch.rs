@@ -95,7 +95,6 @@ impl Control {
 /// The lists that scroll under a finger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum List {
-    Rides,
     Workouts,
     Settings,
 }
@@ -507,7 +506,7 @@ mod tests {
     /// A card in a list on a page without swipes.
     const IN_LIST: Hit = Hit {
         control: Some(CARD),
-        list: Some(List::Rides),
+        list: Some(List::Workouts),
         swipes: false,
         pull: None,
     };
@@ -597,7 +596,7 @@ mod tests {
         let pans: std::vec::Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                TouchEvent::Pan(List::Rides, pan) => Some(*pan),
+                TouchEvent::Pan(List::Workouts, pan) => Some(*pan),
                 _ => None,
             })
             .collect();
@@ -612,7 +611,7 @@ mod tests {
         t.claim_pan();
         assert_eq!(t.tick(500), None, "never pressed");
         let up = t.feed(Input::Release, 520, A, |_| IN_LIST);
-        assert_eq!(up.to_vec(), [TouchEvent::Pan(List::Rides, Pan::Up)]);
+        assert_eq!(up.to_vec(), [TouchEvent::Pan(List::Workouts, Pan::Up)]);
     }
 
     #[test]
@@ -635,9 +634,9 @@ mod tests {
             ..IN_LIST
         };
         let events = contact(&mut t, both, &[(200, 150), (150, 152), (60, 155)], 200);
-        assert!(events.contains(&TouchEvent::Pan(List::Rides, Pan::Cancel)));
+        assert!(events.contains(&TouchEvent::Pan(List::Workouts, Pan::Cancel)));
         assert_eq!(events.last(), Some(&TouchEvent::Swipe(Swipe::Next)));
-        assert!(!events.contains(&TouchEvent::Pan(List::Rides, Pan::Up)));
+        assert!(!events.contains(&TouchEvent::Pan(List::Workouts, Pan::Up)));
         // Sideways on a page without swipes, past the slop: nothing.
         let none = contact(&mut t, IN_LIST, &[(200, 150), (150, 152), (60, 155)], 200);
         assert_eq!(taps(none), []);
@@ -710,7 +709,7 @@ mod tests {
         };
         let events = contact(&mut t, close, &[(100, 250), (100, 230), (100, 190)], 200);
         assert!(events.contains(&TouchEvent::Pull(Pull::Up)));
-        assert!(!events.contains(&TouchEvent::Pan(List::Rides, Pan::Up)));
+        assert!(!events.contains(&TouchEvent::Pan(List::Workouts, Pan::Up)));
     }
 
     #[test]
@@ -758,7 +757,7 @@ mod tests {
         let cancelled = t.feed(Input::Cancel, 250, A, |_| IN_LIST);
         assert_eq!(
             cancelled.to_vec(),
-            [Released(CARD), TouchEvent::Pan(List::Rides, Pan::Cancel)]
+            [Released(CARD), TouchEvent::Pan(List::Workouts, Pan::Cancel)]
         );
         // The rest of a swipe that lost its start must not read as a tap.
         assert!(t.feed(at(80, 150), 300, A, |_| ON_PAGE).is_empty());

@@ -301,12 +301,8 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     let t = Temp::new();
     let mut s = Session::new(&t.0, 240, 320).unwrap();
     s.advance(7000).unwrap();
-    present(&mut s); // Splash completes into first-run setup.
-    press(&mut s, Role::Back); // BACK leaves setup for the TRAIN/SENSORS menu.
+    present(&mut s);
     state(&mut s, "ready");
-    press(&mut s, Role::Act); // RIDE -> Ready.
-    s.advance(2600).unwrap();
-    present(&mut s); // Ready waits for ACT.
     assert!(!s.sdk.recorder_busy());
     press(&mut s, Role::Act);
     state(&mut s, "recording");
@@ -348,8 +344,7 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
 
     // A later workout appends after the completed one, including across restart.
     press(&mut s, Role::Act); // Summary: Done, Home.
-    press(&mut s, Role::Act); // RIDE -> Ready.
-    press(&mut s, Role::Act); // Start.
+    press(&mut s, Role::Act);
     state(&mut s, "recording");
     s.advance(1500).unwrap();
     press(&mut s, Role::Act);

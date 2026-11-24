@@ -16,35 +16,22 @@ use crate::screens::ride::slots::Slots;
 use crate::screens::ride::summary::Shown;
 use crate::screens::workout::Page;
 
-mod bests;
 mod brand;
 mod control_sheet;
 mod discard;
-mod form;
 mod format;
-mod history;
 mod home;
 mod lose_rides;
-mod past_best;
-mod past_delete;
-mod past_effort;
-mod past_elevation;
-mod past_message;
-mod past_overview;
-mod phone;
 mod power;
 mod question;
-mod ready;
 mod ride_climb;
 mod ride_end;
-mod ride_lap;
 mod ride_main;
 mod ride_map;
 mod ride_paused;
 mod ride_workout;
 mod sensors;
 mod settings;
-mod setup;
 mod sheets;
 mod summary_best;
 mod summary_effort;
@@ -61,7 +48,6 @@ pub use ride_main::{GLIDES, tree as main_tree};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ScreenId {
     RideMain,
-    RideLap,
     RideClimb,
     RideWorkout,
     RideMap,
@@ -73,30 +59,15 @@ pub enum ScreenId {
     SummaryElevation,
     SummaryBest,
     SummaryOffer,
-    PastMessage,
-    PastOverview,
-    PastEffort,
-    PastElevation,
-    PastBest,
-    PastDelete,
     Home,
-    Ready,
-    Setup,
-    Phone,
-    Bests,
-    Form,
     Sheets,
     Brand,
     Format,
     LoseRides,
     Discard,
     Workouts,
-    History,
     Settings,
     Sensors,
-    ClearBests,
-    BestsNote,
-    FormNote,
     FormatWait,
     Discarding,
     TurnOff,
@@ -124,10 +95,9 @@ pub enum Asks {
 }
 
 impl ScreenId {
-    pub const COUNT: usize = 49;
-    pub const ALL: [Self; Self::COUNT] = [
+    pub const COUNT: usize = Self::ALL.len();
+    pub const ALL: &[Self] = &[
         Self::RideMain,
-        Self::RideLap,
         Self::RideClimb,
         Self::RideWorkout,
         Self::RideMap,
@@ -139,30 +109,15 @@ impl ScreenId {
         Self::SummaryElevation,
         Self::SummaryBest,
         Self::SummaryOffer,
-        Self::PastMessage,
-        Self::PastOverview,
-        Self::PastEffort,
-        Self::PastElevation,
-        Self::PastBest,
-        Self::PastDelete,
         Self::Home,
-        Self::Ready,
-        Self::Setup,
-        Self::Phone,
-        Self::Bests,
-        Self::Form,
         Self::Sheets,
         Self::Brand,
         Self::Format,
         Self::LoseRides,
         Self::Discard,
         Self::Workouts,
-        Self::History,
         Self::Settings,
         Self::Sensors,
-        Self::ClearBests,
-        Self::BestsNote,
-        Self::FormNote,
         Self::FormatWait,
         Self::Discarding,
         Self::TurnOff,
@@ -194,11 +149,9 @@ impl ScreenId {
             Page::Format => Self::Format,
             Page::Home => Self::Home,
             Page::Sensors => Self::Sensors,
-            Page::Ready => Self::Ready,
             Page::Ride if paused => Self::RidePaused,
             Page::Ride => match ride {
                 RidePage::Main => Self::RideMain,
-                RidePage::Lap => Self::RideLap,
                 RidePage::Climb => Self::RideClimb,
                 RidePage::Workout => Self::RideWorkout,
                 RidePage::Map => Self::RideMap,
@@ -207,33 +160,15 @@ impl ScreenId {
             Page::DiscardRide if matches!(asks, Asks::Wait) => Self::Discarding,
             Page::DiscardRide => Self::Discard,
             Page::Summary => match summary {
-                Shown::Message | Shown::Delete => Self::SummaryMessage,
+                Shown::Message => Self::SummaryMessage,
                 Shown::Overview => Self::SummaryOverview,
                 Shown::Effort => Self::SummaryEffort,
                 Shown::Elevation => Self::SummaryElevation,
                 Shown::Best => Self::SummaryBest,
                 Shown::Offer => Self::SummaryOffer,
             },
-            Page::PastRide => match summary {
-                Shown::Message | Shown::Offer => Self::PastMessage,
-                Shown::Overview => Self::PastOverview,
-                Shown::Effort => Self::PastEffort,
-                Shown::Elevation => Self::PastElevation,
-                Shown::Best => Self::PastBest,
-                Shown::Delete => Self::PastDelete,
-            },
             Page::Settings => Self::Settings,
-            Page::Bests => match asks {
-                Asks::Question => Self::ClearBests,
-                Asks::Note => Self::BestsNote,
-                Asks::Own | Asks::Wait => Self::Bests,
-            },
-            Page::Form if matches!(asks, Asks::Note) => Self::FormNote,
-            Page::Form => Self::Form,
             Page::Workouts => Self::Workouts,
-            Page::Phone => Self::Phone,
-            Page::History => Self::History,
-            Page::Setup => Self::Setup,
             Page::LoseRides => Self::LoseRides,
         }
     }
@@ -268,7 +203,6 @@ impl ScreenId {
         matches!(
             self,
             Self::RideMain
-                | Self::RideLap
                 | Self::RideClimb
                 | Self::RideWorkout
                 | Self::RideMap
@@ -278,20 +212,12 @@ impl ScreenId {
                 | Self::SummaryElevation
                 | Self::SummaryBest
                 | Self::SummaryOffer
-                | Self::PastMessage
-                | Self::PastOverview
-                | Self::PastEffort
-                | Self::PastElevation
-                | Self::PastBest
-                | Self::PastDelete
         )
     }
 
     pub const fn builtin(self) -> &'static Builtin {
         match self {
             Self::RideMain => ride_main::BUILTIN,
-
-            Self::RideLap => ride_lap::BUILTIN,
 
             Self::RideClimb => ride_climb::BUILTIN,
 
@@ -315,29 +241,7 @@ impl ScreenId {
 
             Self::SummaryOffer => summary_offer::BUILTIN,
 
-            Self::PastMessage => past_message::BUILTIN,
-
-            Self::PastOverview => past_overview::BUILTIN,
-
-            Self::PastEffort => past_effort::BUILTIN,
-
-            Self::PastElevation => past_elevation::BUILTIN,
-
-            Self::PastBest => past_best::BUILTIN,
-
-            Self::PastDelete => past_delete::BUILTIN,
-
             Self::Home => home::BUILTIN,
-
-            Self::Ready => ready::BUILTIN,
-
-            Self::Setup => setup::BUILTIN,
-
-            Self::Phone => phone::BUILTIN,
-
-            Self::Bests => bests::BUILTIN,
-
-            Self::Form => form::BUILTIN,
 
             Self::Sheets => sheets::BUILTIN,
 
@@ -351,17 +255,9 @@ impl ScreenId {
 
             Self::Workouts => workouts::BUILTIN,
 
-            Self::History => history::BUILTIN,
-
             Self::Settings => settings::BUILTIN,
 
             Self::Sensors => sensors::BUILTIN,
-
-            Self::ClearBests => bests::CLEAR,
-
-            Self::BestsNote => bests::NOTE,
-
-            Self::FormNote => form::NOTE,
 
             Self::FormatWait => format::WAIT,
 

@@ -579,7 +579,7 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
-    runtime.open_sensors(false, &mut radio, 1000);
+    runtime.open_sensors(&mut radio, 1000);
     touch(&mut runtime, &mut radio, 1300);
     runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
@@ -597,7 +597,7 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
-    runtime.open_sensors(false, &mut radio, 1000);
+    runtime.open_sensors(&mut radio, 1000);
     runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
     runtime.input_received(Input::Cancel, 1600, 1600, &mut radio);

@@ -32,12 +32,15 @@ impl Sim {
         }
     }
 
-    /// Choose a Home card, such as RIDE, SENSORS, TRAIN or RIDES; the focused
+    /// Choose a Home card, such as RIDE, SENSORS or TRAIN; the focused
     /// one has a white title. One extra press covers a dimmed screen, which a
     /// press only wakes.
     #[track_caller]
     pub fn home(&mut self, label: &str) {
         for _ in 0..crate::sim::HOME_CARDS + 2 {
+            if label == "RIDE" && self.vana_page() == "ride" {
+                return;
+            }
             if self.screen().white(label) {
                 self.press(Role::Act);
                 return;
@@ -156,12 +159,11 @@ impl Sim {
             .is_some_and(|run| run.smooth && run.scale >= 3)
     }
 
-    /// Ride from Home: RIDE opens Ready, and BottomRight starts recording
-    /// onto the ride pages. BottomRight acts: it starts, pauses and resumes.
     pub fn start_ride(&mut self) {
+        if self.vana_page() == "ride" {
+            return;
+        }
         self.home("RIDE");
-        self.expect_text("READY");
-        self.press(Role::Act);
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }
 
@@ -294,18 +296,14 @@ impl Sim {
             .to_string()
     }
 
-    /// From Home, open TRAIN and choose the workout named `name` (or FREE
-    /// RIDE): MOVE until its card is focused, then ACT. Ends on Ready, which
-    /// names it.
     #[track_caller]
-    pub fn choose_workout(&mut self, name: &str) {
+    pub fn start_workout(&mut self, name: &str) {
         self.home("TRAIN");
         self.expect_text("WORKOUTS");
         for _ in 0..24 {
             if self.screen().white(name) {
                 self.press(Role::Act);
-                assert_eq!(self.vana_page(), "ready");
-                self.expect_text(name);
+                self.wait_for("RECORDING", seconds(2)).unwrap();
                 return;
             }
             self.press(Role::Move);
@@ -429,23 +427,20 @@ impl Sim {
         );
     }
 
-    /// From Home, open Connect phone (Settings, PHONE) and let a phone join
-    /// the access point, as the rider and their phone would.
     #[track_caller]
     pub fn connect_phone(&mut self) {
         self.need(crate::sim::Need::Wifi);
-        self.home("SETTINGS");
-        for _ in 0..=vana::screens::settings::SECTIONS.len() {
-            if self.screen().run("PHONE").is_some() {
-                break;
-            }
-            self.swipe_next();
-        }
-        let row = self.screen().run("PHONE").expect("phone row in Settings");
-        self.tap(row.x as u16 + 4, row.y as u16 + 4);
+        let (status, reply) = self.command("PHONE START");
+        assert_eq!(status, "ACCEPTED", "PHONE START: {reply}");
         self.advance(seconds(1));
-        assert_eq!(self.vana_page(), "phone");
         self.device.sim_mut().access_point.clients = 1;
+        self.advance(seconds(1));
+    }
+
+    #[track_caller]
+    pub fn disconnect_phone(&mut self) {
+        let (status, reply) = self.command("PHONE STOP");
+        assert_eq!(status, "ACCEPTED", "PHONE STOP: {reply}");
         self.advance(seconds(1));
     }
 

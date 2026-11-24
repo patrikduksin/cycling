@@ -381,10 +381,9 @@ mod tests {
         }
     }
 
-    /// Power on past first-run setup, onto Home.
     fn boot(live: &mut Live) {
+        live.sim.ride_at(0.0, 0.0, 130.0, 0.0);
         run(live, 8_000);
-        live.sim.skip_setup();
     }
 
     #[test]
@@ -453,7 +452,7 @@ mod tests {
         let mut live = Live::new();
         boot(&mut live);
         // The SENSORS tile, in window coordinates.
-        let (x, y) = ((MARGIN + 120 * SCALE) as f32, (MARGIN + 180 * SCALE) as f32);
+        let (x, y) = ((MARGIN + 120 * SCALE) as f32, (MARGIN + 220 * SCALE) as f32);
         live.pointer(x, y, true);
         run(&mut live, 100);
         live.pointer(x, y, false);
@@ -478,7 +477,7 @@ mod tests {
             let mut live = Live::new();
             boot(&mut live);
             live.speed = speed;
-            let (x, y) = window(120, 180);
+            let (x, y) = window(120, 220);
             let start = live.sim.device.now;
             live.pointer(x, y, true);
             run(&mut live, 100);

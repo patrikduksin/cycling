@@ -207,7 +207,7 @@ pub fn form(page: RidePage, sign: Sign) -> Option<SignForm> {
         (RidePage::Main, Sign::Chip { .. }) => Some(SignForm::Chip),
         (RidePage::Climb, Sign::Chip { .. }) => None,
         (RidePage::Main | RidePage::Climb, _) => Some(SignForm::Banner),
-        (RidePage::Lap | RidePage::Workout, _) => None,
+        (RidePage::Workout, _) => None,
     }
 }
 

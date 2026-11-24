@@ -152,23 +152,16 @@ impl Coverage {
 }
 
 /// Every page a press can meet; "off" is a device that is off.
-pub const PAGES: [&str; 17] = [
+pub const PAGES: [&str; 10] = [
     "boot",
     "home",
     "sensors",
-    "ready",
     "ride",
     "end_ride",
     "discard_ride",
     "summary",
     "settings",
-    "bests",
-    "form",
     "workouts",
-    "phone",
-    "history",
-    "past_ride",
-    "setup",
     "off",
 ];
 

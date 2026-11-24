@@ -7,10 +7,8 @@ pub mod climb;
 pub mod climb_ahead;
 pub mod course;
 pub mod current;
-pub mod directory;
 pub mod elevation;
 pub mod fit;
-pub mod fitness;
 pub mod geo;
 pub mod gps_speed;
 pub mod index;
@@ -30,7 +28,6 @@ pub mod storage;
 pub mod thin;
 pub mod totals;
 pub mod turn_back;
-pub mod week;
 pub mod wheel_size;
 pub mod zones;
 

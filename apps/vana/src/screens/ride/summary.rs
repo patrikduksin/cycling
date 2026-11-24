@@ -14,25 +14,10 @@
 //! 5. Only when a new 20 min best suggests a higher FTP: `FTP 245 W?`. ACT
 //!    (check cue) takes it and BACK (back cue) keeps the FTP in force; either
 //!    one then finishes, as on every page.
-//!
-//! ACT (the green check cue) or BACK finishes and opens Home. A personal best
-//! the ride set says `BEST` in its caption, in the reading's colour.
-//!
-//! A saved ride from the ride list shows on the same pages, read back from
-//! its journal: its start replaces RIDE SAVED, BACK returns to the list and
-//! ACT sends it to the phone. With a FILES volume to note it on, one more
-//! page follows them, reached only going forward: DELETE RIDE?, where ACT
-//! (red trash cue) deletes the ride. Climbs and the heart rate recovery come from
-//! the ride's facts on FILES; without them climbs show as --, as do the laps
-//! of a ride recorded before laps were kept, and there is no recovery. Ascent,
-//! descent and the profile come from the recorded altitude; a ride recorded
-//! without it keeps its pages as they were, with ascent estimated from the
-//! gradient.
 use super::elevation::Chart;
 use super::stats::zone_bar;
 use super::{elapsed, kilometres, speed, whole};
 use crate::compose::tile::{Form, Forms, forms};
-use crate::kept::bests::Found;
 use crate::ride::recovery::Reading as Recovery;
 use crate::ride::rider::Rider;
 use crate::ride::totals::{EFFORT_SECONDS, Totals};
@@ -58,10 +43,6 @@ pub enum Saving {
     Unsynced,
     /// Storage failed while finishing: what was written before is kept.
     Failed,
-    /// A saved ride is being read back.
-    Reading,
-    /// A saved ride could not be found or read.
-    Unreadable,
 }
 
 /// What the summary shows beyond the ride totals.
@@ -75,16 +56,8 @@ pub struct After {
     pub climbs: Option<u16>,
     /// Unknown for a saved ride recorded without lap marks.
     pub laps: Option<u16>,
-    /// A saved ride from the list, titled by `View::past_title`.
-    pub past: bool,
-    /// ACT sends the saved ride to the phone.
-    pub send: bool,
-    /// The saved ride's pages end with DELETE RIDE?.
-    pub delete: bool,
     /// The ride has an elevation page.
     pub elevation: bool,
-    /// The personal bests this ride set.
-    pub found: Found,
     /// The FTP on offer as the last page.
     pub offer: Option<crate::workout::ftp::Offer>,
     /// Heart-rate recovery after the finish; for a saved ride, from its
@@ -99,38 +72,21 @@ impl After {
         best: [None; 4],
         climbs: None,
         laps: None,
-        past: false,
-        send: false,
-        delete: false,
         elevation: false,
-        found: Found::EMPTY,
         offer: None,
         recovery: None,
     };
 }
 
-/// How many pages the summary has, the FTP offer or DELETE RIDE? included.
 pub fn total_pages(after: &After) -> usize {
-    let last = if after.past {
-        after.delete
-    } else {
-        after.offer.is_some()
-    };
-    pages(after.elevation) + usize::from(last)
+    pages(after.elevation) + usize::from(after.offer.is_some())
 }
 
 /// Whether the FTP offer, the page after the others, is on screen.
 pub fn offer_shown(after: &After) -> bool {
-    after.page == pages(after.elevation) && after.offer.is_some() && !after.past
+    after.page == pages(after.elevation) && after.offer.is_some()
 }
 
-/// Whether DELETE RIDE?, the page after a saved ride's others, is on screen.
-pub fn delete_shown(after: &After) -> bool {
-    after.page == pages(after.elevation) && after.delete && after.past
-}
-
-/// What the summary shows: a lone message while a ride is written, read or
-/// unreadable, else the page it is on. Each is a screen of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shown {
     Message,
@@ -139,18 +95,11 @@ pub enum Shown {
     Elevation,
     Best,
     Offer,
-    Delete,
 }
 
 impl Shown {
     pub fn of(after: &After) -> Self {
-        if delete_shown(after) {
-            return Self::Delete;
-        }
-        if matches!(
-            after.saving,
-            Saving::Writing | Saving::Reading | Saving::Unreadable
-        ) {
+        if after.saving == Saving::Writing {
             return Self::Message;
         }
         match after.page {
@@ -163,15 +112,9 @@ impl Shown {
     }
 }
 
-/// Whether a saved ride's send cue hides: when ACT sends nothing. DELETE
-/// RIDE? keeps its own cue.
-pub fn send_hidden(after: &After) -> bool {
-    after.past && !delete_shown(after) && !after.send
-}
-
 /// Whether the page is a question with a back cue, shown without the bar.
 pub fn question_shown(after: &After) -> bool {
-    offer_shown(after) || delete_shown(after)
+    offer_shown(after)
 }
 
 /// "5 S", "1 MIN", "5 MIN" or "20 MIN": the length of best effort `index`.
@@ -196,7 +139,6 @@ pub struct Facts<'a> {
     pub(crate) heart_time: Option<[usize; HEART_ZONES]>,
     /// The lowest and highest altitude the profile draws, in whole metres.
     pub(crate) range_m: Option<(i32, i32)>,
-    pub(crate) past_title: &'a Text<20>,
 }
 
 /// The facts of the summary `view` shows.
@@ -210,7 +152,6 @@ pub(crate) fn facts<'v>(view: &'v View) -> Facts<'v> {
         power_time: marks.power_time,
         heart_time: marks.heart_time,
         range_m: view.elevation_chart().and_then(Chart::range_m),
-        past_title: view.past_title(),
     }
 }
 
@@ -291,16 +232,6 @@ impl Stat {
         }
     }
 
-    /// The caption of a personal best the ride set, and its colour.
-    fn best(self, found: &Found) -> Option<(&'static [u8], u16)> {
-        match self {
-            Self::Time if found.time => Some((b"BEST TIME", SPEED)),
-            Self::Distance if found.distance => Some((b"BEST KM", SPEED)),
-            Self::Ascent if found.ascent => Some((b"BEST ASC M", GRADE)),
-            _ => None,
-        }
-    }
-
     /// The value, and its colour where the stat's own does not apply.
     fn value(self, facts: &Facts, value: &mut Text<16>) -> Option<u16> {
         let totals = facts.totals;
@@ -367,7 +298,7 @@ const WIDEST_RECOVERY: &[u8] = b"MEASURING 59 S";
 /// there is room for.
 pub fn cell_forms(stat: Stat, at: &Scaled) -> Forms {
     let height = at.unit(VALUE_UNITS) as u16;
-    let caption = at.face(FaceRole::Caption).fit_width(b"BEST ASC M");
+    let caption = at.face(FaceRole::Caption).fit_width(b"DESCENT M");
     let form = |role: FaceRole, widest: &[u8]| Form {
         width: at.face(role).fit_width(widest).max(caption) as u16,
         height,
@@ -380,8 +311,6 @@ pub fn cell_forms(stat: Stat, at: &Scaled) -> Forms {
     }
 }
 
-/// A caption over its value at the top of `rect`. A new personal best says
-/// `BEST` in its caption, in the reading's colour.
 pub fn cell(stat: Stat, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Canvas) {
     let mut value = Text::<16>::new();
     let color = match stat.value(facts, &mut value) {
@@ -389,22 +318,18 @@ pub fn cell(stat: Stat, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Canvas
         None if stat == Stat::Recovery => return,
         None => stat.color(),
     };
-    let (caption, caption_color, color) = match stat.best(&facts.after.found) {
-        Some((caption, best)) => (caption, best, best),
-        None => (stat.caption(), SECONDARY, color),
-    };
     let width = rect.width();
     let caption_face = at.face(FaceRole::Caption);
     let caption_base = rect.top + at.unit(CAPTION_UNITS);
     let base = rect.top + at.unit(VALUE_UNITS);
     out.fit(
         &[caption_face],
-        caption,
+        stat.caption(),
         width,
         rect.left,
         caption_base,
         Align::Left,
-        caption_color,
+        SECONDARY,
     );
     let faces = match stat {
         Stat::Recovery => &[at.face(FaceRole::Body)][..],
@@ -451,28 +376,20 @@ pub fn zone_time(heart: bool, rect: Rect, at: &Scaled, facts: &Facts, out: &mut 
     }
 }
 
-/// A best effort's label column, its longest bar, and how far under the
-/// bar a new personal best's `BEST` sits.
 const EFFORT_LABEL_WIDTH: usize = 56;
 const EFFORT_BAR_UNITS: usize = 72;
-const BEST_BELOW_UNITS: usize = 11;
-/// The room a `BEST` caption has under a best-power bar.
-const BEST_WIDTH: usize = 44;
 
 pub fn effort_forms(at: &Scaled) -> Forms {
     let value = |role| at.face(role).fit_width(b"9999");
     let form = |role| Form {
         width: (at.unit(EFFORT_LABEL_WIDTH + 6 + EFFORT_BAR_UNITS + 8) + value(role)) as u16,
-        height: (at.face(FaceRole::Value).fit_height() + at.unit(BEST_BELOW_UNITS)) as u16,
+        height: at.face(FaceRole::Value).fit_height() as u16,
         shapes: 1,
         runs: 3,
     };
     forms(&[form(FaceRole::Value), form(FaceRole::Body)])
 }
 
-/// A best effort's row: its label, a bar as long as its share of the
-/// highest, its watts at the right and, under the bar, `BEST` for a new
-/// personal best.
 pub fn effort(index: usize, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Canvas) {
     let after = facts.after;
     let best = after.best[index];
@@ -522,49 +439,23 @@ pub fn effort(index: usize, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Ca
         radius: at.unit(2),
         color,
     });
-    if after.found.power[index] {
-        let base = base + at.unit(BEST_BELOW_UNITS);
-        let face = [at.face(FaceRole::Caption)];
-        out.fit(
-            &face,
-            b"BEST",
-            at.unit(BEST_WIDTH),
-            bar_left,
-            base,
-            Align::Left,
-            POWER,
-        );
-    }
 }
 
 /// The summary's words: each a block of centred lines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Words {
-    /// SAVING, READING or RIDE UNREADABLE, and what to do meanwhile.
     Message,
-    /// The first page's title: RIDE SAVED under its badge, SYNC TO SAVE,
-    /// NOT ALL SAVED over its cause, or a saved ride's start.
     Heading,
     /// BEST POWER W, over the best efforts.
     BestPower,
     /// `FTP 245 W?`: what the new 20 min best suggests, and what it replaces.
     Offer,
-    /// DELETE RIDE? about the saved ride shown.
-    Delete,
 }
 
 impl Words {
-    pub const ALL: [Self; 5] = [
-        Self::Message,
-        Self::Heading,
-        Self::BestPower,
-        Self::Offer,
-        Self::Delete,
-    ];
+    pub const ALL: [Self; 4] = [Self::Message, Self::Heading, Self::BestPower, Self::Offer];
 }
 
-/// Between a heading's caption or NOT ALL SAVED and the line under it.
-const HEADING_UPPER_UNITS: usize = 42;
 const CAUSE_UNITS: usize = 22;
 /// The badge over RIDE SAVED.
 const BADGE_UNITS: usize = 40;
@@ -573,13 +464,9 @@ const HEADING_UNITS: usize = 74;
 const HEADING_INSET_UNITS: usize = 8;
 /// A message's note below its title.
 const NOTE_UNITS: usize = 28;
-const REASON_UNITS: usize = 24;
 /// The FTP offer's lines, each below the one before.
 const OFFER_FTP_UNITS: usize = 60;
 const OFFER_NOW_UNITS: usize = 30;
-/// DELETE RIDE?'s lines, each below the one before: the title, the time,
-/// the distance and what the answer does.
-const DELETE_STEPS: [usize; 4] = [42, 66, 28, 38];
 
 pub fn words_forms(words: Words, at: &Scaled) -> Forms {
     let face = |role| at.face(role);
@@ -592,12 +479,11 @@ pub fn words_forms(words: Words, at: &Scaled) -> Forms {
     };
     let (width, height) = match words {
         Words::Message => (
-            wide(FaceRole::Body, &[b"RIDE UNREADABLE", b"READING"])
-                .max(wide(FaceRole::Caption, &[b"ITS RECORD IS DAMAGED"])),
+            wide(FaceRole::Body, &[b"SAVING"]).max(wide(FaceRole::Caption, &[b"KEEP VANA ON"])),
             face(FaceRole::Title).fit_height() + at.unit(NOTE_UNITS),
         ),
         Words::Heading => (
-            wide(FaceRole::Body, &[b"NOT ALL SAVED", b"DEC 31  12:59"])
+            wide(FaceRole::Body, &[b"NOT ALL SAVED"])
                 .max(wide(FaceRole::Caption, &[b"STORAGE FAILED AT THE END"])),
             at.unit(HEADING_UNITS),
         ),
@@ -609,12 +495,6 @@ pub fn words_forms(words: Words, at: &Scaled) -> Forms {
             wide(FaceRole::Caption, &[b"20 MIN BEST 9999 W"])
                 .max(wide(FaceRole::Body, &[b"FTP 9999 W?"])),
             face(FaceRole::Body).fit_height() + at.unit(OFFER_FTP_UNITS + OFFER_NOW_UNITS),
-        ),
-        Words::Delete => (
-            wide(FaceRole::Body, &[b"DELETE RIDE?", b"9999.9 KM"])
-                .max(wide(FaceRole::Value, &[b"99:59:59"]))
-                .max(wide(FaceRole::Caption, &[b"IT GOES FROM YOUR RIDES"])),
-            face(FaceRole::Caption).fit_height() + at.unit(DELETE_STEPS.iter().sum()),
         ),
     };
     forms(&[Form {
@@ -628,7 +508,7 @@ pub fn words_forms(words: Words, at: &Scaled) -> Forms {
 /// Where the badge over RIDE SAVED goes in a heading placed at `rect`.
 pub fn badge(after: &After, rect: Rect, at: &Scaled) -> Option<Badge> {
     let radius = at.unit(BADGE_UNITS) / 2;
-    (after.saving == Saving::Saved && !after.past).then_some(Badge {
+    (after.saving == Saving::Saved).then_some(Badge {
         cx: (rect.left + rect.right) / 2,
         cy: rect.top + radius,
         radius,
@@ -658,34 +538,20 @@ pub fn words(words: Words, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Can
     match words {
         Words::Message => {
             let base = rect.top + title.fit_height();
-            let (text, note): (&[u8], &[u8]) = match after.saving {
-                Saving::Reading => (b"READING", b"ONE MOMENT"),
-                Saving::Unreadable => {
-                    line(&[body], b"RIDE UNREADABLE", base, AMBER);
-                    let reason = b"ITS RECORD IS DAMAGED";
-                    line(&[caption], reason, base + at.unit(REASON_UNITS), SECONDARY);
-                    return;
-                }
-                _ => (b"SAVING", b"KEEP VANA ON"),
-            };
-            line(&[title, body], text, base, WHITE);
-            line(&[caption], note, base + at.unit(NOTE_UNITS), SECONDARY);
+            line(&[title, body], b"SAVING", base, WHITE);
+            line(
+                &[caption],
+                b"KEEP VANA ON",
+                base + at.unit(NOTE_UNITS),
+                SECONDARY,
+            );
         }
         Words::Heading => {
             let base = rect.top + at.unit(HEADING_UNITS);
-            let upper = base - at.unit(HEADING_UPPER_UNITS);
-            match (after.past, after.saving) {
-                (true, saving) => {
-                    let (text, color): (&[u8], _) = match saving {
-                        Saving::Unsynced => (b"SYNC TO SAVE", AMBER),
-                        _ => (b"SAVED RIDE", SECONDARY),
-                    };
-                    line(&[caption], text, upper, color);
-                    line(&[title, body], facts.past_title.as_bytes(), base, WHITE);
-                }
-                (false, Saving::Saved) => line(&[title, body], b"RIDE SAVED", base, WHITE),
-                (false, Saving::Unsynced) => line(&[title, body], b"SYNC TO SAVE", base, AMBER),
-                (false, _) => {
+            match after.saving {
+                Saving::Saved => line(&[title, body], b"RIDE SAVED", base, WHITE),
+                Saving::Unsynced => line(&[title, body], b"SYNC TO SAVE", base, AMBER),
+                _ => {
                     let failed = base - at.unit(CAUSE_UNITS);
                     line(&[title, body], b"NOT ALL SAVED", failed, AMBER);
                     line(&[caption], b"STORAGE FAILED AT THE END", base, SECONDARY);
@@ -722,28 +588,6 @@ pub fn words(words: Words, rect: Rect, at: &Scaled, facts: &Facts, out: &mut Can
                 format_args!("NOW {} W", offer.current_watts),
             );
             line(&[body, caption], text.as_bytes(), base, SECONDARY);
-        }
-        Words::Delete => {
-            let mut base = rect.top + caption.fit_height();
-            line(&[caption], facts.past_title.as_bytes(), base, SECONDARY);
-            base += at.unit(DELETE_STEPS[0]);
-            line(&[title, body], b"DELETE RIDE?", base, WHITE);
-            base += at.unit(DELETE_STEPS[1]);
-            let mut text = Text::<12>::new();
-            elapsed(&mut text, facts.active_secs);
-            line(
-                &[face(FaceRole::Large), face(FaceRole::Value)],
-                text.as_bytes(),
-                base,
-                WHITE,
-            );
-            base += at.unit(DELETE_STEPS[2]);
-            text = Text::new();
-            kilometres(&mut text, facts.totals.distance_mm());
-            let _ = core::fmt::Write::write_str(&mut text, " KM");
-            line(&[body], text.as_bytes(), base, WHITE);
-            base += at.unit(DELETE_STEPS[3]);
-            line(&[caption], b"IT GOES FROM YOUR RIDES", base, SECONDARY);
         }
     }
 }
@@ -851,23 +695,16 @@ mod tests {
             view.zone_time.add(1000, &sample, &view.profile);
         }
         view.active_secs = 359_999;
-        view.show_summary(
-            After {
-                page,
-                saving,
-                best: [Some(1999), Some(1500), None, None],
-                climbs: Some(999),
-                laps: Some(999),
-                past: false,
-                send: false,
-                delete: false,
-                elevation: false,
-                found: Found::default(),
-                offer: None,
-                recovery: Some(Recovery::Recovered(120)),
-            },
-            Text::new(),
-        );
+        view.show_summary(After {
+            page,
+            saving,
+            best: [Some(1999), Some(1500), None, None],
+            climbs: Some(999),
+            laps: Some(999),
+            elevation: false,
+            offer: None,
+            recovery: Some(Recovery::Recovered(120)),
+        });
         view.compose_main();
         view.prepare();
         view
@@ -995,51 +832,6 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_ride_shows_its_start_and_what_is_unknown() {
-        let bounds = Rect {
-            left: 0,
-            top: CONTENT.top,
-            right: WIDTH,
-            bottom: HEIGHT - RADIUS + 12,
-        };
-        let past = |page, saving| {
-            let mut view = extreme(page, saving);
-            view.page = Page::PastRide;
-            let after = *view.after();
-            let mut title = Text::new();
-            let _ = title.push_str("DEC 31  12:59");
-            view.show_summary(
-                After {
-                    past: true,
-                    climbs: None,
-                    laps: None,
-                    ..after
-                },
-                title,
-            );
-            view.compose_main();
-            view.prepare();
-            view
-        };
-        let protected = past(0, Saving::Unsynced);
-        assert!(protected.canvas().shows("SYNC TO SAVE"));
-        assert!(!protected.canvas().shows("SAVED RIDE"));
-        let first = past(0, Saving::Saved);
-        let want = ["SAVED RIDE", "DEC 31  12:59", "99:59:59"];
-        first.canvas().assert_laid_out(bounds, &want, "past ride");
-        assert!(!first.canvas().shows("RIDE SAVED") && first.badge.is_none());
-        assert!(past(2, Saving::Saved).canvas().shows("--"));
-        let reading = past(0, Saving::Reading);
-        assert!(reading.canvas().shows("READING"));
-        let missing = past(0, Saving::Unreadable);
-        missing.canvas().assert_laid_out(
-            bounds,
-            &["RIDE UNREADABLE", "ITS RECORD IS DAMAGED"],
-            "unreadable",
-        );
-    }
-
-    #[test]
     fn best_power_bars_scale_to_the_highest_effort() {
         let view = extreme(2, Saving::Saved);
         let bars: std::vec::Vec<_> = view
@@ -1069,7 +861,7 @@ mod tests {
             best_watts: 1999,
         };
         type Case = (usize, Saving, fn(&mut After), &'static [&'static str]);
-        let cases: [Case; 16] = [
+        let cases: [Case; 10] = [
             (
                 0,
                 Saving::Saved,
@@ -1083,15 +875,6 @@ mod tests {
                 &["SYNC TO SAVE", "99:59:59", "1000.0", "220"],
             ),
             (
-                0,
-                Saving::Unsynced,
-                |after| {
-                    after.past = true;
-                    after.page = 0;
-                },
-                &["SYNC TO SAVE", "DEC 31  12:59", "99:59:59"],
-            ),
-            (
                 2,
                 Saving::Unsynced,
                 |after| after.elevation = true,
@@ -1099,8 +882,6 @@ mod tests {
             ),
             (0, Saving::Failed, |_| {}, &["NOT ALL SAVED", "TIME"]),
             (0, Saving::Writing, |_| {}, &["SAVING", "KEEP VANA ON"]),
-            (0, Saving::Reading, |_| {}, &["READING", "ONE MOMENT"]),
-            (0, Saving::Unreadable, |_| {}, &["RIDE UNREADABLE"]),
             (1, Saving::Saved, |_| {}, &["NP W", "PWR", "HR RECOVERY"]),
             (
                 1,
@@ -1112,48 +893,14 @@ mod tests {
             (
                 2,
                 Saving::Saved,
-                |after| after.found.power = [true; 4],
-                &["BEST", "CLIMBS"],
-            ),
-            (
-                2,
-                Saving::Saved,
                 |after| after.elevation = true,
                 &["ASCENT M", "MAX M"],
             ),
             (
                 3,
                 Saving::Saved,
-                |after| {
-                    after.found.time = true;
-                    after.found.distance = true;
-                    after.found.ascent = true;
-                    after.past = true;
-                    after.page = 0;
-                },
-                &["SAVED RIDE", "BEST TIME", "BEST KM"],
-            ),
-            (
-                3,
-                Saving::Saved,
                 |_| {},
                 &["20 MIN BEST 1999 W", "FTP 1999 W?"],
-            ),
-            (
-                0,
-                Saving::Saved,
-                |after| {
-                    after.past = true;
-                    after.delete = true;
-                    after.page = pages(after.elevation);
-                },
-                &[
-                    "DELETE RIDE?",
-                    "DEC 31  12:59",
-                    "99:59:59",
-                    "1000.0 KM",
-                    "IT GOES FROM YOUR RIDES",
-                ],
             ),
         ];
         for device in crate::screens::panels::ALL {
@@ -1162,17 +909,10 @@ mod tests {
             for (page, saving, change, want) in cases {
                 let mut view = extreme_on(device, page, saving);
                 let after = view.after_mut();
-                if page == 3 && !after.past {
+                if page == 3 {
                     after.offer = Some(offer);
                 }
                 change(after);
-                if after.past {
-                    view.page = Page::PastRide;
-                    let mut title = Text::new();
-                    let _ = title.push_str("DEC 31  12:59");
-                    let after = *view.after();
-                    view.show_summary(after, title);
-                }
                 if view.after().elevation {
                     view.set_elevation_chart(&chart);
                 }

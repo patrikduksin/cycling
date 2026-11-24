@@ -127,6 +127,12 @@ impl Runtime {
             }
             return self.profile_command(operation, argument, now, output);
         }
+        if domain == Some("OPTION") {
+            if named.is_some() {
+                return "INVALID";
+            }
+            return self.option_command(operation, argument, now, output);
+        }
         let riding = named.unwrap_or(self.ride.shown());
         match (domain, operation, argument) {
             (Some("RIDE"), Some("INIT"), None) => self.submit(stored, output, Op::Initialize),

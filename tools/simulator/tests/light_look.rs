@@ -7,9 +7,7 @@ use vana::screens::chrome::{
     TERTIARY, WHITE, ZONES,
 };
 use vana::screens::look::light;
-use vana::screens::phone;
 use vana::screens::sign::{ARRIVED_FILL, OFF_FILL, TURN_FILL};
-use vana::screens::workout::Page;
 
 fn reach(name: &str) -> Sim {
     let scene = SCENES.iter().find(|scene| scene.name == name).unwrap();
@@ -26,14 +24,14 @@ fn reads_home_settings_and_a_ride_page_in_the_light_look() {
     sim.press(Role::Back);
     assert_eq!(
         sim.screen().text(),
-        "7:00\nGPS\nRIDE\nGPS READY\nREADY TO RIDE\nSENSORS\n3/3 LIVE\nHR\nPWR\nSPD/C\nTRAIN\nSETTINGS\nRIDES\nNONE YET"
+        "7:00\nGPS\nRIDE\nGPS READY\nREADY TO RIDE\nSENSORS\n3/3 LIVE\nHR\nPWR\nSPD/C\nTRAIN\nSETTINGS"
     );
     sim.start_ride();
     sim.ride_at(28.0, 230.0, 142.0, 88.0);
     sim.advance(seconds(20));
     assert_eq!(
         sim.screen().text(),
-        "0:00:19\nPWR 3S W\nZ5\nHEART BPM\nZ1\n230\n142\nSPD KM/H\nCAD RPM\n28.0\n88\nGRADE\nCLIMB M\n2.4\n3\n%\nDIST KM\nNP W\n0.1\n--"
+        "0:00:20\nPWR 3S W\nZ5\nHEART BPM\nZ1\n230\n142\nSPD KM/H\nCAD RPM\n28.0\n88\nGRADE\nCLIMB M\n2.4\n3\n%\nDIST KM\nNP W\n0.2\n--"
     );
 }
 
@@ -125,19 +123,10 @@ fn every_screen_paints_its_colours_through_the_light_look() {
         let unlit = sim.screen();
         assert_eq!(unlit.look.ink(0).0, 0, "{name}: read in the dark look");
         let width = unlit.width;
-        let code = (sim.device.sdk.page() == Page::Phone)
-            .then(|| panel(&dark.pixels, width))
-            .flatten();
         let sign = sign_box(&shown, width, name);
         let mut most = [Most::default(); 2];
         for (i, (&was, &now)) in dark.pixels.iter().zip(&shown.pixels).enumerate() {
             let (x, y) = (i % width, i / width);
-            if let Some(code) = code.filter(|&code| inside(code, x, y)) {
-                if matches!(was, 0 | 0xffff) && !beside_or_in_corner(code, x, y) {
-                    assert_eq!(now, was, "{name}: the code at {x},{y}");
-                }
-                continue;
-            }
             match shown.kinds[i] {
                 Kind::Mapped => assert_eq!(now, light(was), "{name}: mapped at {x},{y}"),
                 Kind::Fixed => assert_eq!(now, was, "{name}: fixed at {x},{y}"),
@@ -222,27 +211,6 @@ fn bounds(width: usize, at: impl Iterator<Item = usize>) -> Option<[usize; 4]> {
         let [left, top, right, bottom] = found.unwrap_or([x, y, x, y]);
         Some([left.min(x), top.min(y), right.max(x), bottom.max(y)])
     })
-}
-
-fn panel(pixels: &[u16], width: usize) -> Option<[usize; 4]> {
-    use vana::compose::builtin::{Laid, ScreenId};
-    let laid = Laid::new(
-        ScreenId::Phone,
-        &vana::screens::C606,
-        Default::default(),
-        vana::compose::Flags::NONE,
-        None,
-    );
-    let room = laid.and_then(|laid| laid.box_of(vana::compose::registry::CODE))?;
-    let white =
-        (0..pixels.len()).filter(|&i| pixels[i] == 0xffff && room.contains(i % width, i / width));
-    bounds(width, white)
-}
-
-fn beside_or_in_corner([left, top, right, bottom]: [usize; 4], x: usize, y: usize) -> bool {
-    let r = phone::RADIUS;
-    let outside = x < left || x > right || y < top || y > bottom;
-    outside || (x < left + r || x > right - r) && (y < top + r || y > bottom - r)
 }
 
 fn sign_box(shown: &Painted, width: usize, name: &str) -> Option<[usize; 4]> {

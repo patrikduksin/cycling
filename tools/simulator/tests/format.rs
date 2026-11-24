@@ -48,13 +48,21 @@ fn act_formats_everything_and_the_device_then_records_and_keeps_a_ride() {
     sim.expect_text("CHECKING STORAGE");
     sim.checkpoint("formatting");
     wait_for_restart(&mut sim, boot);
-    assert_eq!(sim.device.sdk.page(), Page::Setup, "a fresh device sets up");
-    sim.skip_setup();
+    assert_eq!(
+        sim.device.sdk.page(),
+        Page::Home,
+        "a fresh device opens Home"
+    );
     sim.advance(seconds(2));
     let health = health(&mut sim);
     assert_eq!(field(&health, "state"), "idle", "{health}");
     for store in Store::ALL {
-        assert_eq!(field(&health, store.name()), "current", "{health}");
+        let wiped = if store == Store::Settings {
+            "blank"
+        } else {
+            "current"
+        };
+        assert_eq!(field(&health, store.name()), wiped, "{health}");
     }
 
     sim.start_ride();
@@ -142,12 +150,7 @@ fn act_writes_over_only_the_store_of_another_version() {
             "current"
         };
         assert_eq!(field(&health, store.name()), wiped, "{health}");
-        let page = if store == Store::Settings {
-            Page::Setup
-        } else {
-            Page::Home
-        };
-        assert_eq!(sim.device.sdk.page(), page, "{}", store.name());
+        assert_eq!(sim.device.sdk.page(), Page::Home, "{}", store.name());
     }
 }
 
@@ -158,7 +161,6 @@ fn back_declines_and_nothing_is_written_until_the_next_boot_asks_again() {
     wait_for_offer(&mut sim);
     sim.press(BACK);
     assert_ne!(sim.device.sdk.page(), Page::Format);
-    sim.skip_setup();
     sim.advance(seconds(5));
     assert_eq!(field(&health(&mut sim), "state"), "declined");
 
@@ -166,7 +168,6 @@ fn back_declines_and_nothing_is_written_until_the_next_boot_asks_again() {
     sim.expect_text("NOT SAVED: DATA KEPT");
     sim.checkpoint("settings are kept");
     sim.press(BACK);
-    sim.home("RIDE");
     sim.advance(seconds(1));
     assert_eq!(flash(&mut sim), before, "nothing written");
 
@@ -176,14 +177,13 @@ fn back_declines_and_nothing_is_written_until_the_next_boot_asks_again() {
 }
 
 #[test]
-fn a_ride_log_of_another_version_says_so_on_the_ready_page() {
+fn a_ride_log_of_another_version_refuses_the_ride_and_home_stays() {
     let mut sim = device_with_foreign("format-declined-rides", &[Store::Rides, Store::Internal]);
     wait_for_offer(&mut sim);
     sim.press(BACK);
-    sim.skip_setup();
     sim.home("RIDE");
-    sim.expect_text("STORAGE NOT FORMATTED");
-    sim.expect_text("OFF AND ON TO FORMAT");
+    sim.expect_text("STORAGE NOT READY");
+    assert_eq!(sim.device.sdk.page(), Page::Home);
     sim.checkpoint("not formatted");
 }
 
@@ -233,7 +233,7 @@ fn format_confirm_wipes_a_current_device_and_keeps_its_terrain() {
     assert_eq!(sim.command("FORMAT CONFIRM").0, "ACCEPTED");
     assert_eq!(sim.command("VOLUME INIT").0, "BUSY");
     wait_for_restart(&mut sim, boot);
-    assert_eq!(sim.device.sdk.page(), Page::Setup);
+    assert_eq!(sim.device.sdk.page(), Page::Home);
     assert_eq!(sim.bulk_rides().len(), 0);
     assert_eq!(sim.file("workouts/a.vw"), None);
     let (_, terrain) = sim.command("TERRAIN STATUS");
@@ -275,21 +275,19 @@ fn a_terrain_pack_of_another_version_alone_raises_no_offer() {
 }
 
 #[test]
-fn a_wipe_that_fails_says_so_on_the_ready_page() {
+fn a_wipe_that_fails_refuses_a_ride_from_home() {
     let mut sim = device_with_foreign("format-failed", &Store::ALL);
     wait_for_offer(&mut sim);
     sim.fail_bulk(3, 100);
     sim.press(ACT);
     sim.advance(seconds(5));
     assert_eq!(field(&health(&mut sim), "state"), "failed");
-    sim.expect_no_text("CHECKING STORAGE");
-    sim.expect_text("STORAGE NOT FORMATTED");
-    sim.expect_text("OFF AND ON TO FORMAT");
+    assert_eq!(sim.device.sdk.page(), Page::Home);
     sim.checkpoint("the wipe failed");
     for _ in 0..2 {
         sim.press(ACT);
         sim.advance(seconds(1));
-        assert_eq!(sim.device.sdk.page(), Page::Ready, "no ride opens");
+        assert_eq!(sim.device.sdk.page(), Page::Home, "no ride opens");
         assert!(!sim.device.sdk.recorder_busy());
     }
     sim.expect_text("STORAGE NOT READY");
@@ -297,30 +295,22 @@ fn a_wipe_that_fails_says_so_on_the_ready_page() {
 }
 
 #[test]
-fn a_declined_offer_leaves_bests_and_a_ride_log_of_another_version_alone() {
+fn a_declined_offer_leaves_records_and_a_ride_log_of_another_version_alone() {
     let mut sim = device_with_foreign(
         "format-declined-records",
         &[Store::Records, Store::Internal],
     );
-    let bests = sim.file("bests.dat");
+    let records = sim.file("rides/b1.workout");
     let (_, journal) = flash(&mut sim);
     wait_for_offer(&mut sim);
     sim.press(BACK);
-    sim.skip_setup();
     assert_eq!(sim.command("RIDE INTERNAL INIT").0, "FOREIGN");
     assert_eq!(sim.command("RIDE CLEAR CONFIRM 1").0, "FOREIGN");
-    sim.home("SETTINGS");
-    sim.press(MOVE);
-    sim.press(MOVE);
-    sim.expect_field("BESTS", "NOT FORMATTED");
-    sim.press(ACT);
-    sim.expect_text("BESTS NOT FORMATTED");
-    sim.checkpoint("bests of another version");
-    sim.press(ACT);
-    sim.press(ACT);
-    sim.advance(seconds(1));
-    sim.expect_no_text("CLEAR BESTS?");
-    assert_eq!(sim.file("bests.dat"), bests, "the bests are kept");
+    assert_eq!(
+        sim.file("rides/b1.workout"),
+        records,
+        "the records are kept"
+    );
     assert_eq!(flash(&mut sim).1, journal, "the ride journal is kept");
 }
 
@@ -556,7 +546,7 @@ fn format_confirm_over_a_card_that_failed_wipes_the_boot_flash_and_leaves_the_ca
     let boot = sim.device.boot;
     assert_eq!(sim.command("FORMAT CONFIRM").0, "ACCEPTED");
     wait_for_restart(&mut sim, boot);
-    assert_eq!(sim.device.sdk.page(), Page::Setup, "the settings went");
+    assert_eq!(sim.device.sdk.page(), Page::Home);
     assert_eq!(internal_slots(&mut sim), "0");
     assert!(
         sim.bulk_rides()[0].entries == card,
@@ -587,7 +577,6 @@ fn an_intent_a_boot_cannot_read_holds_off_rides_and_the_next_boot_finishes_its_w
     );
     assert!(!sim.device.sdk.recorder_busy());
     assert_eq!(field(&health(&mut sim), "state"), "failed");
-    sim.expect_text("OFF AND ON TO FORMAT");
     sim.checkpoint("the intent cannot be read");
     assert_eq!(internal_slots(&mut sim), slots, "nothing wiped yet");
     assert_eq!(
@@ -617,7 +606,7 @@ enum Wipe {
     Offer,
 }
 
-fn device_with_a_deleted_internal_ride(name: &str) -> Sim {
+fn device_with_an_internal_ride(name: &str) -> Sim {
     let mut sim = Sim::named(name);
     sim.discard_recording();
     sim.fit_bulk(Presence::Ready);
@@ -628,23 +617,6 @@ fn device_with_a_deleted_internal_ride(name: &str) -> Sim {
     sim.stop_ride();
     sim.done();
     assert_eq!(internal_rides(&mut sim), 1);
-    sim.home("RIDES");
-    sim.advance(seconds(5));
-    sim.expect_text("1/1");
-    sim.press(ACT);
-    sim.wait_gone("READING", seconds(5)).unwrap();
-    for _ in 0..6 {
-        if sim.screen().contains("DELETE RIDE?") {
-            break;
-        }
-        sim.press(MOVE);
-    }
-    sim.press(ACT);
-    sim.wait_for("RIDE DELETED", seconds(5)).unwrap();
-    assert_eq!(hidden_internal_rides(&mut sim), 1);
-    while !sim.on_home() {
-        sim.press(BACK);
-    }
     sim
 }
 
@@ -653,18 +625,10 @@ fn internal_rides(sim: &mut Sim) -> usize {
     field(&history, "count").parse().unwrap()
 }
 
-fn hidden_internal_rides(sim: &mut Sim) -> usize {
-    use vana::kept::deleted;
-    let table = sim.file(deleted::TABLE).unwrap_or_default();
-    deleted::decode_table(&table)
-        .filter(|record| record.ride.journal == b'i')
-        .count()
-}
-
 fn a_wipe_of_the_ride_log_alone_ends_on_the_first_page_and_its_next_ride_shows(wipe: Wipe) {
     {
         let what = format!("{wipe:?}");
-        let mut sim = device_with_a_deleted_internal_ride("ride-log-wipe");
+        let mut sim = device_with_an_internal_ride("ride-log-wipe");
         let slots = internal_slots(&mut sim);
         let boot = match wipe {
             Wipe::Clear => {
@@ -701,17 +665,14 @@ fn a_wipe_of_the_ride_log_alone_ends_on_the_first_page_and_its_next_ride_shows(w
         assert_eq!(sim.device.sdk.page(), Page::Home, "{what}");
         assert_eq!(field(&health(&mut sim), "state"), "idle", "{what}");
         assert_eq!(internal_rides(&mut sim), 0, "{what}");
-        assert_eq!(hidden_internal_rides(&mut sim), 0, "{what}: forgotten");
         assert_intent_settled(&mut sim, &what);
+        sim.advance(100);
 
         sim.start_ride();
         sim.advance(seconds(30));
         sim.stop_ride();
         sim.done();
-        sim.home("RIDES");
-        sim.advance(seconds(5));
-        sim.expect_no_text("NO RIDES YET");
-        sim.expect_text("1/1");
+        assert_eq!(internal_rides(&mut sim), 1, "{what}");
     }
 }
 

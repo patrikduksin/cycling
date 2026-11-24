@@ -214,7 +214,6 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     tick(&mut runtime, &mut journal, &mut radio, 1000);
     // BottomLeft steps through the ride pages and wraps.
     for (at, page) in [
-        (1800, RidePage::Lap),
         (2200, RidePage::Climb),
         (2600, RidePage::Map),
         (3000, RidePage::Main),
@@ -243,9 +242,7 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     assert!(runtime.navigation.page() == Page::EndRide);
     runtime.input_received(press(Role::Back), 5400, 5400, &mut radio);
     assert!(runtime.navigation.page() == Page::Ride);
-    // MOVE on the question does nothing; it waits as long as it takes.
     runtime.input_received(press(Role::Back), 5800, 5800, &mut radio);
-    runtime.input_received(press(Role::Move), 6200, 6200, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 60_000);
     assert!(runtime.navigation.page() == Page::EndRide);
     assert_eq!(runtime.ride.internal().status(), Status::Paused);
@@ -268,7 +265,7 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
 }
 
 #[test]
-fn a_lap_is_kept_in_the_journal_and_read_back_by_replay_and_fit() {
+fn a_lap_is_kept_in_the_journal_and_read_back_by_fit() {
     use crate::ride::log::{Entry, Kind, LapStart, decode};
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
@@ -304,19 +301,6 @@ fn a_lap_is_kept_in_the_journal_and_read_back_by_replay_and_fit() {
         [(100, LapStart::Ride), (6_000, LapStart::Manual)],
         "{entries:?}"
     );
-
-    let mut replay = crate::ride::replay::Replay::new(1, entries.len());
-    let mut sums = crate::ride::replay::Sums {
-        totals: &mut crate::ride::totals::Totals::default(),
-        zone_time: &mut crate::ride::zones::ZoneTime::default(),
-        efforts: &mut crate::ride::totals::Efforts::default(),
-        trace: &mut crate::ride::elevation::Trace::default(),
-    };
-    let profile = runtime.preferences.profile;
-    while replay.step(64, &profile, &mut sums, |i| entries.get(i).copied())
-        == crate::ride::replay::Progress::Reading
-    {}
-    assert_eq!(replay.laps(), Some(2), "as the live summary counts them");
 
     let mut out = firmware_services::fit::Counter::default();
     let slots = (0..entries.len()).map(|index| journal.slot(index));
@@ -463,7 +447,7 @@ fn no_ride_starts_while_the_format_question_is_up() {
         drawn_at: Some(1000),
         scope: crate::app::format::Scope::of([crate::app::Store::Rides]).unwrap(),
     };
-    runtime.navigation.go(To::Page(Page::Ready));
+    runtime.navigation.go(To::Page(Page::Home));
     runtime.ride_auto(Call::Do(Decision::Start), 2000);
     assert_eq!(
         host(&mut runtime, &mut journal, 2000, "RIDE START").0,
@@ -530,9 +514,7 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
         RidePage::Main,
         "the page before"
     );
-    for at in [3000, 3400] {
-        runtime.input_received(press(Role::Move), at, at, &mut radio);
-    }
+    runtime.input_received(press(Role::Move), 3000, 3000, &mut radio);
     assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     runtime.input_received(press(Role::Move), 4200, 4200, &mut radio);
     assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
@@ -543,14 +525,14 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     );
     // Paging on goes round every page again, starting at the first.
     let mut seen = std::vec::Vec::new();
-    for at in (5000..9000).step_by(400).take(5) {
+    for at in (5000..9000).step_by(400).take(4) {
         runtime.input_received(press(Role::Move), at, at, &mut radio);
         let navigation = &runtime.navigation;
         seen.push(navigation.pause_hidden().then_some(navigation.ride_page()));
     }
     let pages = RidePage::ALL.map(Some);
-    assert_eq!(seen[..4], pages, "every page");
-    assert_eq!(seen[4], None, "then the paused screen");
+    assert_eq!(seen[..3], pages, "every page");
+    assert_eq!(seen[3], None, "then the paused screen");
     // A swipe back from the paused screen shows the last page.
     runtime.navigation.go(To::RidePage(RidePage::Main));
     runtime.navigation.go(To::LeavePause {
@@ -785,12 +767,13 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     on_ride_page(&mut runtime);
     runtime.input_received(press(Role::Move), 1000, 1000, &mut radio);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Lap);
+    runtime.input_received(press(Role::Move), 1400, 1400, &mut radio);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
 
     barometer_climb(&mut runtime);
     assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Lap);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
 
     // Paging during a climb keeps the rider's choice when it ends, and the
     // climb does not take them back.
@@ -803,7 +786,7 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
 
     // Already on the climb page: it stays there after the climb.
-    for at in [2600, 3000, 3400] {
+    for at in [2600, 3000] {
         runtime.input_received(press(Role::Move), at, at, &mut radio);
     }
     assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
@@ -830,7 +813,7 @@ fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    hide(&mut runtime, &[RidePage::Lap]);
+    hide(&mut runtime, &[RidePage::Map]);
     on_ride_page(&mut runtime);
     let mut seen = std::vec::Vec::new();
     for at in [1000, 1400, 1800, 2200] {
@@ -841,15 +824,15 @@ fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
         seen,
         [
             RidePage::Climb,
-            RidePage::Map,
             RidePage::Main,
-            RidePage::Climb
+            RidePage::Climb,
+            RidePage::Main
         ]
     );
     runtime.previous_ride_page();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     runtime.previous_ride_page();
-    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
 }
 
 #[test]
@@ -858,13 +841,13 @@ fn a_page_turned_off_under_the_rider_gives_way_to_main() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     on_ride_page(&mut runtime);
-    runtime.navigation.go(To::RidePage(RidePage::Lap));
-    hide(&mut runtime, &[RidePage::Lap]);
-    assert!(!runtime.ride_pages().contains(RidePage::Lap));
+    runtime.navigation.go(To::RidePage(RidePage::Climb));
+    hide(&mut runtime, &[RidePage::Climb]);
+    assert!(!runtime.ride_pages().contains(RidePage::Climb));
     assert_eq!(runtime.ride_pages().first(), RidePage::Main);
     assert_eq!(
         runtime.ride_pages().following(RidePage::Main),
-        RidePage::Climb
+        RidePage::Map
     );
 }
 

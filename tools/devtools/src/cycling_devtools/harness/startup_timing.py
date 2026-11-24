@@ -54,8 +54,9 @@ SENSOR_NAMES = {
 }
 BUTTON = {'top-left': 0, 'bottom-left': 1, 'bottom-right': 2}
 # Home cards in bottom-left order; RIDE is 0.
-HOME_CHOICES = 5
+HOME_CHOICES = 4
 IDLE_STATES = ('ready', 'saved', 'recovered')
+MUTATION_STATUSES = ('ACCEPTED', 'BUSY', 'STATE')
 # VANA ignores a press sooner than 350 ms after the previous one.
 PRESS_SETTLE_S = 0.5
 
@@ -239,7 +240,7 @@ def expect(runner, page, state, timeout=10.0, step=0.2):
 
 
 def ride(runner):
-    """Home → RIDE → Ready → start, then pause, resume, end and save (harness presses).
+    """Home → RIDE starts the ride, then pause, resume, end and save (harness presses).
 
     Presses only from Home with no ride open and no sheet over it, and checks
     the page and ride state after every press. A press can then never edit
@@ -253,6 +254,7 @@ def ride(runner):
             f'state={status.get("state")}. Go to Home on the device first.'
         )
     idle, rides = status['state'], int(status['rides'])
+    started = False
     runner.open_session()
     try:
 
@@ -265,10 +267,11 @@ def ride(runner):
             press('bottom-left')
         if expect(runner, 'home', idle).get('home_cursor') != '0':
             raise RuntimeError('Home did not select RIDE; stopped pressing')
-        press('bottom-right')  # RIDE opens Ready
-        expect(runner, 'ready', idle)
-        for state in ('recording', 'paused', 'recording', 'paused'):
-            press('bottom-right')  # start, pause, resume, pause: only a paused ride ends
+        press('bottom-right')  # RIDE starts the ride
+        started = True
+        expect(runner, 'ride', 'recording')
+        for state in ('paused', 'recording', 'paused'):
+            press('bottom-right')  # pause, resume, pause: only a paused ride ends
             expect(runner, 'ride', state)
         press('top-left')  # "End ride?"
         expect(runner, 'end_ride', 'paused')
@@ -282,6 +285,23 @@ def ride(runner):
         if runner.session:
             runner.operation('CLOSE')
             runner.session = None
+        if started:
+            save_left_open(runner)
+
+
+def save_left_open(runner, attempts=20, step=0.5):
+    """Save a ride this run started and left open, from the console: a
+    recording ride pauses first, as only a paused ride finishes."""
+    for _ in range(attempts):
+        state = runner.command('RIDE STATUS').get('state')
+        # VANA queues a ride mutation (ACCEPTED), or refuses one while busy.
+        if state == 'recording':
+            runner.command('RIDE PAUSE', statuses=MUTATION_STATUSES)
+        elif state == 'paused':
+            runner.command('RIDE FINISH', statuses=MUTATION_STATUSES)
+        else:
+            return
+        runner.delay(step)
 
 
 def device(parser, args, directory):

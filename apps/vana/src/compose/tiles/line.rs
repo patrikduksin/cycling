@@ -5,10 +5,8 @@
 use crate::compose::data::{Count, Data, Metric};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Arg, Form, Forms, Tile};
-use crate::screens::bests::NOTES as BESTS_NOTES;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::{AMBER, Align, GREEN, POWER, SECONDARY, WHITE};
-use crate::screens::form::NOTES as FORM_NOTES;
 use crate::screens::format::Goes;
 use crate::screens::scaled::Scaled;
 use crate::screens::workout::Text;
@@ -46,18 +44,6 @@ says! {
     RideTime,
     RideDistance,
     DiscardLine,
-    BestsTitle,
-    ClearTitle,
-    ClearLine,
-    BestsNoteTitle,
-    BestsNoteLine,
-    FormTitle,
-    FormNoteTitle,
-    FormNoteLine,
-    WeeksAgo,
-    Now,
-    LeftOut,
-    LeftOutLine,
     NewFtp,
     FtpNow,
     FtpSave,
@@ -89,7 +75,7 @@ impl Say {
     const fn look(self) -> Look {
         use Say::*;
         match self {
-            LoseCount | LoseRides | FormatTitle | DiscardTitle | ClearTitle | FtpSave | TurnOff => {
+            LoseCount | LoseRides | FormatTitle | DiscardTitle | FtpSave | TurnOff => {
                 look(&[Title, Body], WHITE)
             }
             RidesSaved | PressAny | StayOn => look(&[Body, Caption], SECONDARY),
@@ -97,24 +83,9 @@ impl Say {
             TurningOffIn => look(&[Body], AMBER),
             ChargeState => look(&[Body], GREEN),
             FormatMade | FormatWait => look(&[Body, Caption], WHITE),
-            FormatGoes | LoseLine | DiscardLine | ClearLine | BestsNoteLine | FormNoteLine
-            | LeftOut | LeftOutLine => look(&[Caption], SECONDARY),
+            FormatGoes | LoseLine | DiscardLine => look(&[Caption], SECONDARY),
             RideTime => look(&[Large, Value], WHITE),
             RideDistance => look(&[Body], WHITE),
-            BestsNoteTitle => look(&[Body, Caption], AMBER),
-            FormNoteTitle => look(&[Body, Caption], WHITE),
-            BestsTitle | FormTitle => Look {
-                align: Align::Left,
-                ..look(&[Body], WHITE)
-            },
-            WeeksAgo => Look {
-                align: Align::Left,
-                ..look(&[Caption], SECONDARY)
-            },
-            Now => Look {
-                align: Align::Right,
-                ..look(&[Caption], SECONDARY)
-            },
             NewFtp => look(&[Body], SECONDARY),
             FtpNow => look(&[Body, Caption], SECONDARY),
         }
@@ -148,15 +119,6 @@ impl Say {
                 }
                 return Some(());
             }
-            BestsNoteTitle | BestsNoteLine => {
-                let note = BESTS_NOTES.get(usize::try_from(count(Count::BestsNote)?).ok()?)?;
-                note[usize::from(self == BestsNoteLine)]
-            }
-            FormNoteTitle | FormNoteLine => {
-                let note = FORM_NOTES.get(usize::try_from(count(Count::FormNote)?).ok()?)?;
-                note[usize::from(self == FormNoteLine)]
-            }
-            LeftOut | LeftOutLine if count(Count::LeftOut) != Some(1) => return None,
             FtpNow => {
                 let _ = write!(out, "NOW {} W", count(Count::FtpOld)?.clamp(0, FTP_END));
                 return Some(());
@@ -199,14 +161,6 @@ impl Say {
             FormatWait => "CHECKING STORAGE",
             DiscardTitle => "DISCARD RIDE?",
             DiscardLine => "IT WILL NOT BE SAVED",
-            BestsTitle => "BESTS",
-            ClearTitle => "CLEAR BESTS?",
-            ClearLine => "THEY CANNOT COME BACK",
-            FormTitle => "FORM",
-            WeeksAgo => "6 WEEKS AGO",
-            Now => "NOW",
-            LeftOut => "RIDES WITHOUT POWER",
-            LeftOutLine => "ARE LEFT OUT",
             NewFtp => "NEW FTP",
             FtpSave => "SAVE?",
             TurnOff => "TURN OFF",
@@ -237,18 +191,6 @@ impl Say {
                     }
                     each(text.as_bytes());
                 }
-            }
-            BestsNoteTitle | BestsNoteLine => {
-                let line = usize::from(self == BestsNoteLine);
-                BESTS_NOTES
-                    .iter()
-                    .for_each(|note| each(note[line].as_bytes()));
-            }
-            FormNoteTitle | FormNoteLine => {
-                let line = usize::from(self == FormNoteLine);
-                FORM_NOTES
-                    .iter()
-                    .for_each(|note| each(note[line].as_bytes()));
             }
             FtpNow => each(b"NOW 9999 W"),
             SyncFirst => each(b"SYNC RIDES FIRST"),

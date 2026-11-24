@@ -6,14 +6,11 @@ use super::chrome::{BLACK, Battery, Gps, Look, Mark, Row, StatusBar, Toast};
 use super::chrome::{CONTENT, HEIGHT, WIDTH};
 use super::cue::{Badge, Cue};
 use super::home::Home;
-use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage};
 use super::sign;
 use crate::clock::Local;
-use crate::kept::bests::Bests;
 use crate::ride::course::nav::Sign;
-use crate::ride::laps::Lap;
 use crate::ride::log::{Sample, Status};
 use crate::ride::rider::Rider;
 use crate::ride::totals::Totals;
@@ -31,8 +28,6 @@ pub enum Page {
     Format,
     Home,
     Sensors,
-    /// Before a ride: what is ready, and ACT starts.
-    Ready,
     Ride,
     /// "End ride?" over a paused ride.
     EndRide,
@@ -41,20 +36,8 @@ pub enum Page {
     /// Saving, then the saved ride's summary.
     Summary,
     Settings,
-    /// The rider's personal bests, opened from Settings.
-    Bests,
-    /// Fitness, fatigue and form, opened from Settings.
-    Form,
     /// The workout picker.
     Workouts,
-    /// Connect phone: rides to the phone over Wi-Fi, as FIT files.
-    Phone,
-    /// The saved rides, newest first.
-    History,
-    /// A saved ride read back, on the summary's pages.
-    PastRide,
-    /// First-run setup.
-    Setup,
     /// LOSE n UNSAVED RIDES?, which a host CLEAR asks while the phone has
     /// not confirmed every ride of a volatile journal.
     LoseRides,
@@ -67,19 +50,12 @@ impl Page {
             Self::Format => "format",
             Self::Home => "home",
             Self::Sensors => "sensors",
-            Self::Ready => "ready",
             Self::Ride => "ride",
             Self::EndRide => "end_ride",
             Self::DiscardRide => "discard_ride",
             Self::Summary => "summary",
             Self::Settings => "settings",
-            Self::Bests => "bests",
-            Self::Form => "form",
             Self::Workouts => "workouts",
-            Self::Phone => "phone",
-            Self::History => "history",
-            Self::PastRide => "past_ride",
-            Self::Setup => "setup",
             Self::LoseRides => "lose_rides",
         }
     }
@@ -124,13 +100,6 @@ pub(super) enum Extra<'a> {
         frame: ClimbFrame,
     },
     Workout(ride::WorkoutChart),
-    /// The finished laps for the chart, oldest first, the open lap and the
-    /// last finished one.
-    Lap {
-        bars: ride::LapBars,
-        lap: Lap,
-        previous: Option<Lap>,
-    },
     /// The track, projected and kept beside the breadcrumb.
     Map(Option<ride::FilledMap<'a>>),
     /// Settings' lines, and the row under a resting finger.
@@ -138,45 +107,20 @@ pub(super) enum Extra<'a> {
         lines: SettingsLines,
         pressed: Option<u16>,
     },
-    /// The Connect phone screen's lines and QR code.
-    Phone {
-        qr: Option<super::qr::Placed>,
-        lines: Lines,
-    },
-    /// The first-run setup step and the note beside its cards.
-    Setup {
-        step: super::setup::Step,
-        lines: Lines,
-    },
-    /// Ready: the checks before a ride.
-    Ready(Readiness),
     /// What Home's cards show.
     Home(Home),
     /// The workout picker's rows.
     Workouts(super::workouts::Picker),
-    /// The saved rides in view and the week.
-    History(super::history::Rides),
-    /// The rider's personal bests, for the BESTS page.
-    Bests {
-        bests: Bests,
-        mode: super::bests::Mode,
-    },
-    Form(super::form::Mode),
-    /// The summary after a ride, or a saved ride read back (`past_title`).
     /// The elevation chart is borrowed from `Ride` (about 430 bytes, which
     /// the main stack cannot spare a copy of).
     Summary {
         after: After,
-        past_title: Text<20>,
         elevation: Option<&'a ride::ElevationChart>,
     },
     /// The sensor pages.
     Sensors(&'a super::sensors::Menu),
 }
 
-/// Lines of text prepared for a page: Settings' values, notes and status,
-/// the phone's codes, the setup note.
-pub(super) type Lines = [Text<38>; 9];
 /// Settings' lines: the status, then a value and a note for each of a
 /// section's rows.
 pub(super) type SettingsLines = [Text<38>; 1 + 2 * super::settings::SECTION_ROWS];
@@ -199,24 +143,12 @@ impl<'a> Extra<'a> {
         climb_frame -> &ClimbFrame = Self::Climb { frame, .. } => frame;
         #[cfg(test)]
         chart -> &ride::WorkoutChart = Self::Workout(chart) => chart;
-        lap -> Lap = Self::Lap { lap, .. } => *lap;
-        previous_lap -> Option<Lap> = Self::Lap { previous, .. } => *previous;
-        lap_bars -> &ride::LapBars = Self::Lap { bars, .. } => bars;
         map -> Option<&'a ride::MapFrame> = Self::Map(map) => map.map(|map| map.frame());
         settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
         settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
-        lines -> &Lines = Self::Phone { lines, .. } | Self::Setup { lines, .. } => lines;
-        qr -> Option<&super::qr::Placed> = Self::Phone { qr, .. } => qr.as_ref();
-        setup_step -> super::setup::Step = Self::Setup { step, .. } => *step;
-        readiness -> &Readiness = Self::Ready(readiness) => readiness;
         home -> &Home = Self::Home(home) => home;
         picker -> &super::workouts::Picker = Self::Workouts(picker) => picker;
-        rides -> &super::history::Rides = Self::History(rides) => rides;
-        bests -> &Bests = Self::Bests { bests, .. } => bests;
-        bests_mode -> super::bests::Mode = Self::Bests { mode, .. } => *mode;
-        form -> super::form::Mode = Self::Form(mode) => *mode;
         after -> &After = Self::Summary { after, .. } => after;
-        past_title -> &Text<20> = Self::Summary { past_title, .. } => past_title;
         elevation -> Option<&'a ride::ElevationChart> = Self::Summary { elevation, .. } => *elevation;
         sensors -> &'a super::sensors::Menu = Self::Sensors(menu) => *menu;
     }
@@ -247,7 +179,6 @@ pub struct Scene<'v> {
 enum Kind<'v> {
     PageUnderBar,
     Ride(RidePage),
-    Phone,
     Summary {
         elevation: bool,
     },
@@ -262,15 +193,9 @@ enum Painted<'v> {
     None,
     Climb(&'v ClimbFrame),
     Workout(&'v ride::WorkoutChart),
-    Lap,
     Map(Option<&'v ride::FilledMap<'v>>),
     Settings,
-    Phone(Option<&'v super::qr::Placed>),
-    Setup,
-    Ready,
     Workouts,
-    Bests,
-    Form,
     Summary(Option<&'v ride::ElevationChart>),
 }
 
@@ -279,7 +204,6 @@ impl<'v> Painted<'v> {
         climb -> &'v ClimbFrame = Self::Climb(frame) => *frame;
         chart -> &'v ride::WorkoutChart = Self::Workout(chart) => *chart;
         map -> Option<&'v ride::FilledMap<'v>> = Self::Map(map) => *map;
-        qr -> Option<&'v super::qr::Placed> = Self::Phone(qr) => *qr;
         elevation -> Option<&'v ride::ElevationChart> = Self::Summary(elevation) => *elevation;
     }
 }
@@ -290,27 +214,16 @@ impl Extra<'_> {
             Self::None => Painted::None,
             Self::Climb { lent: _, frame } => Painted::Climb(frame),
             Self::Workout(chart) => Painted::Workout(chart),
-            Self::Lap {
-                bars: _,
-                lap: _,
-                previous: _,
-            } => Painted::Lap,
             Self::Map(map) => Painted::Map(map.as_ref()),
             Self::Settings {
                 lines: _,
                 pressed: _,
             } => Painted::Settings,
-            Self::Phone { qr, lines: _ } => Painted::Phone(qr.as_ref()),
-            Self::Setup { step: _, lines: _ } => Painted::Setup,
-            Self::Ready(_) => Painted::Ready,
             Self::Home(_) => Painted::None,
             Self::Workouts(_) => Painted::Workouts,
-            Self::History(_) | Self::Sensors(_) => Painted::None,
-            Self::Bests { bests: _, mode: _ } => Painted::Bests,
-            Self::Form(_) => Painted::Form,
+            Self::Sensors(_) => Painted::None,
             Self::Summary {
                 after: _,
-                past_title: _,
                 elevation,
             } => Painted::Summary(*elevation),
         }
@@ -389,10 +302,6 @@ impl<'v> Scene<'v> {
         match self.kind {
             Kind::PageUnderBar => self.paint_canvas(row),
             Kind::Ride(page) => ride::paint(self, page, row),
-            Kind::Phone => {
-                self.paint_canvas(row);
-                super::phone::paint(self, row);
-            }
             Kind::Summary { elevation, .. } => {
                 if let Some(chart) = self.elevation_chart().filter(|_| elevation) {
                     ride::elevation::paint(chart, row);
@@ -471,10 +380,6 @@ impl<'v> Scene<'v> {
         self.shown(self.painted.map(), "map", None)
     }
 
-    pub(super) fn qr(&self) -> Option<&'v super::qr::Placed> {
-        self.shown(self.painted.qr(), "code", None)
-    }
-
     fn elevation_chart(&self) -> Option<&'v ride::ElevationChart> {
         self.shown(self.painted.elevation(), "summary", None)
     }
@@ -509,8 +414,6 @@ impl<'v> Scene<'v> {
         let mut color = match self.kind {
             Kind::PageUnderBar => self.canvas().pixel(look, x, y, black),
             Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
-            Kind::Phone => super::phone::pixel(self, x, y)
-                .unwrap_or_else(|| self.canvas().pixel(look, x, y, black)),
             Kind::Summary { elevation, .. } => {
                 let under = self
                     .elevation_chart()
@@ -589,7 +492,7 @@ impl Scene<'_> {
             );
             return;
         }
-        if let Kind::PageUnderBar | Kind::Phone = self.kind {
+        if let Kind::PageUnderBar = self.kind {
             let regions = match self.bar {
                 Some(_) => std::vec![
                     (
@@ -806,12 +709,7 @@ impl Scene<'_> {
 static NO_CANVAS: Canvas = Canvas::EMPTY;
 static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
 static NO_CHART: ride::WorkoutChart = ride::WorkoutChart::EMPTY;
-static NO_LINES: Lines = [const { Text::new() }; 9];
-static NO_READINESS: Readiness = Readiness::EMPTY;
 static NO_PICKER: super::workouts::Picker = super::workouts::Picker::EMPTY;
-static NO_RIDES: super::history::Rides = super::history::Rides::EMPTY;
-static NO_TITLE: Text<20> = Text::new();
-static NO_BESTS: Bests = Bests::EMPTY;
 static NO_AFTER: After = After::EMPTY;
 
 /// What glides between sensor samples, for graphics only: the main page's
@@ -1081,23 +979,9 @@ impl<'a> View<'a> {
     }
 
     pub fn lines(&self) -> &[Text<38>] {
-        if let Some(lines) = self.extra.settings_lines() {
-            return lines;
-        }
-        self.shown(self.extra.lines(), "lines", &NO_LINES)
-            .as_slice()
-    }
-
-    pub fn qr(&self) -> Option<&super::qr::Placed> {
-        self.shown(self.extra.qr(), "code", None)
-    }
-
-    pub(super) fn setup_step(&self) -> super::setup::Step {
-        self.shown(
-            self.extra.setup_step(),
-            "setup step",
-            super::setup::Step::Welcome,
-        )
+        self.extra
+            .settings_lines()
+            .map_or(&[], |lines| lines.as_slice())
     }
 
     /// What Home's cards show, once the runtime set it.
@@ -1105,36 +989,12 @@ impl<'a> View<'a> {
         self.extra.home()
     }
 
-    pub(super) fn readiness(&self) -> &Readiness {
-        self.shown(self.extra.readiness(), "readiness", &NO_READINESS)
-    }
-
-    pub(crate) fn rides(&self) -> &super::history::Rides {
-        self.shown(self.extra.rides(), "rides", &NO_RIDES)
-    }
-
     pub(crate) fn picker(&self) -> &super::workouts::Picker {
         self.shown(self.extra.picker(), "picker", &NO_PICKER)
     }
 
-    pub(super) fn bests(&self) -> &Bests {
-        self.shown(self.extra.bests(), "bests", &NO_BESTS)
-    }
-
-    pub(super) fn bests_mode(&self) -> super::bests::Mode {
-        self.shown(self.extra.bests_mode(), "bests mode", Default::default())
-    }
-
-    pub(super) fn form(&self) -> super::form::Mode {
-        self.shown(self.extra.form(), "form", Default::default())
-    }
-
     pub(super) fn after(&self) -> &After {
         self.shown(self.extra.after(), "summary", &NO_AFTER)
-    }
-
-    pub(super) fn past_title(&self) -> &Text<20> {
-        self.shown(self.extra.past_title(), "past title", &NO_TITLE)
     }
 
     pub(super) fn elevation_chart(&self) -> Option<&'a ride::ElevationChart> {
@@ -1163,15 +1023,6 @@ impl<'a> View<'a> {
     #[inline(never)]
     pub fn show_workout(&mut self, chart: ride::WorkoutChart) {
         self.extra = Extra::Workout(chart);
-    }
-
-    #[inline(never)]
-    pub fn show_laps(&mut self, bars: ride::LapBars, lap: Lap, previous: Option<Lap>) {
-        self.extra = Extra::Lap {
-            bars,
-            lap,
-            previous,
-        };
     }
 
     #[inline(never)]
@@ -1204,62 +1055,15 @@ impl<'a> View<'a> {
         self.extra.settings_pressed().flatten()
     }
 
-    /// The phone page's code and lines, blank, for the caller to write.
-    #[inline(never)]
-    pub fn show_phone(&mut self) -> (&mut Option<super::qr::Placed>, &mut Lines) {
-        self.extra = Extra::Phone {
-            qr: None,
-            lines: Lines::default(),
-        };
-        match &mut self.extra {
-            Extra::Phone { qr, lines } => (qr, lines),
-            _ => unreachable!(),
-        }
-    }
-
-    /// The setup step's note lines, blank, for the caller to write.
-    #[inline(never)]
-    pub fn show_setup(&mut self, step: super::setup::Step) -> &mut Lines {
-        self.extra = Extra::Setup {
-            step,
-            lines: Lines::default(),
-        };
-        match &mut self.extra {
-            Extra::Setup { lines, .. } => lines,
-            _ => unreachable!(),
-        }
-    }
-
-    #[inline(never)]
-    pub fn show_ready(&mut self, readiness: Readiness) {
-        self.extra = Extra::Ready(readiness);
-    }
-
-    #[inline(never)]
-    pub fn show_rides(&mut self, rides: super::history::Rides) {
-        self.extra = Extra::History(rides);
-    }
-
     #[inline(never)]
     pub fn show_picker(&mut self, picker: super::workouts::Picker) {
         self.extra = Extra::Workouts(picker);
     }
 
     #[inline(never)]
-    pub fn show_bests(&mut self, bests: Bests, mode: super::bests::Mode) {
-        self.extra = Extra::Bests { bests, mode };
-    }
-
-    #[inline(never)]
-    pub fn show_form(&mut self, mode: super::form::Mode) {
-        self.extra = Extra::Form(mode);
-    }
-
-    #[inline(never)]
-    pub fn show_summary(&mut self, after: After, past_title: Text<20>) {
+    pub fn show_summary(&mut self, after: After) {
         self.extra = Extra::Summary {
             after,
-            past_title,
             elevation: None,
         };
     }
@@ -1283,7 +1087,7 @@ impl<'a> View<'a> {
     fn full_screen(&self) -> bool {
         match self.page {
             Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => true,
-            Page::Summary | Page::PastRide => summary::question_shown(self.after()),
+            Page::Summary => summary::question_shown(self.after()),
             Page::Sensors => !self.bar_has_room(),
             _ => self.paused_screen_shown(),
         }
@@ -1292,9 +1096,6 @@ impl<'a> View<'a> {
     /// The scrolling list this page shows, if any.
     pub fn layout(&self) -> Option<&'a super::scroll::Layout> {
         match self.page {
-            Page::History => self
-                .composed()
-                .and_then(crate::compose::builtin::Laid::page),
             Page::Workouts if self.ftp_offer.is_none() => self
                 .composed()
                 .and_then(crate::compose::builtin::Laid::page),
@@ -1323,8 +1124,7 @@ impl<'a> View<'a> {
         let kind = match self.page {
             _ if sheet => Kind::PageUnderBar,
             Page::Ride if !self.pause_screen => Kind::Ride(self.ride_page),
-            Page::Phone => Kind::Phone,
-            Page::Summary | Page::PastRide => Kind::Summary {
+            Page::Summary => Kind::Summary {
                 elevation: summary::shows_elevation(self),
             },
             _ => match self.layout() {
@@ -1425,7 +1225,7 @@ impl<'a> View<'a> {
             self.ftp_offer.is_some(),
             self.asks(),
             match self.page {
-                Page::Summary | Page::PastRide => summary::Shown::of(self.after()),
+                Page::Summary => summary::Shown::of(self.after()),
                 _ => summary::Shown::Message,
             },
         );
@@ -1438,8 +1238,6 @@ impl<'a> View<'a> {
     fn asks(&self) -> crate::compose::builtin::Asks {
         use crate::compose::builtin::Asks;
         match self.page {
-            Page::Bests => self.bests_mode().asks(),
-            Page::Form => self.form().asks(),
             Page::Format => self.format.asks(),
             Page::DiscardRide if self.discard == Discard::Answered => Asks::Wait,
             _ => Asks::Own,
@@ -1457,7 +1255,7 @@ impl<'a> View<'a> {
             self.marks = ride::marks(self);
             ride::prepare_tiles(self, laid);
         }
-        let after = matches!(self.page, Page::Summary | Page::PastRide).then(|| *self.after());
+        let after = (self.page == Page::Summary).then(|| *self.after());
         if let Some(after) = after {
             self.bar.set_pages(after.page, summary::total_pages(&after));
             self.marks = ride::marks(self);
@@ -1465,10 +1263,6 @@ impl<'a> View<'a> {
         if self.page == Page::Settings {
             let (section, _) = self.sections.section(self.cursor);
             self.bar.set_pages(section, self.sections.count());
-        }
-        if self.page == Page::Setup {
-            let step = usize::from(self.setup_step().byte()) - 1;
-            self.bar.set_pages(step, super::setup::STEPS.len());
         }
         if let Some(menu) = self.sensor_pages() {
             self.scroll = menu.offset(laid);
@@ -1487,10 +1281,8 @@ impl<'a> View<'a> {
         {
             self.badge = summary::badge(&after, heading, &self.device.scaled);
         }
-        let send_hidden = after.is_some_and(|after| summary::send_hidden(&after));
         laid.controls()
             .shown(laid.focus())
-            .filter(|cue| !(send_hidden && cue.role == device_api::input::Role::Act))
             .filter(|cue| self.offers(cue))
             .collect()
     }
@@ -1570,7 +1362,6 @@ pub(super) fn fill(view: &mut View, make: impl FnOnce(&View) -> Canvas) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::laps::Laps;
 
     use crate::screens::chrome::{AMBER, GREEN, RAISED, Rect, STATUS_BAR, TOAST, Tone, WHITE};
 
@@ -1591,18 +1382,12 @@ mod tests {
         let none = Extra::None;
         assert!(none.climb_lent().is_none());
         assert!(none.climb_frame().is_none() && none.chart().is_none());
-        assert!(none.lap().is_none() && none.previous_lap().is_none());
-        assert!(none.lap_bars().is_none() && none.map().is_none());
-        assert!(none.lines().is_none() && none.qr().is_none());
-        assert!(none.setup_step().is_none() && none.readiness().is_none());
-        assert!(none.picker().is_none() && none.bests().is_none());
-        assert!(none.bests_mode().is_none() && none.form().is_none());
-        assert!(none.after().is_none() && none.past_title().is_none());
+        assert!(none.map().is_none());
+        assert!(none.picker().is_none());
+        assert!(none.after().is_none());
         assert!(none.elevation().is_none());
         assert!(NO_CANVAS.runs.is_empty() && NO_CANVAS.shapes.is_empty());
         assert!(ClimbLent::NONE.climbs.climbing().is_none());
-        assert!(NO_LINES.iter().all(|line| line.as_bytes().is_empty()));
-        assert!(NO_READINESS.riding.as_bytes().is_empty() && NO_TITLE.as_bytes().is_empty());
         assert!(NO_PICKER.cursor == 0 && NO_PICKER.chosen == 0);
     }
 
@@ -1659,32 +1444,6 @@ mod tests {
         assert!(painted(&mut view, TOAST.top..320, 0..240, RAISED));
         // Two pages: two dots, the first lit.
         assert!(painted(&mut view, 0..STATUS_BAR.bottom, 0..40, WHITE));
-    }
-
-    /// A first lap of five minutes at 200 W and 30 km/h, then `seconds` of
-    /// the second at `watts` and `speed_mm_s`.
-    fn two_laps(view: &mut View, seconds: u64, watts: u16, speed_mm_s: u32) {
-        let mut laps = Laps::default();
-        let steady = |watts, speed_mm_s| Sample {
-            speed_mm_s: Some(speed_mm_s),
-            power_watts: Some(watts),
-            heart_bpm: Some(150),
-            ..Sample::default()
-        };
-        for second in 0..300 {
-            laps.add(1000, 8334, &steady(200, 8334), second * 1000);
-        }
-        let _ = laps.lap(300_000);
-        for second in 0..seconds {
-            let sample = steady(watts, speed_mm_s);
-            laps.add(
-                1000,
-                u64::from(speed_mm_s),
-                &sample,
-                300_000 + second * 1000,
-            );
-        }
-        view.show_laps(ride::LapBars::new(), laps.current(), laps.previous());
     }
 
     #[track_caller]
@@ -1960,24 +1719,10 @@ mod tests {
     }
 
     #[test]
-    fn the_phone_code_alone_keys_the_page() {
-        let phone = |text: &str| {
-            let mut view = View::new(Page::Phone, 0, None);
-            view.compose_main();
-            let (qr, _) = view.show_phone();
-            *qr = super::super::qr::Qr::encode(text)
-                .map(|code| super::super::qr::Placed::centred(code, 120, 100, 160));
-            view.prepare();
-            view
-        };
-        assert_parts_cover(&phone("WIFI:A"), &phone("WIFI:B"), "the code");
-    }
-
-    #[test]
     fn home_highlights_the_selected_tile() {
         let mut view = View::new(Page::Home, 0, None);
         view.compose_focus(1);
-        view.set_home(Home::new(false, &[], Text::new()));
+        view.set_home(Home::new(false, &[]));
         view.prepare();
         let laid = view
             .laids
@@ -2014,7 +1759,6 @@ mod tests {
     #[test]
     fn painted_rows_match_the_per_pixel_reference() {
         use crate::screens::chrome::Tone;
-        use crate::screens::home::last_ride;
         use crate::screens::sensors::Glance;
         let sample = Sample {
             speed_mm_s: Some(8333),
@@ -2038,13 +1782,12 @@ mod tests {
                 battery: None,
             },
         ];
-        for cursor in 0..5 {
+        for cursor in 0..4 {
             let mut view = View::new(Page::Home, cursor, Some(Local(1_000_000)));
             view.compose_focus(cursor);
             view.battery = Some(Battery::level(14));
             view.gps = Gps::Fixed;
-            let last = last_ride(4_999_800);
-            view.set_home(Home::new(cursor == 1, &glance[..cursor.min(2)], last));
+            view.set_home(Home::new(cursor == 1, &glance[..cursor.min(2)]));
             view.toast = (cursor == 2).then(|| Toast::new("RIDE SAVED", Tone::Good));
             view.prepare();
             assert_paints_reference(&view, "home");
@@ -2126,7 +1869,6 @@ mod tests {
                 view.graphics.radar.status = radar::Status::Ready;
                 view.toast = radar_paired.then(|| Toast::new("LAP 1 05:00 200W", Tone::Info));
                 match page {
-                    RidePage::Lap => two_laps(&mut view, 125, 250, 9000),
                     RidePage::Workout => view.show_workout(ride::WorkoutChart::default()),
                     RidePage::Climb => view.show_climb(ClimbLent::NONE),
                     RidePage::Map => view.show_map(None),
@@ -2144,9 +1886,6 @@ mod tests {
             (Page::Settings, false),
             (Page::Settings, true),
             (Page::Sensors, false),
-            (Page::Phone, false),
-            (Page::Bests, false),
-            (Page::Form, false),
         ]
         .into_iter()
         .flat_map(|page| [(page, false), (page, true)])
@@ -2161,15 +1900,6 @@ mod tests {
             }
             let lines = match page {
                 Page::Settings => Some(view.show_settings().as_mut_slice()),
-                Page::Phone => Some(view.show_phone().1.as_mut_slice()),
-                Page::Bests => {
-                    view.show_bests(Bests::default(), crate::screens::bests::Mode::List);
-                    None
-                }
-                Page::Form => {
-                    view.show_form(crate::screens::form::Mode::Reading);
-                    None
-                }
                 Page::Sensors => {
                     let menu = std::boxed::Box::leak(std::boxed::Box::default());
                     crate::screens::sensors::Menu::open(menu);
@@ -2195,11 +1925,8 @@ mod tests {
         }
     }
 
-    /// The ride lifecycle screens: Ready, paused, end ride and the summary
-    /// pages, with their cues, badge and a toast.
     #[test]
     fn lifecycle_screens_paint_their_reference() {
-        use crate::screens::ready::{Check, Level};
         use crate::screens::ride::summary::Saving;
         let sample = Sample {
             speed_mm_s: Some(8333),
@@ -2222,24 +1949,6 @@ mod tests {
             }
             view
         };
-        let mut ready = ride(Page::Ready);
-        ready.compose_main();
-        let mut readiness = Readiness::default();
-        for (index, level) in [Level::Good, Level::Wait, Level::Off, Level::Problem]
-            .into_iter()
-            .enumerate()
-        {
-            readiness.checks[index] = Check::new(level, "GPS LOCKED", "YOU CAN START");
-        }
-        ready.show_ready(readiness.clone());
-        ready.prepare();
-        assert_eq!(ready.cues.len(), 1, "the start cue on a blocked Ready");
-        assert_paints_reference(&ready, "ready, blocked");
-        readiness.checks[3] = Check::new(Level::Good, "ROOM FOR 99 H", "");
-        ready.show_ready(readiness);
-        ready.prepare();
-        assert_eq!(ready.cues.len(), 1);
-        assert_paints_reference(&ready, "ready");
         for auto in [false, true] {
             let mut paused = ride(Page::Ride);
             paused.state = Status::Paused;
@@ -2267,16 +1976,13 @@ mod tests {
                 for page in 0..crate::screens::ride::summary::pages(elevation) {
                     let mut summary = ride(Page::Summary);
                     summary.state = Status::Saved;
-                    summary.show_summary(
-                        summary::After {
-                            saving,
-                            page,
-                            best: [Some(900), Some(400), Some(300), None],
-                            elevation,
-                            ..summary::After::default()
-                        },
-                        Text::new(),
-                    );
+                    summary.show_summary(summary::After {
+                        saving,
+                        page,
+                        best: [Some(900), Some(400), Some(300), None],
+                        elevation,
+                        ..summary::After::default()
+                    });
                     summary.set_elevation_chart(&chart);
                     summary.compose_main();
                     summary.prepare();

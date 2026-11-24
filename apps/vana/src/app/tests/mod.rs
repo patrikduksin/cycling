@@ -399,7 +399,7 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
 /// SENSOR?. Returns when it pressed last.
 fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u64) -> u64 {
     use crate::screens::sensors::Page;
-    runtime.open_sensors(false, radio, now);
+    runtime.open_sensors(radio, now);
     for _ in 0..12 {
         if runtime.menu.diagnostics().focus.map(|f| f.device_type) == Some(kind) {
             break;

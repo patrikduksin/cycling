@@ -7,10 +7,6 @@
 //! runs for a minute from that stop. A finish more than a few seconds past
 //! the minute, or without a live sensor at the stop or a minute later,
 //! shows nothing rather than a number from another moment.
-//!
-//! The journal has no field for the result, so it is kept with the ride's
-//! facts (`kept::facts`) once measured, and a ride read back from the list
-//! shows it from there.
 
 /// Time from the finish to the second reading.
 pub const WINDOW_MS: u64 = 60_000;

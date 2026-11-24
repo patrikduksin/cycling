@@ -192,17 +192,15 @@ fn a_slice_from_a_device_set_up_before_lifts_to_one_that_boots_to_home_with_its_
     let mut sim = Sim::new();
     sim.ant_sensor(device_type::POWER, 1234);
     sim.wait_usable();
-    sim.skip_setup();
     sim.pair(&["POWER METER"]);
     sim.advance(5_000);
     sim.cut_power();
     sim.wait_usable();
     assert_eq!(sim.vana_page(), "home");
     let lifted = lift(&sim.trace()).unwrap();
-    let Start::PowerOn(Some(Kept { setup, sensors, .. })) = &lifted.plan.setup.start else {
+    let Start::PowerOn(Some(Kept { sensors, .. })) = &lifted.plan.setup.start else {
         panic!("kept preferences: {:?}", lifted.plan.setup.start);
     };
-    assert_eq!(*setup, None, "setup was done");
     assert_eq!(*sensors, vec![(device_type::POWER, 1234)]);
     let mut replay = replayed(&lifted.plan);
     replay.wait_usable();
@@ -215,7 +213,6 @@ fn a_recorded_tap_replays_as_the_same_tap() {
     use shell_simulator::sim::Sim;
     let mut sim = Sim::new();
     sim.wait_usable();
-    sim.skip_setup();
     sim.tap(120, 210);
     sim.expect_text("NEARBY");
     let lifted = lift(&sim.trace()).unwrap();

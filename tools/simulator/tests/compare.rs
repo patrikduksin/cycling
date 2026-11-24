@@ -114,27 +114,19 @@ fn an_event_larger_than_any_block_counts_whole() {
 }
 
 #[test]
-fn the_devices_card_reads_change_the_storage_hash_and_a_host_write_the_media_hash() {
-    let run = |rides: bool, host_read: bool, note: &[u8]| {
+fn a_host_write_changes_the_media_hash_and_a_host_read_no_hash() {
+    let run = |host_read: bool, note: &[u8]| {
         let mut sim = booted_card_unrecorded();
         sim.advance(seconds(2));
-        if rides {
-            sim.home("RIDES");
-        }
         if host_read {
             assert!(sim.file("notes.txt").is_some());
         }
         sim.put_file("notes.txt", note);
         sim.hashes().unwrap()
     };
-    let plain = run(false, false, b"x");
-    assert_ne!(
-        plain.storage,
-        run(true, false, b"x").storage,
-        "the rides list"
-    );
-    assert_eq!(plain, run(false, true, b"x"), "a host's read");
-    let edited = run(false, false, b"y");
+    let plain = run(false, b"x");
+    assert_eq!(plain, run(true, b"x"), "a host's read");
+    let edited = run(false, b"y");
     assert_ne!(plain.media, edited.media, "one byte of a file");
     assert_eq!(
         (&plain.trace, &plain.storage),

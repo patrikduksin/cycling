@@ -292,7 +292,7 @@ impl Runtime {
                     at.scale.px(4),
                     kind(Node::row(1, Size::CONTENT)),
                     kind(Node::col(1, Size::CONTENT)),
-                    kind(Node::scroll(ListKind::Rides, Size::CONTENT)),
+                    kind(Node::scroll(ListKind::Workouts, Size::CONTENT)),
                     kind(Node::stack(1, Size::CONTENT)),
                     kind(leaf),
                     kind(leaf.hero()) & !kind(leaf),

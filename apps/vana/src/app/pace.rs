@@ -62,23 +62,17 @@ fn pace(seen: &Seen) -> Pace {
         State::Charging if seen.standby_dark => return Pace::Dark,
         _ => return Pace::Busy,
     }
-    // Boot, Phone and Setup are brief, so they keep the busy pace.
     let still = match seen.page {
         Page::Home
         | Page::Sensors
         | Page::Settings
-        | Page::Bests
-        | Page::Form
         | Page::Workouts
-        | Page::History
-        | Page::PastRide
-        | Page::Ready
         | Page::Ride
         | Page::EndRide
         | Page::DiscardRide
         | Page::LoseRides
         | Page::Summary => true,
-        Page::Boot | Page::Format | Page::Phone | Page::Setup => false,
+        Page::Boot | Page::Format => false,
     };
     if still && !seen.busy {
         Pace::Still
@@ -228,23 +222,18 @@ impl<M: ReadWrite + ?Sized> ReadWrite for Touched<'_, M> {
 mod tests {
     use super::*;
 
-    const STILL_PAGES: [Page; 14] = [
+    const STILL_PAGES: [Page; 9] = [
         Page::Home,
         Page::Sensors,
         Page::Settings,
-        Page::Bests,
-        Page::Form,
         Page::Workouts,
-        Page::History,
-        Page::PastRide,
-        Page::Ready,
         Page::Ride,
         Page::EndRide,
         Page::DiscardRide,
         Page::LoseRides,
         Page::Summary,
     ];
-    const BUSY_PAGES: [Page; 3] = [Page::Boot, Page::Phone, Page::Setup];
+    const BUSY_PAGES: [Page; 1] = [Page::Boot];
 
     fn seen(page: Page) -> Seen {
         Seen {

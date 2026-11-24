@@ -171,7 +171,7 @@ pub fn wait_for_the_wipe(sim: &mut Sim, boot: u32) -> WipeEnded {
             return WipeEnded::Restarted;
         }
         let page = sim.device.sdk.page();
-        if matches!(page, Page::Home | Page::Setup) && field(&health(sim), "state") != "running" {
+        if page == Page::Home && field(&health(sim), "state") != "running" {
             return WipeEnded::JournalEmptied;
         }
         sim.advance(100);
@@ -196,6 +196,8 @@ pub fn used_device(name: &str, stores: &[Store]) -> (Sim, Table) {
     sim.put_file("workouts/a.vw", b"host file");
     let table = sim.init_volumes();
     let mut sim = sim.boot();
+    assert_eq!(sim.command("PROFILE FTP 250").0, "OK");
+    sim.advance(seconds(3));
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.advance(seconds(30));
@@ -282,7 +284,7 @@ pub fn boots_after_a_cut(sim: &mut Sim, what: &str) -> AfterCut {
             return AfterCut::Offered;
         }
         let page = sim.device.sdk.page();
-        if matches!(page, Page::Home | Page::Setup) && field(&health(sim), "state") == "idle" {
+        if page == Page::Home && field(&health(sim), "state") == "idle" {
             return AfterCut::Usable { resumed: due };
         }
         sim.advance(100);

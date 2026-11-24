@@ -328,13 +328,6 @@ async fn ride_track() -> Option<&'static mut vana::app::RideTrack> {
 /// The working memory VANA runs on, in PSRAM. Without a block VANA does
 /// without its feature: the trace says which it has.
 struct Working {
-    /// Every saved ride of both journals, for ride history: about 20 KB
-    /// per journal; VANA keeps only the pointer.
-    index: Option<&'static mut vana::ride::directory::RideIndex>,
-    /// Each saved ride's facts, 32 KB.
-    facts: Option<&'static mut [u8]>,
-    /// The rides the rider discarded or deleted, 8 KB.
-    deleted: Option<&'static mut [u8]>,
     terrain: Option<&'static mut vana::app::Terrain>,
     track: Option<&'static mut vana::app::RideTrack>,
     phone: Option<&'static mut vana::app::PhoneWork>,
@@ -346,21 +339,10 @@ impl Working {
             terrain: self.terrain.is_some(),
             track: self.track.is_some(),
             phone: self.phone.is_some(),
-            ride_index: self.index.is_some(),
-            ride_facts: self.facts.is_some(),
         }
     }
 
     fn attach(&mut self, sdk: &mut vana::app::Runtime) {
-        if let Some(index) = self.index.take() {
-            sdk.attach_ride_index(index);
-        }
-        if let Some(facts) = self.facts.take() {
-            sdk.attach_ride_facts(facts);
-        }
-        if let Some(deleted) = self.deleted.take() {
-            sdk.attach_deleted_rides(deleted);
-        }
         if let Some(terrain) = self.terrain.take() {
             sdk.attach_terrain(terrain);
         }
@@ -374,11 +356,6 @@ impl Working {
 }
 
 async fn working_memory() -> &'static mut Working {
-    use vana::ride::directory::{ENTRY, RIDES, RideIndex};
-    let index =
-        external(|| RideIndex::new(external_bytes(RIDES * ENTRY), external_bytes(RIDES * ENTRY)));
-    let facts = external_bytes(vana::kept::facts::record::SHELF_BYTES);
-    let deleted = external_bytes(vana::kept::deleted::SHELF_BYTES);
     let terrain = terrain().await;
     let track = ride_track().await;
     // The phone session's indexes and response state are copied from a
@@ -386,9 +363,6 @@ async fn working_memory() -> &'static mut Working {
     const PHONE_WORK: vana::app::PhoneWork = vana::app::PhoneWork::new();
     let phone = device::drivers::psram::place(PHONE_WORK);
     external(|| Working {
-        index: Some(index),
-        facts: Some(facts),
-        deleted: Some(deleted),
         terrain,
         track,
         phone,
@@ -787,20 +761,6 @@ fn external<T>(make: impl FnOnce() -> T) -> &'static mut T {
     unsafe {
         pointer.write(value);
         &mut *pointer
-    }
-}
-
-/// `len` zeroed bytes of PSRAM, never freed.
-fn external_bytes(len: usize) -> &'static mut [u8] {
-    let layout = core::alloc::Layout::from_size_align(len, 4).expect("byte layout");
-    // SAFETY: callers pass a non-zero length; the block is never freed.
-    let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
-    assert!(!pointer.is_null(), "PSRAM exhausted");
-    // SAFETY: the allocator returned `len` writable bytes, zeroed here before
-    // the only reference to them is made; they are never deallocated.
-    unsafe {
-        core::ptr::write_bytes(pointer, 0, len);
-        core::slice::from_raw_parts_mut(pointer, len)
     }
 }
 

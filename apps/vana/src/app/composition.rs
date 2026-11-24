@@ -293,13 +293,12 @@ impl Runtime {
     /// card, the sensor menu refreshes.
     fn open(&mut self, page: Page, ant: &mut impl Ant, now: u64) {
         match page {
-            Page::Sensors => self.open_sensors(false, ant, now),
+            Page::Sensors => self.open_sensors(ant, now),
             Page::Workouts => {
                 self.navigation.go(To::Page(Page::Workouts));
                 self.show_focus(crate::screens::touch::List::Workouts, now);
             }
             Page::Settings => self.navigation.go(To::Settings),
-            Page::History => self.open_history(),
             page => self.navigation.go(To::Page(page)),
         }
     }
@@ -330,8 +329,6 @@ impl Runtime {
 
     fn asks(&self) -> Asks {
         match self.navigation.page() {
-            Page::Bests => self.bests.mode().asks(),
-            Page::Form => self.form.mode.asks(),
             Page::Format => self.format.shows().asks(),
             Page::DiscardRide if self.ride.discard() != crate::ride::current::Discard::Idle => {
                 Asks::Wait
@@ -346,12 +343,6 @@ impl Runtime {
             Page::Summary => After {
                 saving: self.saving(),
                 offer: self.summary_offer(),
-                ..After::default()
-            },
-            Page::PastRide => After {
-                saving: self.past_saving(),
-                past: true,
-                delete: self.deletable(),
                 ..After::default()
             },
             _ => return summary::Shown::Message,
@@ -387,7 +378,7 @@ impl<A: Ant> Owners for Carried<'_, A> {
                 runtime.timing.press(self.received);
                 runtime.next_ride_page();
             }
-            (Go::Next, Page::Summary | Page::PastRide) => runtime.next_summary_page(1),
+            (Go::Next, Page::Summary) => runtime.next_summary_page(1),
             (Go::Open(page), _) => runtime.open(page, self.ant, self.now),
             // A held BACK is the power-on hold still going.
             (Go::TurnOff, _) if !self.held => runtime.open_power_sheet(self.received),
@@ -426,8 +417,6 @@ impl<A: Ant> Owners for Carried<'_, A> {
             return;
         }
         match (runtime.navigation.page(), act) {
-            (Page::Bests, _) => runtime.bests_input(act, held),
-            (Page::Form, _) => runtime.form_input(act, held),
             (Page::Format, OnPage::Answer(yes)) => runtime.format_input(yes, held, self.received),
             (Page::LoseRides, OnPage::Answer(yes)) if !held => runtime.lose_rides_input(yes),
             (Page::Summary, OnPage::Answer(take)) => {
@@ -437,18 +426,7 @@ impl<A: Ant> Owners for Carried<'_, A> {
                 }
                 runtime.ride_press(role, held, self.received, self.now);
             }
-            (Page::PastRide, OnPage::Send | OnPage::Delete) => {
-                runtime.past_ride_input(Role::Act, held);
-            }
-            (Page::PastRide, OnPage::Back) => runtime.past_ride_input(Role::Back, held),
             (Page::Boot, OnPage::Back) => runtime.navigation.go(To::Page(runtime.first_page())),
-            (Page::Setup, OnPage::Item(card)) => {
-                runtime.setup_card(usize::from(card), self.now, self.ant)
-            }
-            (Page::Setup, OnPage::Back) => runtime.navigation.go(To::Page(Page::Home)),
-            (Page::Phone, OnPage::PhoneCode) => runtime.phone_touch(),
-            (Page::Phone, OnPage::PhoneRetry) if runtime.phone_ended() => runtime.enter_phone(),
-            (Page::Phone, OnPage::Back) if !held => runtime.close_phone_page(),
             _ => why!("compose.unowned", act),
         }
     }

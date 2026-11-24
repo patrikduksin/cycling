@@ -5,7 +5,7 @@ use shell_simulator::bulk::Presence;
 use shell_simulator::devices::Model;
 use shell_simulator::models::{C606, SMALL, WIDE};
 use shell_simulator::route::{Point, Route};
-use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
+use shell_simulator::sim::{NoteKind, Sim, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::app::Store;
 use vana::compose::Flags;
@@ -233,13 +233,6 @@ fn every_ride_page_draws_on_both_test_panels() {
         shows(&twin.sim, &["PWR 3S W", "Z5", "CAD RPM", "GRADE", "NP W"]);
         twin.sim
             .checkpoint(&format!("ride stats on {}", model.name));
-        twin.guide(|sim| {
-            sim.press(Role::Back);
-            sim.advance(seconds(30));
-            sim.ride_page("ride/lap");
-        });
-        shows(&twin.sim, &["LAP TIME", "LAP 2", "LAP KM", "W DIFF"]);
-        twin.sim.checkpoint(&format!("ride lap on {}", model.name));
         twin.guide(|sim| sim.ride_page("ride/map"));
         twin.sim.checkpoint(&format!("ride map on {}", model.name));
         assert!(lit(&twin.sim) > 2_000, "{} map", model.name);
@@ -316,16 +309,6 @@ fn the_summary_pages_and_a_saved_ride_draw_on_both_test_panels() {
         shows(&twin.sim, &["BEST POWER W", "CLIMBS", "LAPS"]);
         twin.sim
             .checkpoint(&format!("summary best power on {name}"));
-        twin.guide(|sim| {
-            sim.done();
-            sim.home("RIDES");
-            sim.press(Role::Act);
-            sim.wait_gone("READING", seconds(5)).unwrap();
-            sim.expect_text("SAVED RIDE");
-        });
-        assert_eq!(twin.sim.device.sdk.page(), Page::PastRide);
-        shows(&twin.sim, &["SAVED RIDE", "TIME", "AVG W"]);
-        twin.sim.checkpoint(&format!("saved ride on {name}"));
     }
 }
 
@@ -334,9 +317,7 @@ fn the_workout_page_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let mut twin = Twin::paired(model, world, &KINDS);
         twin.guide(|sim| {
-            sim.choose_workout("VO2 MAX 5X3");
-            sim.press(Role::Act);
-            sim.wait_for("RECORDING", seconds(2)).unwrap();
+            sim.start_workout("VO2 MAX 5X3");
         });
         twin.both(|sim| sim.ride_at(30.0, 120.0, 142.0, 90.0));
         twin.advance(seconds(20));
@@ -374,104 +355,6 @@ fn a_course_ride_draws_its_sign_on_both_test_panels() {
         twin.sim
             .checkpoint(&format!("course map on {}", model.name));
         assert!(lit(&twin.sim) > 2_000, "{} course map", model.name);
-    }
-}
-
-fn with_files(model: Model) -> Sim {
-    let mut sim = world(model);
-    sim.fit_bulk(Presence::Ready);
-    sim
-}
-
-fn bests_row(sim: &mut Sim) {
-    sim.home("SETTINGS");
-    sim.press(Role::Move);
-    sim.press(Role::Move);
-}
-
-#[test]
-fn bests_and_form_read_on_both_test_panels() {
-    for model in [WIDE, SMALL] {
-        let name = model.name;
-        let mut twin = Twin::paired(model, with_files, &KINDS);
-        twin.guide(|sim| {
-            bests_row(sim);
-            sim.expect_field("BESTS", "NOT KEPT");
-            sim.press(Role::Act);
-            sim.expect_text("BESTS NOT KEPT");
-        });
-        shows(&twin.sim, &["BESTS", "KEPT", "NO PLACE TO KEEP THEM"]);
-        twin.sim.checkpoint(&format!("bests not kept on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Back);
-            sim.press(Role::Move);
-            sim.press(Role::Act);
-            sim.wait_for("NO POWER RIDES", seconds(30)).unwrap();
-        });
-        shows(&twin.sim, &["NO POWER RIDES", "NEEDS A POWER METER"]);
-        twin.sim
-            .checkpoint(&format!("form without rides on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Back);
-            sim.press(Role::Back);
-            assert!(sim.on_home(), "{}", sim.screen().text());
-        });
-
-        twin.both(|sim| {
-            sim.init_bulk();
-            sim.init_volumes();
-            sim.put_file("notes.txt", b"x");
-            sim.ride_at(30.0, 240.0, 140.0, 90.0);
-        });
-        twin.guide(Sim::start_ride);
-        twin.advance(minutes(6));
-        twin.guide(|sim| {
-            sim.stop_ride();
-            sim.expect_text("NEW BESTS");
-            for _ in 0..4 {
-                if sim.screen().contains("RIDE SAVED") {
-                    break;
-                }
-                sim.press(Role::Move);
-            }
-            sim.done();
-            bests_row(sim);
-        });
-        twin.guide(|sim| {
-            sim.press(Role::Act);
-            sim.expect_text("LONGEST RIDE");
-        });
-        shows(
-            &twin.sim,
-            &[
-                "BESTS",
-                "5 S",
-                "MIN",
-                "240 W",
-                "LONGEST RIDE",
-                "MOST ASCENT",
-            ],
-        );
-        twin.sim.checkpoint(&format!("bests on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Act);
-            sim.expect_text("CLEAR BESTS?");
-        });
-        shows(&twin.sim, &["CLEAR BESTS?", "THEY CANNOT COME BACK"]);
-        twin.sim.checkpoint(&format!("clear bests on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Back);
-            sim.expect_text("LONGEST RIDE");
-            sim.press(Role::Back);
-            sim.press(Role::Move);
-            sim.press(Role::Act);
-            sim.wait_for("FATIGUE", seconds(60)).unwrap();
-        });
-        shows(
-            &twin.sim,
-            &["FORM", "FITNESS", "FATIGUE", "WEEKS AGO", "NOW"],
-        );
-        twin.sim.checkpoint(&format!("form on {name}"));
     }
 }
 
@@ -514,10 +397,7 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
         let name = model.name;
         let mut twin = Twin::paired(model, world, &KINDS);
         assert_eq!(twin.sim.device.sdk.page(), Page::Home);
-        shows(
-            &twin.sim,
-            &["RIDE", "SENSORS", "LIVE", "TRAIN", "SETTINGS", "RIDES"],
-        );
+        shows(&twin.sim, &["RIDE", "SENSORS", "LIVE", "TRAIN", "SETTINGS"]);
         twin.sim.checkpoint(&format!("home on {name}"));
         let laid = Laid::new(
             ScreenId::Home,
@@ -528,14 +408,8 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
         )
         .expect("Home has a tree");
         let solved = laid.solved();
-        let cards = solved.focus_order().map(|placed| placed.rect);
-        let pages = [
-            Page::Ready,
-            Page::Sensors,
-            Page::Workouts,
-            Page::Settings,
-            Page::History,
-        ];
+        let cards = solved.focus_order().skip(1).map(|placed| placed.rect);
+        let pages = [Page::Sensors, Page::Workouts, Page::Settings];
         for (card, page) in cards.zip(pages) {
             let (x, y) = (card.left + card.width() / 2, card.top + card.height() / 2);
             twin.sim.tap(x, y);
@@ -550,25 +424,6 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
             );
         }
     }
-}
-
-fn with_rides(model: Model) -> Twin {
-    let mut twin = Twin::paired(model, world, &["HEART RATE"]);
-    twin.both(|sim| {
-        sim.ride_at(20.0, 150.0, 120.0, 80.0);
-        for _ in 0..8 {
-            for (command, then) in [("START", seconds(60)), ("PAUSE", 500), ("FINISH", 500)] {
-                let (_, ride) = sim.command("RIDE STATUS");
-                if command != "PAUSE" || !ride.contains("state=paused") {
-                    let (status, out) = sim.command(&format!("RIDE INTERNAL {command}"));
-                    assert_eq!(status, "ACCEPTED", "{command}: {out} {ride}");
-                }
-                sim.advance(then);
-            }
-        }
-        sim.advance(seconds(3));
-    });
-    twin
 }
 
 /// The number editor's plus pad on `model`'s panel.
@@ -604,65 +459,6 @@ fn card_middle(list: &vana::screens::scroll::Layout, index: usize) -> u16 {
 }
 
 #[test]
-fn the_rides_list_draws_and_scrolls_on_both_test_panels() {
-    for model in [WIDE, SMALL] {
-        let name = model.name;
-        let mut twin = Twin::paired(model, world, &KINDS);
-        twin.guide(|sim| {
-            sim.home("RIDES");
-            sim.expect_text("NO RIDES YET");
-        });
-        shows(
-            &twin.sim,
-            &["THIS WEEK", "NO RIDES YET", "SAVED RIDES SHOW HERE"],
-        );
-        twin.sim.checkpoint(&format!("no rides on {name}"));
-
-        let mut twin = with_rides(model);
-        twin.guide(|sim| {
-            sim.home("RIDES");
-            sim.wait_for("1/8", seconds(5)).unwrap();
-            sim.advance(seconds(1));
-        });
-        assert_eq!(twin.sim.device.sdk.page(), Page::History);
-        shows(&twin.sim, &["THIS WEEK", "RIDES", "KM", "LAST WEEK"]);
-        twin.sim.checkpoint(&format!("rides on {name}"));
-        let list = &composed_list(model, ScreenId::History);
-        let header = twin.sim.screen().run("THIS WEEK").expect("the header").y;
-
-        twin.guide(|sim| {
-            for _ in 0..7 {
-                sim.press(Role::Move);
-            }
-            sim.wait_for("8/8", seconds(2)).unwrap();
-            sim.advance(seconds(2));
-        });
-        // The week stays over the rides as they scroll.
-        shows(&twin.sim, &["THIS WEEK"]);
-        twin.sim.checkpoint(&format!("rides scrolled on {name}"));
-
-        twin.guide(|sim| {
-            sim.press(Role::Move);
-            sim.wait_for("1/8", seconds(2)).unwrap();
-            sim.advance(seconds(2));
-        });
-        let x = model.width as u16 / 2;
-        let low = card_middle(list, 2);
-        twin.sim.drag((x, low), (x, low - 60), 300, 200);
-        twin.sim.advance(seconds(2));
-        let moved = twin.sim.screen().run("THIS WEEK").map(|run| run.y);
-        assert_eq!(moved, Some(header), "{name}: the week stays put");
-
-        twin.sim.drag((x, low - 60), (x, low), 300, 200);
-        twin.sim.advance(seconds(2));
-        twin.sim.tap(x, card_middle(list, 1));
-        twin.sim.wait_gone("READING", seconds(5)).unwrap();
-        twin.sim.expect_text("SAVED RIDE");
-        assert_eq!(twin.sim.device.sdk.page(), Page::PastRide, "{name}");
-    }
-}
-
-#[test]
 fn settings_draw_scroll_and_edit_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let name = model.name;
@@ -671,10 +467,7 @@ fn settings_draw_scroll_and_edit_on_both_test_panels() {
             sim.home("SETTINGS");
             sim.expect_text("PROFILE");
         });
-        shows(
-            &twin.sim,
-            &["PROFILE", "FTP WATTS", "LTHR BPM", "BESTS", "FORM"],
-        );
+        shows(&twin.sim, &["PROFILE", "FTP WATTS", "LTHR BPM"]);
         twin.sim.checkpoint(&format!("settings on {name}"));
 
         twin.guide(|sim| {
@@ -693,7 +486,7 @@ fn settings_draw_scroll_and_edit_on_both_test_panels() {
         twin.guide(|sim| {
             sim.press(Role::Back);
             sim.expect_text("LTHR BPM");
-            for _ in 0..7 {
+            for _ in 0..5 {
                 sim.press(Role::Move);
             }
             sim.expect_text("DISPLAY");
@@ -740,9 +533,7 @@ fn the_ftp_sheet_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let mut twin = Twin::paired(model, world, &KINDS);
         twin.guide(|sim| {
-            sim.choose_workout("FTP TEST 20 MIN");
-            sim.press(Role::Act);
-            sim.wait_for("RECORDING", seconds(2)).unwrap();
+            sim.start_workout("FTP TEST 20 MIN");
         });
         twin.both(|sim| sim.ride_at(30.0, 150.0, 142.0, 90.0));
         twin.advance(seconds(30));
@@ -772,7 +563,7 @@ fn fresh(model: Model, world: fn(Model) -> Sim) -> Twin {
 }
 
 #[test]
-fn the_boot_ready_and_first_run_setup_draw_on_both_test_panels() {
+fn the_boot_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let name = model.name;
         let mut twin = fresh(model, world);
@@ -785,90 +576,8 @@ fn the_boot_ready_and_first_run_setup_draw_on_both_test_panels() {
         twin.sim.checkpoint(&format!("boot on {name}"));
         twin.guide(|sim| {
             sim.wait_usable();
-            sim.expect_text("WELCOME");
         });
-        shows(&twin.sim, &["WELCOME", "SET UP", "SKIP SETUP"]);
-        twin.sim.checkpoint(&format!("setup welcome on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Act);
-            sim.expect_text("SET FTP");
-        });
-        shows(&twin.sim, &["POWER", "SET FTP", "I DON'T KNOW"]);
-        twin.sim.checkpoint(&format!("setup power on {name}"));
-        for (next, words) in [
-            ("SET LTHR", ["HEART", "SET LTHR", "I DON'T KNOW"]),
-            ("PAIR SENSORS", ["SENSORS", "PAIR SENSORS", "LATER"]),
-            ("RIDE", ["READY", "RIDE", "HOME"]),
-        ] {
-            twin.guide(|sim| {
-                sim.press(Role::Move);
-                sim.press(Role::Act);
-                sim.expect_text(next);
-            });
-            shows(&twin.sim, &words);
-        }
-        twin.sim.checkpoint(&format!("setup done on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Move);
-            sim.press(Role::Act);
-            assert!(sim.on_home(), "{}", sim.screen().text());
-            sim.home("RIDE");
-            sim.expect_text("READY");
-        });
-        assert_eq!(twin.sim.device.sdk.page(), Page::Ready);
-        shows(&twin.sim, &["READY", "FREE RIDE", "GPS", "BATTERY"]);
-        twin.sim.checkpoint(&format!("ready on {name}"));
-    }
-}
-
-#[test]
-fn a_saved_ride_asks_to_delete_it_and_connects_a_phone_on_both_test_panels() {
-    for model in [WIDE, SMALL] {
-        let name = model.name;
-        let mut twin = Twin::paired(model, with_files, &KINDS);
-        twin.both(|sim| {
-            sim.init_bulk();
-            sim.format_files();
-        });
-        twin.guide(Sim::start_ride);
-        twin.both(|sim| sim.ride_at(28.0, 230.0, 142.0, 88.0));
-        twin.advance(seconds(60));
-        twin.guide(|sim| {
-            sim.stop_ride();
-            sim.done();
-            sim.home("RIDES");
-            sim.press(Role::Act);
-            sim.wait_gone("READING", seconds(5)).unwrap();
-            for _ in 0..6 {
-                if sim.screen().contains("DELETE RIDE?") {
-                    break;
-                }
-                sim.press(Role::Move);
-            }
-            sim.expect_text("IT GOES FROM YOUR RIDES");
-        });
-        shows(
-            &twin.sim,
-            &["DELETE RIDE?", "KM", "IT GOES FROM YOUR RIDES"],
-        );
-        twin.sim.checkpoint(&format!("delete ride on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Move);
-            sim.expect_text("SAVED RIDE");
-            sim.press(Role::Act);
-            sim.advance(seconds(1));
-            sim.expect_text("JOIN VANA WI-FI");
-        });
-        assert_eq!(twin.sim.device.sdk.page(), Page::Phone);
-        shows(&twin.sim, &["STEP 1 OF 2", "JOIN VANA WI-FI", "VANA"]);
-        twin.sim.checkpoint(&format!("phone join on {name}"));
-        twin.both(|sim| {
-            sim.device.sim_mut().access_point.clients = 1;
-            sim.advance(seconds(1));
-        });
-        twin.guide(|sim| sim.expect_text("OPEN YOUR RIDES"));
-        shows(&twin.sim, &["STEP 2 OF 2", "OPEN YOUR RIDES"]);
-        twin.sim.checkpoint(&format!("phone open on {name}"));
+        assert_eq!(twin.sim.device.sdk.page(), Page::Home);
     }
 }
 

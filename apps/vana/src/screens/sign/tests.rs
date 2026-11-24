@@ -183,10 +183,7 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
         );
         assert_eq!(form(page, Sign::None), None, "{page:?}");
     }
-    for page in [RidePage::Climb, RidePage::Lap] {
-        assert_eq!(form(page, at_rest), None, "{page:?}");
-    }
-    assert_eq!(form(RidePage::Lap, banner), None);
+    assert_eq!(form(RidePage::Climb, at_rest), None);
     for sign in [at_rest, banner, off(80), Sign::Arrived, Sign::TurnAround] {
         assert_eq!(form(RidePage::Map, sign), Some(SignForm::Badge), "{sign:?}");
     }

@@ -146,8 +146,6 @@ pub enum Icon {
     Check,
     /// Go back without changing anything.
     Back,
-    /// Send to the phone.
-    Send,
     /// Discard or delete a ride, or forget a sensor.
     Trash,
     /// Zero a power meter: a target.
@@ -175,7 +173,7 @@ impl Cue {
 
     pub const fn colors(&self) -> (u16, u16) {
         match self.icon {
-            Icon::Play | Icon::Check | Icon::Send | Icon::Calibrate => (GREEN, BLACK),
+            Icon::Play | Icon::Check | Icon::Calibrate => (GREEN, BLACK),
             Icon::Stop | Icon::Trash => (RED, WHITE),
             Icon::Back => (SECONDARY, BLACK),
             Icon::Less | Icon::More => (RAISED, WHITE),
@@ -390,13 +388,6 @@ fn icon(icon: Icon, x: i32, y: i32) -> u8 {
         }
         Icon::Check => stroke(x, y, &[(-24, 0), (-8, 16), (24, -18)], 7),
         Icon::Back => stroke(x, y, &[(10, -24), (-14, 0), (10, 24)], 7),
-        // An arrow up and away: the shaft, then its head.
-        Icon::Send => stroke(x, y, &[(0, 26), (0, -20)], 7).max(stroke(
-            x,
-            y,
-            &[(-18, -2), (0, -22), (18, -2)],
-            7,
-        )),
         // A bin: the lid and its handle, then the body narrowing down.
         Icon::Trash => stroke(x, y, &[(-24, -16), (24, -16)], 5)
             .max(stroke(x, y, &[(-8, -16), (-8, -24), (8, -24), (8, -16)], 5))
@@ -617,7 +608,6 @@ mod tests {
                 Icon::Stop,
                 Icon::Check,
                 Icon::Back,
-                Icon::Send,
                 Icon::Trash,
                 Icon::Calibrate,
                 Icon::Less,

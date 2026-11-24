@@ -5,7 +5,7 @@ use crate::compose::data::{Data, Metric, Reads};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Arg, Form, Forms, Tile};
 use crate::screens::canvas::Canvas;
-use crate::screens::chrome::{Align, GREEN, SECONDARY};
+use crate::screens::chrome::Align;
 use crate::screens::scaled::Scaled;
 use crate::screens::workout::Text;
 use core::fmt::Write;
@@ -59,41 +59,25 @@ impl Arg for Celled {
     }
 }
 
-fn caption(metric: Metric, previous: Option<i32>, out: &mut Text<12>) {
-    let mut number = Text::<12>::new();
-    Metric::PrevLapNumber.write(previous, &mut number);
-    let number = number.as_str();
-    let _ = match (metric, previous) {
-        (Metric::PrevLapTime, Some(_)) => write!(out, "LAP {number}"),
-        (Metric::PrevLapPower, Some(_)) => write!(out, "LAP {number} W"),
-        _ => out.push_str(match metric {
-            Metric::Distance => "DIST KM",
-            Metric::NormalizedPower => "NP W",
-            Metric::Ascent => "ASCENT M",
-            Metric::MaxSpeed => "MAX KM/H",
-            metric => metric.caption(),
-        }),
-    };
-}
-
-fn numbered(metric: Metric) -> bool {
-    matches!(metric, Metric::PrevLapTime | Metric::PrevLapPower)
+fn caption(metric: Metric, out: &mut Text<12>) {
+    let _ = out.push_str(match metric {
+        Metric::Distance => "DIST KM",
+        Metric::NormalizedPower => "NP W",
+        Metric::Ascent => "ASCENT M",
+        Metric::MaxSpeed => "MAX KM/H",
+        metric => metric.caption(),
+    });
 }
 
 /// The longest a cell's ride time reads in hours and minutes.
 const LAST_MINUTE: i32 = 99 * 3600 + 59 * 60;
 
-/// What a cell shows of `metric`, within bounds a ride reaches, so a half
-/// column reads it in the value face: a distance to 999.9 km, an ascent to
-/// 9999 m, a power difference within 999 W, and a ride time past an hour
-/// as H:MM. A value past a bound shows the bound.
 fn write(metric: Metric, value: Option<i32>, out: &mut Text<12>) {
     let bounded = |low: i32, high: i32| value.map(|value| value.clamp(low, high));
     match metric {
-        Metric::Distance | Metric::LapDistance => metric.write(bounded(0, 999_900), out),
+        Metric::Distance => metric.write(bounded(0, 999_900), out),
         Metric::Ascent => metric.write(bounded(0, 9_999), out),
-        Metric::PowerDiff => metric.write(bounded(-999, 999), out),
-        Metric::Moving | Metric::PrevLapTime => match bounded(0, LAST_MINUTE) {
+        Metric::Moving => match bounded(0, LAST_MINUTE) {
             Some(seconds) if seconds >= 3600 => {
                 let _ = write!(out, "{}:{:02}", seconds / 3600, seconds / 60 % 60);
             }
@@ -125,17 +109,6 @@ fn widest(metric: Metric, face: &Face) -> usize {
     .unwrap_or_default()
 }
 
-/// A difference carries its sign: green and "+" for faster or harder,
-/// grey and "-" for slower or easier. An easy lap is not an error, so it is
-/// never red.
-fn color(metric: Metric, value: Option<i32>) -> u16 {
-    match metric {
-        Metric::SpeedDiff | Metric::PowerDiff if value.is_some_and(|delta| delta > 0) => GREEN,
-        Metric::SpeedDiff | Metric::PowerDiff => SECONDARY,
-        metric => metric.color(),
-    }
-}
-
 impl Tile for RideCell {
     type Arg = Celled;
     const NAME: &'static str = "ride cell";
@@ -147,16 +120,9 @@ impl Tile for RideCell {
     fn forms(celled: Celled, at: &Scaled) -> Forms {
         let metric = celled.metric;
         let face = at.face(CAPTION);
-        let named = [None, Some(i32::MAX)]
-            .into_iter()
-            .filter(|number| number.is_none() || numbered(metric))
-            .map(|number| {
-                let mut text = Text::<12>::new();
-                caption(metric, number, &mut text);
-                face.fit_width(text.as_bytes())
-            })
-            .max()
-            .unwrap_or_default() as u16;
+        let mut text = Text::<12>::new();
+        caption(metric, &mut text);
+        let named = face.fit_width(text.as_bytes()) as u16;
         let over = face.fit_height() as u16 + at.unit(UNDER_CAPTION_UNITS) as u16;
         celled
             .looks()
@@ -183,10 +149,7 @@ impl Tile for RideCell {
             (left, Align::Left)
         };
         let mut named = Text::<12>::new();
-        let previous = numbered(metric)
-            .then(|| data.metric(Metric::PrevLapNumber))
-            .flatten();
-        caption(metric, previous, &mut named);
+        caption(metric, &mut named);
         let face = at.face(CAPTION);
         let base = usize::from(rect.top) + face.fit_height();
         out.caption(at, named.as_bytes(), right - left, x, base, align);
@@ -202,7 +165,7 @@ impl Tile for RideCell {
             x,
             base,
             align,
-            color(metric, value),
+            metric.color(),
         );
     }
 }
@@ -258,11 +221,8 @@ mod tests {
         assert_eq!(text(Metric::Moving, 323), "05:23");
         assert_eq!(text(Metric::Moving, 3599), "59:59");
         assert_eq!(text(Metric::Moving, 3600 + 23 * 60 + 59), "1:23");
-        assert_eq!(text(Metric::PrevLapTime, 400_000), "99:59");
-        assert_eq!(text(Metric::LapTime, 3600), "1:00:00");
         assert_eq!(text(Metric::Distance, 99_994), "99.99");
         assert_eq!(text(Metric::Distance, i32::MAX), "999.9");
         assert_eq!(text(Metric::Ascent, 12_000), "9999");
-        assert_eq!(text(Metric::PowerDiff, -1_500), "-999");
     }
 }

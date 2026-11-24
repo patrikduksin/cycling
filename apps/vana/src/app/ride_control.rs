@@ -229,10 +229,9 @@ fn press(page: Page, seen: Seen, button: Role, held: bool) -> Step {
     let riding = matches!(seen.ride, Status::Recording | Status::Paused);
     let saving = seen.pending || riding;
     match (page, button) {
-        (Page::Ready, BACK) => go(Go::Home),
-        (Page::Ready, ACT) if saving => go(Go::OpenRide),
-        (Page::Ready, ACT) if startable => submit(Action::Start),
-        (Page::Ready, ACT) => effect(Effect::NotReadyToast),
+        (Page::Home, ACT) if saving => go(Go::OpenRide),
+        (Page::Home, ACT) if startable => submit(Action::Start),
+        (Page::Home, ACT) => effect(Effect::NotReadyToast),
         (Page::Ride, BACK) if !seen.recording => go(Go::Home),
         (Page::Ride, _) if seen.pending => STAY,
         (Page::Ride, ACT) => match seen.ride {
@@ -273,12 +272,12 @@ fn press(page: Page, seen: Seen, button: Role, held: bool) -> Step {
 
 fn answered(page: Page, action: Action, accepted: bool, origin: Origin) -> Step {
     match (page, action, accepted) {
-        (Page::Ready, Action::Start, true) => Step {
+        (Page::Home, Action::Start, true) => Step {
             go: Some(Go::OpenRide),
             note: Some(RideMessage::Clear),
             ..STAY
         },
-        (Page::Ready, Action::Start, false) if matches!(origin, Origin::Rider { .. }) => {
+        (Page::Home, Action::Start, false) if matches!(origin, Origin::Rider { .. }) => {
             effect(Effect::NotReadyToast)
         }
         (Page::EndRide, Action::Finish, true) => Step {
@@ -308,29 +307,18 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
         }
         Page::EndRide | Page::DiscardRide if seen.ride != Status::Paused => Some(Go::BackToRide),
         Page::Summary if finish_failed => Some(Go::BackToRide),
-        Page::Ready | Page::Summary | Page::History | Page::PastRide | Page::Phone
-            if seen.ride == Status::Recording =>
-        {
-            Some(Go::OpenRide)
-        }
+        Page::Summary if seen.ride == Status::Recording => Some(Go::OpenRide),
         Page::Boot
         | Page::Format
         | Page::Home
         | Page::Sensors
-        | Page::Ready
         | Page::Ride
         | Page::EndRide
         | Page::DiscardRide
         | Page::LoseRides
         | Page::Summary
         | Page::Settings
-        | Page::Bests
-        | Page::Form
-        | Page::Workouts
-        | Page::Phone
-        | Page::History
-        | Page::PastRide
-        | Page::Setup => None,
+        | Page::Workouts => None,
     };
     Step {
         go,
@@ -375,6 +363,7 @@ impl Runtime {
             None => {}
             Some(Go::OpenRide) => {
                 self.recovery.clear();
+                self.navigation.set_first_page(self.first_ride_page());
                 self.navigation.go(To::Ride);
             }
             Some(Go::BackToRide) => {
@@ -392,8 +381,7 @@ impl Runtime {
                 if self.navigation.page() != Page::Summary {
                     self.recovery.finish(now);
                 }
-                let news = super::bests::news(&self.ride.bests_found(), &self.bests.bests);
-                self.navigation.go(To::Summary { news });
+                self.navigation.go(To::Summary);
             }
             Some(Go::Home) => self.ride_left(),
             Some(Go::Discarded) => {
@@ -631,17 +619,17 @@ mod tests {
             ..both(Go::EndRide, RideMessage::Clear)
         };
         check(&[
-            (Page::Ready, seen(Ready), press(ACT), submit(Action::Start)),
-            (Page::Ready, seen(Recording), press(ACT), go(Go::OpenRide)),
-            (Page::Ready, pending(Ready), press(ACT), go(Go::OpenRide)),
+            (Page::Home, seen(Ready), press(ACT), submit(Action::Start)),
+            (Page::Home, seen(Recording), press(ACT), go(Go::OpenRide)),
+            (Page::Home, pending(Ready), press(ACT), go(Go::OpenRide)),
             (
-                Page::Ready,
+                Page::Home,
                 seen(Scanning),
                 press(ACT),
                 effect(Effect::NotReadyToast),
             ),
-            (Page::Ready, seen(Ready), press(BACK), go(Go::Home)),
-            (Page::Ready, seen(Ready), press(MOVE), STAY),
+            (Page::Home, seen(Ready), press(BACK), STAY),
+            (Page::Home, seen(Ready), press(MOVE), STAY),
             (
                 Page::Ride,
                 seen(Recording),
@@ -686,7 +674,6 @@ mod tests {
             (Page::Summary, seen(Saved), held, STAY),
             (Page::Summary, pending(Paused), press(ACT), STAY),
             (Page::Summary, seen(Error), press(ACT), go(Go::Home)),
-            (Page::Home, seen(Ready), press(ACT), STAY),
         ]);
     }
 
@@ -697,13 +684,13 @@ mod tests {
         let refused = RideMessage::StorageNotReady;
         check(&[
             (
-                Page::Ready,
+                Page::Home,
                 pending(Ready),
                 answer(Action::Start, true, RIDER),
                 both(Go::OpenRide, clear),
             ),
             (
-                Page::Ready,
+                Page::Home,
                 seen(Ready),
                 answer(Action::Start, false, RIDER),
                 effect(Effect::NotReadyToast),
@@ -739,7 +726,7 @@ mod tests {
                 STAY,
             ),
             (
-                Page::Ready,
+                Page::Home,
                 seen(Ready),
                 answer(Action::Start, false, start),
                 note(refused),
@@ -763,7 +750,7 @@ mod tests {
                 submit(Action::Resume),
             ),
             (
-                Page::Ready,
+                Page::Home,
                 seen(Ready),
                 Event::Auto(Call::Do(Decision::Start)),
                 submit(Action::Start),
@@ -832,18 +819,6 @@ mod tests {
                 seen(Paused),
                 since(Paused),
                 go(Go::BackToRide),
-            ),
-            (
-                Page::Ready,
-                seen(Recording),
-                since(Ready),
-                changed(Go::OpenRide),
-            ),
-            (
-                Page::History,
-                seen(Recording),
-                since(Recording),
-                go(Go::OpenRide),
             ),
             (
                 Page::Home,

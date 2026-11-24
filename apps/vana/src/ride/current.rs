@@ -27,8 +27,6 @@
 //!
 //! `after_settle` then takes the outcome and pauses a continuation that owes
 //! a pause.
-use crate::kept::bests::Found;
-use crate::kept::facts::record::Climbing;
 use crate::ride::auto::{Auto, Call, Decision, Motion};
 use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
@@ -48,11 +46,6 @@ use device_api::bulk::ReadWrite;
 use firmware_services::checksum::crc32;
 use firmware_services::trace::origin;
 use firmware_services::why;
-
-/// Slots the ride index reads per tick: internal flash reads are quick, each
-/// MMC read is three card reads (ownership checks, then the record).
-const INDEX_INTERNAL_BUDGET: usize = 32;
-const INDEX_BULK_BUDGET: usize = 4;
 
 /// Rides a volatile journal may start before it is cleared again.
 pub(crate) const VOLATILE_STARTS: usize = 16;
@@ -112,9 +105,8 @@ pub(crate) struct Ride {
     /// Altitude over distance for the summary's chart, kept and reset with
     /// `totals`.
     trace: Trace,
-    bests_found: Found,
     /// Climbs finished this ride.
-    climbing: Climbing,
+    climbs_done: u16,
     /// Climb detection and the elevation profile, fed and reset with `totals`.
     climbs: Climbs,
     /// The last step wholly inside active time. A step cut short by an accepted
@@ -206,8 +198,7 @@ impl Default for Ride {
             zone_time: ZoneTime::default(),
             efforts: Efforts::default(),
             trace: Trace::default(),
-            bests_found: Found::default(),
-            climbing: Climbing::default(),
+            climbs_done: 0,
             climbs: Climbs::default(),
             settled: None,
             altitude_fresh: false,
@@ -272,12 +263,8 @@ impl Ride {
         &self.trace
     }
 
-    pub(crate) fn bests_found(&self) -> Found {
-        self.bests_found
-    }
-
-    pub(crate) fn climbing(&self) -> Climbing {
-        self.climbing
+    pub(crate) fn climbs_done(&self) -> u16 {
+        self.climbs_done
     }
 
     pub(crate) fn climbs(&self) -> &Climbs {
@@ -434,12 +421,6 @@ impl Ride {
     /// The journal on `medium` loses its rides at power-off.
     pub(crate) fn volatile(&self, medium: Medium) -> bool {
         medium == Medium::Internal && self.volatile_store.is_some()
-    }
-
-    /// The store id of the internal journal's rides in FILES records; 0 for
-    /// a durable journal.
-    pub(crate) fn internal_store(&self) -> u64 {
-        self.volatile_store.unwrap_or(0)
     }
 
     /// The internal ride open now, if its journal is volatile.
@@ -673,9 +654,8 @@ impl Ride {
         let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
         self.altitude_fresh = altitude.is_some();
         self.trace.add(self.totals.distance_mm(), altitude);
-        if let Some(ClimbEvent::Finished(climb)) = self.climbs.add(credited, distance_mm, altitude)
-        {
-            self.climbing.add(climb.gain_dm);
+        if let Some(ClimbEvent::Finished(_)) = self.climbs.add(credited, distance_mm, altitude) {
+            self.climbs_done = self.climbs_done.saturating_add(1);
         }
         let Some(player) = player else {
             return self
@@ -788,90 +768,6 @@ impl Ride {
             }
             Medium::Bulk => Bulk::new(&mut self.bulk_media, bulk).read_slot(index, output),
         }
-    }
-
-    /// Read up to `budget` more slots of a saved ride of `medium` into the
-    /// ride sums, through the export path's reader.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn replay(
-        &mut self,
-        medium: Medium,
-        store: &mut impl RideStorage,
-        bulk: &mut impl ReadWrite,
-        replay: &mut crate::ride::replay::Replay,
-        budget: usize,
-        profile: &TrainingProfile,
-    ) {
-        use crate::ride::journal::Journal;
-        let mut sums = crate::ride::replay::Sums {
-            totals: &mut self.totals,
-            zone_time: &mut self.zone_time,
-            efforts: &mut self.efforts,
-            trace: &mut self.trace,
-        };
-        let (internal, bulk_media) = (&mut self.internal_media, &mut self.bulk_media);
-        let mut slot = crate::ride::log::Slot::default();
-        replay.step(budget, profile, &mut sums, |index| {
-            let read = match medium {
-                Medium::Internal => Internal::new(internal, store).read_slot(index, &mut slot),
-                Medium::Bulk => Bulk::new(bulk_media, bulk).read_slot(index, &mut slot),
-            };
-            match read {
-                Read::Slot => crate::ride::log::decode(&slot),
-                Read::Invalid | Read::Failed => None,
-            }
-        });
-    }
-
-    /// Index a few more saved rides of each journal, through the export
-    /// path's reader, while no ride is open. Returns whether any was added.
-    /// Whether the index has read every slot both journals hold; a journal
-    /// that cannot be read yet holds nothing to count.
-    pub(crate) fn directory_done(&self, index: &crate::ride::directory::RideIndex) -> bool {
-        let caught_up =
-            |exportable: bool, scanned: usize, next: usize| !exportable || scanned >= next;
-        caught_up(
-            self.internal.exportable(),
-            index.internal.scanned(),
-            self.internal.next_slot(),
-        ) && caught_up(
-            self.bulk.exportable(),
-            index.bulk.scanned(),
-            self.bulk.next_slot(),
-        )
-    }
-
-    pub(crate) fn directory_step(
-        &mut self,
-        index: &mut crate::ride::directory::RideIndex,
-        store: &mut impl RideStorage,
-        bulk: &mut impl ReadWrite,
-    ) -> bool {
-        use crate::ride::journal::Journal;
-        if self.internal.riding() || self.bulk.riding() {
-            return false;
-        }
-        let mut slot = crate::ride::log::Slot::default();
-        let mut added = false;
-        if self.internal.exportable() {
-            let media = &mut self.internal_media;
-            added |= index.internal.step(
-                self.internal.next_slot(),
-                INDEX_INTERNAL_BUDGET,
-                &mut slot,
-                |i, out| Internal::new(media, store).read_slot(i, out),
-            );
-        }
-        if self.bulk.exportable() {
-            let media = &mut self.bulk_media;
-            added |= index.bulk.step(
-                self.bulk.next_slot(),
-                INDEX_BULK_BUDGET,
-                &mut slot,
-                |i, out| Bulk::new(media, bulk).read_slot(i, out),
-            );
-        }
-        added
     }
 
     /// Start the internal continuation of a ride the bulk medium lost. Waits
@@ -1036,8 +932,7 @@ impl Ride {
                 self.continuation = Continuation::None;
                 self.laps = Laps::default();
                 self.clear_sums();
-                self.bests_found = Found::default();
-                self.climbing = Climbing::default();
+                self.climbs_done = 0;
                 self.climbs = Climbs::default();
             }
             self.counted_ms = 0;
@@ -1100,11 +995,7 @@ impl Ride {
     pub(crate) fn after_settle(&mut self, settled: &Settled, now: u64) {
         match settled.hide {
             Hide::NotAsked => {}
-            Hide::Hidden => self.discard = Discard::Saved { hidden: true },
             Hide::Kept => self.discard = Discard::Saved { hidden: false },
-        }
-        if let Some(claimed) = settled.claimed {
-            self.bests_found = claimed.found;
         }
         // A ride lost while paused continues paused; automation waits until
         // it is, so an automatic pause stays automatic.
@@ -1143,8 +1034,7 @@ impl why::State for Ride {
         out.field("counted_ms", &self.counted_ms);
         out.field("zone_time", &self.zone_time);
         out.field("efforts", &self.efforts);
-        out.field("bests_found", &self.bests_found);
-        out.field("climbing", &self.climbing);
+        out.field("climbs_done", &self.climbs_done);
         out.field("settled", &self.settled);
         out.field("altitude_fresh", &self.altitude_fresh);
         out.field("auto", &self.auto);

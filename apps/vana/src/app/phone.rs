@@ -28,7 +28,6 @@
 use super::Runtime;
 use super::commands::NotQueued;
 use super::course::{course_changed, save_turns, upload};
-use super::navigation::To;
 use super::pace::Touched;
 use super::sync::Confirmed;
 use crate::kept::{self, course::Store};
@@ -41,10 +40,6 @@ use crate::ride::log::Slot;
 use crate::ride::medium::Medium;
 use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
-use crate::screens::phone::{
-    GROUP, PASSWORD_ALPHABET, PASSWORD_GROUPS, SSID_ALPHABET, SSID_PREFIX,
-};
-use crate::screens::settings::Sections;
 use crate::workout::codec::{DecodeError, ENCODED_MAX};
 use crate::workout::library::{self, Library, LoadError, StoreError};
 use core::fmt::Write;
@@ -60,6 +55,11 @@ use firmware_services::why;
 
 mod screens;
 
+const PASSWORD_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const PASSWORD_GROUPS: usize = 3;
+const GROUP: usize = 4;
+const SSID_PREFIX: &str = "VANA-";
+const SSID_ALPHABET: &[u8] = b"0123456789ABCDEF";
 /// A session without requests ends after this long.
 pub const IDLE_MS: u64 = 10 * 60 * 1000;
 /// Slots read per service step while indexing or sizing a file.
@@ -486,10 +486,6 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) {
-        self.navigation.set_sections(match ap.state() {
-            AccessPointState::Unsupported => Sections::NoPhone,
-            _ => Sections::All,
-        });
         if self.format.holds_host_storage() {
             return;
         }
@@ -995,9 +991,6 @@ impl Runtime {
         start: Option<u64>,
         receipt: Option<u32>,
     ) {
-        if self.hidden_id(medium, ride_id) {
-            return self.reply(id, 404, Some(r#"{"error":"deleted"}"#));
-        }
         let index = MEDIA.iter().position(|m| *m == medium).unwrap_or(0);
         let Some(ride) = self.phone.w().indexes[index]
             .find(start_slot, ride_id)
@@ -1491,10 +1484,6 @@ impl Runtime {
                 break;
             };
             let Some(ride) = heads[medium] else { break };
-            if self.hidden_id(MEDIA[medium], ride.ride_id) {
-                sent[medium] += 1;
-                continue;
-            }
             let unsaved = self.sync.protects(MEDIA[medium], ride.ride_id);
             let json = Self::activity_json(MEDIA[medium], &ride, first, unsaved);
             if server.room() < json.len() {
@@ -1684,131 +1673,6 @@ enum Readiness {
     Ready(usize),
     Pending,
     Never,
-}
-
-impl Runtime {
-    /// Open Connect phone: a session on the device's access point, starting
-    /// at the join code.
-    pub(super) fn enter_phone(&mut self) {
-        self.navigation.go(To::Phone);
-        self.open_phone(Mode::AccessPoint);
-    }
-
-    /// No session runs or is starting: the page says why it ended.
-    pub(super) fn phone_ended(&self) -> bool {
-        self.phone.session.is_none() && self.phone.wanted.is_none()
-    }
-
-    /// End the session and return where the page was opened from.
-    pub(super) fn close_phone_page(&mut self) {
-        self.close_phone();
-        self.navigation
-            .go(To::Page(if self.history.phone.take().is_some() {
-                crate::screens::workout::Page::PastRide
-            } else {
-                crate::screens::workout::Page::Home
-            }));
-    }
-
-    pub(super) fn phone_touch(&mut self) {
-        if self.phone_ended() {
-            self.enter_phone();
-        } else {
-            self.navigation.go(To::PhoneCode);
-        }
-    }
-
-    pub(super) fn phone_joined(&mut self) {
-        if let Some(status) = self.phone_status()
-            && status.mode == Mode::AccessPoint
-            && matches!(status.access_point, AccessPointState::Up { clients } if clients > 0)
-            && !self.navigation.phone_advanced()
-        {
-            self.navigation.go(To::PhoneJoined);
-        }
-    }
-
-    /// The Connect phone lines and code for this frame.
-    #[inline(never)]
-    pub(super) fn phone_view(&self, view: &mut crate::screens::workout::View) {
-        use crate::screens::phone::{NAME, NOTE, PROBLEM, SECRET, STEP, TITLE_LINE, place};
-        use crate::screens::qr::Qr;
-        let room = self
-            .composition
-            .laids()
-            .get(crate::compose::builtin::ScreenId::Phone)
-            .and_then(|laid| laid.box_of(crate::compose::registry::CODE));
-        let place = |qr| room.map(|room| place(room, qr));
-        let (qr, lines) = view.show_phone();
-        let Some(status) = self.phone_status() else {
-            let reason = match (self.phone.wanted, self.phone.closed) {
-                (Some(Some(_)), _) | (_, None) => None,
-                (_, Some(closed)) => Some(closed),
-            };
-            match reason {
-                None => {
-                    let _ = lines[STEP].push_str("CONNECT PHONE");
-                    let _ = lines[TITLE_LINE].push_str("STARTING WI-FI");
-                }
-                Some(closed) => {
-                    let _ = lines[STEP].push_str("PHONE DISCONNECTED");
-                    let _ = lines[TITLE_LINE].push_str(match closed {
-                        Closed::Rider => "SESSION ENDED",
-                        Closed::Idle => "ENDED AFTER 10 MIN IDLE",
-                        Closed::Ride => "NOT DURING A RIDE",
-                        Closed::Radio => "WI-FI DID NOT START",
-                        Closed::Offline => "NO HOME WI-FI",
-                    });
-                    let _ = lines[NOTE].push_str("TAP TO TRY AGAIN");
-                    let _ = lines[PROBLEM].push_str("1");
-                }
-            }
-            return;
-        };
-        let joined = match status.access_point {
-            AccessPointState::Up { clients } => clients,
-            _ => 0,
-        };
-        let url = status.url();
-        let join = status.mode == Mode::AccessPoint && self.navigation.phone_step() == 0;
-        if join {
-            let _ = lines[STEP].push_str("STEP 1 OF 2");
-            let _ = lines[TITLE_LINE].push_str("JOIN VANA WI-FI");
-            let _ = lines[NAME].push_str(status.ssid.text());
-            for (index, chunk) in status.password.bytes().chunks(GROUP).enumerate() {
-                if index > 0 {
-                    let _ = lines[SECRET].push_str(" ");
-                }
-                let _ = lines[SECRET].push_str(core::str::from_utf8(chunk).unwrap_or(""));
-            }
-            if joined > 0 {
-                let _ = write!(lines[NOTE], "{joined} JOINED");
-            } else {
-                let _ = lines[NOTE].push_str("SCAN WITH THE CAMERA");
-            }
-            *qr = Qr::encode(status.join_text().as_str()).and_then(place);
-            return;
-        }
-        let _ = lines[STEP].push_str(match status.mode {
-            Mode::AccessPoint => "STEP 2 OF 2",
-            Mode::Home => "ON HOME WI-FI",
-        });
-        let _ = lines[TITLE_LINE].push_str("OPEN YOUR RIDES");
-        match (&url, status.address) {
-            (Some(url), Some([a, b, c, d])) => {
-                let _ = write!(lines[NAME], "{a}.{b}.{c}.{d}");
-                if status.downloads > 0 {
-                    let _ = write!(lines[NOTE], "{} SENT", status.downloads);
-                } else {
-                    let _ = lines[NOTE].push_str("ENDS AFTER 10 MIN IDLE");
-                }
-                *qr = Qr::encode(url.as_str()).and_then(place);
-            }
-            _ => {
-                let _ = lines[NAME].push_str("WAITING FOR WI-FI");
-            }
-        }
-    }
 }
 
 /// The page's Clear rides, as `/api/status` names it.

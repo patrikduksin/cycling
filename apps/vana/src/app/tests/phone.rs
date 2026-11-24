@@ -458,131 +458,6 @@ fn a_session_does_not_open_during_a_ride() {
     assert!(access_point.started.is_none());
 }
 
-fn phone_lines(runtime: &mut Runtime) -> (Vec<String>, Option<usize>) {
-    let mut view =
-        crate::screens::workout::View::new(crate::screens::workout::Page::Phone, 0, None);
-    runtime.phone_joined();
-    runtime.compose(false, 0);
-    runtime.phone_view(&mut view);
-    let lines = view
-        .lines()
-        .iter()
-        .map(|line| String::from(line.as_str()))
-        .collect();
-    (lines, view.qr().map(|code| code.qr.size()))
-}
-
-#[test]
-fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joins() {
-    use crate::screens::phone::{NAME, NOTE, SECRET, STEP, TITLE_LINE};
-    use crate::screens::settings::Row;
-    use crate::screens::workout::Page;
-    let mut journal = Journal::erased();
-    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
-    attach(&mut runtime);
-    runtime.navigation.go(To::Page(Page::Settings));
-    let phone = runtime.navigation.sections().field(Row::Phone).unwrap();
-    runtime.navigation.go(To::Field(phone));
-    runtime.input_received(press(Role::Act), now + 1600, now + 1600, &mut radio);
-    assert_eq!(runtime.navigation.page(), Page::Phone);
-    let (lines, code) = phone_lines(&mut runtime);
-    assert_eq!(lines[TITLE_LINE], "STARTING WI-FI");
-    assert!(code.is_none());
-
-    let mut phone = Phone {
-        runtime: &mut runtime,
-        journal: &mut journal,
-        transport: Transport::default(),
-        radio: Radio2::default(),
-        now: now + 1600,
-    };
-    phone.step();
-    phone.step();
-    let status = phone.runtime.phone_status().unwrap();
-    let (lines, code) = phone_lines(phone.runtime);
-    assert_eq!(lines[STEP], "STEP 1 OF 2");
-    assert_eq!(lines[TITLE_LINE], "JOIN VANA WI-FI");
-    assert_eq!(lines[NAME], status.ssid.text());
-    assert_eq!(lines[SECRET].replace(' ', ""), status.password.text());
-    assert_eq!(lines[NOTE], "SCAN WITH THE CAMERA");
-    assert!(code.is_some());
-
-    // A phone joins: the page code shows by itself, once.
-    phone.radio.clients = 1;
-    phone.step();
-    let (lines, code) = phone_lines(phone.runtime);
-    assert_eq!(lines[STEP], "STEP 2 OF 2");
-    assert_eq!(lines[NAME], "192.168.4.1");
-    assert!(code.is_some());
-    // The rider can go back to the join code for a second phone.
-    phone.runtime.input_received(
-        press(Role::Move),
-        phone.now + 400,
-        phone.now + 400,
-        &mut radio,
-    );
-    let (lines, _) = phone_lines(phone.runtime);
-    assert_eq!(lines[STEP], "STEP 1 OF 2");
-    assert_eq!(lines[NOTE], "1 JOINED");
-
-    // BACK ends the session and the access point stops.
-    phone.runtime.input_received(
-        press(Role::Back),
-        phone.now + 800,
-        phone.now + 800,
-        &mut radio,
-    );
-    assert_eq!(phone.runtime.navigation.page(), Page::Home);
-    phone.step();
-    phone.step();
-    assert!(phone.runtime.phone_status().is_none());
-    assert_eq!(phone.radio.stops, 1);
-}
-
-#[test]
-fn connect_phone_says_why_a_session_ended_and_a_tap_on_the_prompt_tries_again() {
-    use crate::compose::builtin::ScreenId;
-    use crate::compose::registry::SAYS;
-    use crate::compose::tiles::says::Says;
-    use crate::screens::phone::{NOTE, PROBLEM, TITLE_LINE};
-    let mut journal = Journal::erased();
-    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
-    attach(&mut runtime);
-    runtime.enter_phone();
-    let mut phone = Phone {
-        runtime: &mut runtime,
-        journal: &mut journal,
-        transport: Transport::default(),
-        radio: Radio2::default(),
-        now,
-    };
-    phone.step();
-    phone.now += crate::app::phone::IDLE_MS + 1;
-    phone.step();
-    let (lines, code) = phone_lines(phone.runtime);
-    assert_eq!(lines[TITLE_LINE], "ENDED AFTER 10 MIN IDLE");
-    assert_eq!(lines[NOTE], "TAP TO TRY AGAIN");
-    assert!(!lines[PROBLEM].is_empty() && code.is_none());
-    let laid = phone
-        .runtime
-        .composition
-        .laids()
-        .get(ScreenId::Phone)
-        .unwrap();
-    let (_, _, prompt) = laid
-        .tiles()
-        .find(|&(kind, arg, _)| kind == SAYS && arg == Says::PhoneNote as u8)
-        .expect("the prompt's tile");
-    let prompt = prompt.rect.rect();
-    let middle = (
-        prompt.center_x() as u16,
-        ((prompt.top + prompt.bottom) / 2) as u16,
-    );
-    super::touch::touch(phone.runtime, &mut radio, &[middle], phone.now + 100);
-    phone.step();
-    assert!(phone.runtime.phone_status().is_some(), "a new session");
-}
-
 /// A phone session with a memory card whose FILES store is formatted, and
 /// room for a course.
 struct Upload {
@@ -1204,26 +1079,6 @@ fn hostile_workout_uploads_never_panic_and_leave_only_valid_files() {
     assert!(kept >= 1 && refused > 200, "{kept} kept, {refused} refused");
 }
 
-struct FailedRadio;
-
-impl AccessPoint for FailedRadio {
-    fn start(&mut self, _: AccessPointConfig) -> Result<(), device_api::observation::Error> {
-        Ok(())
-    }
-    fn stop(&mut self) -> Result<(), device_api::observation::Error> {
-        Ok(())
-    }
-    fn state(&self) -> AccessPointState {
-        AccessPointState::Failed
-    }
-    fn reach(&self) -> Reach {
-        Reach::default()
-    }
-    fn entropy(&mut self) -> u32 {
-        0
-    }
-}
-
 fn learn_radio_in_a_phone_pass(
     runtime: &mut Runtime,
     journal: &mut Journal,
@@ -1244,13 +1099,6 @@ fn device_rows(runtime: &Runtime) -> (bool, Vec<&'static str>) {
         .filter(|label| canvas.shows(label))
         .collect();
     (canvas.shows("DEVICE"), shown)
-}
-
-fn past_ride_cues(runtime: &Runtime) -> std::vec::Vec<crate::screens::cue::Cue> {
-    let mut view = runtime.navigation.view(None);
-    runtime.past_view(&mut view);
-    view.compose_main();
-    view.prepare().cues().to_vec()
 }
 
 #[test]
@@ -1291,47 +1139,6 @@ fn without_wifi_settings_device_shows_three_rows_for_move_swipe_and_tap() {
     assert_eq!(runtime.navigation.page(), Page::Settings);
 }
 
-#[test]
-fn a_failed_radio_keeps_the_phone_row() {
-    let mut journal = Journal::erased();
-    let mut radio = super::Radio::new();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut FailedRadio, 900);
-    runtime.navigation.go(To::Settings);
-    super::touch::touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], 1000);
-    assert_eq!(
-        device_rows(&runtime),
-        (true, std::vec!["SENSORS", "PHONE", "STORAGE", "FIRMWARE"])
-    );
-}
-
-#[test]
-fn without_wifi_a_saved_ride_has_no_send_cue_and_act_stays() {
-    use crate::screens::cue::{Cue, Icon};
-    use crate::screens::workout::Page;
-    use device_api::input::Role;
-    let mut journal = Journal::erased();
-    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
-    let send = [Cue::new(Role::Act, Icon::Send)];
-
-    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut FailedRadio, now);
-    runtime.open_past_ride(0);
-    runtime.replay_step(&mut journal, &mut MustNotWrite);
-    assert_eq!(runtime.navigation.page(), Page::PastRide);
-    assert_eq!(past_ride_cues(&runtime), send);
-
-    runtime.navigation.go(To::Page(Page::History));
-    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut Absent, now + 100);
-    runtime.open_past_ride(0);
-    for _ in 0..50 {
-        runtime.replay_step(&mut journal, &mut MustNotWrite);
-    }
-    assert_eq!(past_ride_cues(&runtime), []);
-    runtime.input_received(press(Role::Act), now + 500, now + 500, &mut radio);
-    assert_eq!(runtime.navigation.page(), Page::PastRide);
-    assert!(runtime.phone_status().is_none());
-}
-
 /// Holding MOVE on the map stops following the course, whether or not a
 /// frame has drawn the map since it opened.
 #[test]
@@ -1359,64 +1166,4 @@ fn holding_move_on_a_map_just_opened_stops_following() {
         assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
         assert!(!runtime.following(), "still following, map drawn: {drawn}");
     }
-}
-
-#[test]
-fn a_tap_on_the_scan_instruction_keeps_the_join_code() {
-    use crate::compose::builtin::ScreenId;
-    use crate::compose::registry::SAYS;
-    use crate::compose::tiles::says::Says;
-    use crate::screens::phone::{NOTE, STEP};
-    let mut journal = Journal::erased();
-    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
-    attach(&mut runtime);
-    runtime.enter_phone();
-    let mut phone = Phone {
-        runtime: &mut runtime,
-        journal: &mut journal,
-        transport: Transport::default(),
-        radio: Radio2::default(),
-        now,
-    };
-    phone.step();
-    phone.step();
-    let (lines, code) = phone_lines(phone.runtime);
-    assert_eq!(lines[NOTE], "SCAN WITH THE CAMERA");
-    assert!(code.is_some());
-    let laid = phone
-        .runtime
-        .composition
-        .laids()
-        .get(ScreenId::Phone)
-        .unwrap();
-    let (_, _, note) = laid
-        .tiles()
-        .find(|&(kind, arg, _)| kind == SAYS && arg == Says::PhoneNote as u8)
-        .expect("the note's tile");
-    let note = note.rect.rect();
-    let middle = (
-        note.center_x() as u16,
-        ((note.top + note.bottom) / 2) as u16,
-    );
-    super::touch::touch(phone.runtime, &mut radio, &[middle], phone.now + 100);
-    let (lines, _) = phone_lines(phone.runtime);
-    assert_eq!(lines[STEP], "STEP 1 OF 2", "the join code stays");
-}
-
-#[test]
-fn a_saved_ride_still_reading_has_no_send_cue_and_act_stays() {
-    use crate::screens::workout::Page;
-    use device_api::input::Role;
-    let mut journal = Journal::erased();
-    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
-    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut FailedRadio, now);
-    runtime.open_past_ride(0);
-    assert_eq!(
-        runtime.past_saving(),
-        crate::screens::ride::summary::Saving::Reading
-    );
-    assert_eq!(past_ride_cues(&runtime), []);
-    runtime.input_received(press(Role::Act), now + 500, now + 500, &mut radio);
-    assert_eq!(runtime.navigation.page(), Page::PastRide);
-    assert!(runtime.phone_status().is_none());
 }

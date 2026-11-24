@@ -8,7 +8,7 @@ use crate::screens::kinetic::Kinetic;
 use crate::screens::ride::RidePage;
 use crate::screens::settings;
 use crate::screens::touch::Touches;
-use crate::screens::workout::{Page, Text, View};
+use crate::screens::workout::{Page, View};
 use device_api::input::Role;
 use firmware_services::why;
 
@@ -41,35 +41,15 @@ pub(super) enum To {
     Settings,
     Section(usize),
     Field(usize),
-    Edit {
-        field: usize,
-        wheel_origin: Wheel,
-        from_setup: bool,
-    },
+    Edit { field: usize, wheel_origin: Wheel },
     EditDone,
-    Setup(Page),
-    Sensors {
-        from_setup: bool,
-    },
-    LeaveSensors(Page),
     Ride,
-    Summary {
-        news: Option<Text<24>>,
-    },
+    Summary,
     Home,
-    PastRide,
-    Phone,
-    PhoneCode,
-    PhoneJoined,
     RidePage(RidePage),
-    LeavePause {
-        wrapped_to: RidePage,
-    },
+    LeavePause { wrapped_to: RidePage },
     PauseWrapped,
-    Road {
-        road: Road,
-        page_on: bool,
-    },
+    Road { road: Road, page_on: bool },
     WorkoutDone,
     RideStarted,
     Restore(Restore),
@@ -84,14 +64,6 @@ pub(super) struct Navigation {
     sections: settings::Sections,
     /// Set only on Settings.
     edit: Option<Edit>,
-    /// The Settings editor was opened from setup and returns there.
-    setup_return: bool,
-    /// The sensor menu was opened from setup and returns there.
-    sensors_return: bool,
-    /// Connect phone shows the join code (0) or the page code (1).
-    phone_step: u8,
-    /// The screen already moved to the page code when a phone joined.
-    phone_advanced: bool,
     /// Whether the climb page came up by itself, and where it goes back to
     /// (`climb_page`).
     climb: Follow,
@@ -123,10 +95,6 @@ pub(super) struct Navigation {
     summary_page: usize,
     /// A sound the next `alert` plays.
     chime: Option<Cue>,
-    /// The personal bests the ride set, announced when its summary opens.
-    best_news: Option<Text<24>>,
-    /// The bests toast on screen, so leaving the summary can take it away.
-    best_shown: Option<Text<24>>,
 }
 
 state!(Navigation {
@@ -135,10 +103,6 @@ state!(Navigation {
     settings_field,
     sections,
     edit,
-    setup_return,
-    sensors_return,
-    phone_step,
-    phone_advanced,
     climb,
     road,
     last_press,
@@ -154,8 +118,6 @@ state!(Navigation {
     pause_wrapped,
     summary_page,
     chime,
-    best_news,
-    best_shown,
 });
 
 impl Default for Navigation {
@@ -166,10 +128,6 @@ impl Default for Navigation {
             settings_field: 0,
             sections: settings::Sections::All,
             edit: None,
-            setup_return: false,
-            sensors_return: false,
-            phone_step: 0,
-            phone_advanced: false,
             climb: Default::default(),
             road: Default::default(),
             last_press: 0,
@@ -185,8 +143,6 @@ impl Default for Navigation {
             pause_wrapped: false,
             summary_page: 0,
             chime: None,
-            best_news: None,
-            best_shown: None,
         }
     }
 }
@@ -216,55 +172,25 @@ impl Navigation {
             To::Edit {
                 field,
                 wheel_origin,
-                from_setup,
             } => {
                 self.page = Page::Settings;
                 self.settings_field = field;
                 self.edit = Some(Edit { wheel_origin });
-                self.setup_return |= from_setup;
             }
             To::EditDone => self.edit = None,
-            To::Setup(page) => {
-                self.setup_return = false;
-                self.page = page;
-            }
-            To::Sensors { from_setup } => {
-                self.sensors_return |= from_setup;
-                self.page = Page::Sensors;
-            }
-            To::LeaveSensors(page) => {
-                self.sensors_return = false;
-                self.page = page;
-            }
             To::Ride => {
                 self.page = Page::Ride;
                 self.ride_page = self.first_page;
                 self.climb = Follow::Idle;
                 self.pause_hidden = false;
             }
-            To::Summary { news } => {
-                self.best_news = news;
+            To::Summary => {
                 self.summary_page = 0;
                 self.page = Page::Summary;
             }
             To::Home => {
-                self.leave_summary();
                 self.ride_page = RidePage::Main;
                 self.page = Page::Home;
-            }
-            To::PastRide => {
-                self.summary_page = 0;
-                self.page = Page::PastRide;
-            }
-            To::Phone => {
-                self.page = Page::Phone;
-                self.phone_step = 0;
-                self.phone_advanced = false;
-            }
-            To::PhoneCode => self.phone_step ^= 1,
-            To::PhoneJoined => {
-                self.phone_advanced = true;
-                self.phone_step = 1;
             }
             To::RidePage(page) => self.ride_page_chosen(page),
             To::LeavePause { wrapped_to } => {
@@ -359,32 +285,12 @@ impl Navigation {
         self.sections
     }
 
-    pub(super) fn set_sections(&mut self, sections: settings::Sections) {
-        self.sections = sections;
-    }
-
     pub(super) fn edit(&self) -> Option<Edit> {
         self.edit
     }
 
     pub(super) fn editing(&self) -> bool {
         self.edit.is_some()
-    }
-
-    pub(super) fn setup_return(&self) -> bool {
-        self.setup_return
-    }
-
-    pub(super) fn sensors_return(&self) -> bool {
-        self.sensors_return
-    }
-
-    pub(super) fn phone_step(&self) -> u8 {
-        self.phone_step
-    }
-
-    pub(super) fn phone_advanced(&self) -> bool {
-        self.phone_advanced
     }
 
     pub(super) fn climb(&self) -> Follow {
@@ -459,16 +365,6 @@ impl Navigation {
         self.first_page = page;
     }
 
-    /// A return to setup lasts only while its editor or sensor menu does.
-    pub(super) fn lapse_returns(&mut self) {
-        if !(self.page == Page::Settings && self.editing()) {
-            self.setup_return = false;
-        }
-        if self.page != Page::Sensors {
-            self.sensors_return = false;
-        }
-    }
-
     pub(super) fn expire_toast(&mut self, now: u64) {
         if self.toast.as_ref().is_some_and(|(_, until)| now >= *until) {
             self.toast = None;
@@ -515,7 +411,6 @@ impl Navigation {
             }
             (_, Status::Recording) => {
                 self.paused_since = None;
-                self.best_news = None;
                 self.chime = Some(Cue::Start);
                 ("RECORDING", Tone::Good)
             }
@@ -527,17 +422,7 @@ impl Navigation {
                 return;
             }
             (_, Status::Saved) if riding && self.page == Page::Summary => {
-                // New bests take the saved chime's place, with a toast.
-                let news = self.best_news.take();
-                self.chime = Some(if news.is_some() {
-                    Cue::Best
-                } else {
-                    Cue::Saved
-                });
-                if let Some(news) = news {
-                    self.toast(news.as_str(), Tone::Good, now);
-                    self.best_shown = Some(news);
-                }
+                self.chime = Some(Cue::Saved);
                 return;
             }
             (_, Status::Saved) if riding && unsynced => ("SYNC TO SAVE", Tone::Warn),
@@ -553,21 +438,6 @@ impl Navigation {
     pub(super) fn discarded(&mut self, message: &str, tone: Tone, now: u64) {
         self.announced = Status::Saved;
         self.toast(message, tone, now);
-    }
-
-    /// The toast of new bests belongs to the summary: leaving it takes that
-    /// toast away, and only that one.
-    fn leave_summary(&mut self) {
-        let Some(shown) = self.best_shown.take() else {
-            return;
-        };
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|(toast, _)| toast.text() == Toast::new(shown.as_str(), Tone::Good).text())
-        {
-            self.toast = None;
-        }
     }
 
     #[cfg(test)]
@@ -620,14 +490,12 @@ mod tests {
         let edit = To::Edit {
             field: 0,
             wheel_origin: Wheel::default(),
-            from_setup: true,
         };
         let mut navigation = Navigation::default();
         navigation.go(edit);
         navigation.go(To::Page(Page::Settings));
         assert!(navigation.editing());
-        navigation.go(To::Setup(Page::Setup));
-        assert!(!navigation.editing(), "setup's way back ends the edit");
-        assert!(!navigation.setup_return);
+        navigation.go(To::Page(Page::Home));
+        assert!(!navigation.editing());
     }
 }

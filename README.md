@@ -65,8 +65,7 @@ On the Magene C606 today:
 - **Maps and courses.** Your track on a map, GPX courses loaded from your phone,
   turn warnings ahead, and a climb page that follows the road.
 - **Workouts.** 16 built-in workouts, and your own added from your phone.
-- **Training.** Zones, personal bests, an FTP suggestion after a new 20 minute
-  best, and fitness, fatigue and form over the last 120 days.
+- **Training.** Zones, and an FTP suggestion after a strong 20 minutes.
 - **Ride recording.** Laps (including an automatic lap each time you pass your
   start), barometric altitude, calories, and FIT and GPX export for Strava and
   everything else. Rides survive a crash or a dead battery.

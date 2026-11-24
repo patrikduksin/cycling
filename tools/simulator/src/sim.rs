@@ -37,12 +37,8 @@ pub const HOLD_REPEAT_MS: u64 = 100;
 /// Counted rather than timed, so a held key powers on at any live speed.
 pub const POWER_ON_REPORTS: u32 = 15;
 
-/// What a device kept from before it powered on: the first-run setup page
-/// to resume, none once setup is done, the training profile, and the ANT
-/// sensors saved, by device type and number, in tile order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Kept {
-    pub setup: Option<vana::screens::setup::Step>,
     pub profile: vana::ride::zones::TrainingProfile,
     pub sensors: Vec<(u8, u16)>,
 }
@@ -311,26 +307,13 @@ impl Sim {
     /// Power on and wait until the device can be used.
     pub fn boot(mut self) -> Self {
         self.wait_usable();
-        self.skip_setup();
         self
-    }
-
-    /// A fresh device starts with first-run setup: skip it, as a rider who
-    /// knows VANA would. Does nothing on Home.
-    pub fn skip_setup(&mut self) {
-        if self.device.sdk.page() == vana::screens::workout::Page::Setup {
-            self.press(Role::Move);
-            self.expect_text("SKIP SETUP");
-            self.press(Role::Act);
-            assert!(self.device.sdk.page() == vana::screens::workout::Page::Home);
-        }
     }
 
     /// Power on as a device that kept `kept` from before: VANA's
     /// preferences hold it and its defaults for the rest.
     pub fn keep_preferences(&mut self, kept: &Kept) {
         let (mut record, _) = vana::app::decode_preferences(&[]);
-        record.options.setup = kept.setup.map_or(0, vana::screens::setup::Step::byte);
         record.profile = kept.profile;
         for &(device_type, device_number) in &kept.sensors {
             let saved = record
@@ -366,11 +349,7 @@ impl Sim {
     }
 
     fn usable(&self) -> bool {
-        let home = matches!(
-            self.device.sdk.page(),
-            vana::screens::workout::Page::Home | vana::screens::workout::Page::Setup
-        );
-        self.device.lit() && home
+        self.device.lit() && self.device.sdk.page() == vana::screens::workout::Page::Home
     }
 
     /// Whether the device turned itself off: no power, or VANA off in
@@ -1383,12 +1362,8 @@ impl Sim {
                     .expect("the journal programs");
             }
             Store::Records => {
-                let mut bests = vana::kept::bests::encode_file(&Default::default());
-                bests[4] = 1;
-                let body = bests.len() - 4;
-                let crc = firmware_services::checksum::crc32(&bests[..body]);
-                bests[body..].copy_from_slice(&crc.to_le_bytes());
-                self.put_file("bests.dat", &bests);
+                let version = vana::workout::history::VERSION + 1;
+                self.put_file("rides/b1.workout", &[b'V', b'W', b'K', b'O', version, 0]);
             }
             Store::Table => {
                 self.init_volumes();

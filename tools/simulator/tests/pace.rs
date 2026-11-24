@@ -74,12 +74,9 @@ fn saved_rides(rides: &[u64]) -> Sim {
     sim
 }
 
-/// The same rides, then the rides list once its index has read them all.
-fn rides_list(rides: &[u64]) -> Sim {
-    let mut sim = saved_rides(rides);
-    sim.home("RIDES");
-    sim.wait_for(&format!("1/{}", rides.len()), seconds(5))
-        .unwrap();
+fn workouts_list() -> Sim {
+    let mut sim = device();
+    sim.home("TRAIN");
     sim.advance(seconds(1));
     sim
 }
@@ -229,7 +226,7 @@ fn a_press_waiting_for_its_frame_keeps_the_busy_pace() {
 
 #[test]
 fn a_list_coasting_after_a_fling_keeps_the_busy_pace() {
-    let mut sim = rides_list(&[1; 12]);
+    let mut sim = workouts_list();
     resting(&mut sim);
     let before = sim.screen().text();
     sim.drag((120, 280), (120, 230), 50, 0);
@@ -257,6 +254,7 @@ fn the_look_ahead_at_work_keeps_the_busy_pace() {
     let road = [(-33.367233, -70.499463), (-33.351434, -70.310506)];
     let points = road.map(|(lat, lon)| (route::Point::new(lat, lon), None));
     sim.ride_route(Route::from_gpx(&to_gpx("toward Farellones", &points)).unwrap());
+    assert_eq!(sim.command("OPTION AUTO_PAUSE OFF").0, "OK");
     sim.ride_at(20.0, 0.0, 0.0, 0.0);
     let working = |sim: &Sim| sim.device.sdk.terrain_status() == Some(Status::Working);
     while !working(&sim) {
@@ -275,22 +273,6 @@ fn the_look_ahead_at_work_keeps_the_busy_pace() {
     assert_eq!(sim.device.sdk.page(), Page::Home);
 }
 
-/// After a cold boot, Home counts the saved rides at the busy pace: each
-/// step reads them from storage.
-#[test]
-fn counting_saved_rides_after_a_cold_boot_keeps_the_busy_pace() {
-    let mut sim = saved_rides(&[1; 120]);
-    sim.power_loss();
-    assert!(!sim.screen().contains("120 SAVED"), "counted during boot");
-    let (before, began) = (passes(&sim), sim.now());
-    sim.wait_for("120 SAVED", seconds(5)).unwrap();
-    let counted_ms = sim.now() - began;
-    let pace = (passes(&sim) - before) * 1000 / counted_ms;
-    println!("counted in {counted_ms} ms: {pace} passes/s");
-    assert!(pace >= BUSY, "counted in {counted_ms} ms: {pace} passes/s");
-    expect_still(&mut sim, "home with its rides counted");
-}
-
 #[test]
 fn a_press_wakes_a_resting_home() {
     let pressed = |press: bool| {
@@ -305,7 +287,7 @@ fn a_press_wakes_a_resting_home() {
         (sim.device.now > rested, sim.device.sdk.page())
     };
     assert_eq!(pressed(false), (false, Page::Home), "no pass falls due");
-    assert_eq!(pressed(true), (true, Page::Ready), "taken in its own slice");
+    assert_eq!(pressed(true), (true, Page::Ride), "taken in its own slice");
 }
 
 #[test]
@@ -332,7 +314,7 @@ fn a_harness_press_runs_when_it_is_due() {
         .find_map(|field| field.strip_prefix("max_late_ms=")?.parse().ok())
         .expect("max_late_ms");
     assert!(late <= 10, "the press ran {late} ms after it was due");
-    assert_eq!(sim.device.sdk.page(), Page::Ready);
+    assert_eq!(sim.device.sdk.page(), Page::Ride);
 }
 
 #[test]
@@ -359,7 +341,7 @@ fn a_resting_session_with_a_press_replays_exactly() {
 #[test]
 fn a_fling_from_a_resting_list_coasts_as_from_a_busy_one() {
     let fling = |rested: bool| {
-        let mut sim = rides_list(&[1; 12]);
+        let mut sim = workouts_list();
         resting(&mut sim);
         while !rested && sim.device.clock_ms() > sim.device.now {
             sim.advance(10);
@@ -372,27 +354,4 @@ fn a_fling_from_a_resting_list_coasts_as_from_a_busy_one() {
         after
     };
     assert_eq!(fling(true), fling(false));
-}
-
-/// A saved ride opened from the still rides list reads at the busy pace,
-/// as any step that reads storage does, and its page rests once it is read.
-#[test]
-fn reading_a_saved_ride_keeps_the_busy_pace() {
-    let mut sim = rides_list(&[30, 2]);
-    sim.press(Role::Move);
-    sim.expect_text("2/2");
-    let (before, began) = (passes(&sim), sim.now());
-    sim.report(Role::Act);
-    sim.advance(10);
-    sim.expect_text("READING");
-    while sim.screen().contains("READING") {
-        sim.advance(10);
-        assert!(sim.now() - began < seconds(5), "still reading");
-    }
-    let read_ms = sim.now() - began;
-    let pace = (passes(&sim) - before) * 1000 / read_ms;
-    println!("reading for {read_ms} ms: {pace} passes/s");
-    assert!(pace >= BUSY, "reading for {read_ms} ms: {pace} passes/s");
-    assert_eq!(sim.device.sdk.page(), Page::PastRide);
-    expect_still(&mut sim, "a saved ride");
 }

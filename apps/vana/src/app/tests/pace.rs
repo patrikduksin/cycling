@@ -130,7 +130,7 @@ fn a_new_number_the_page_does_not_show_asks_for_no_more_frames() {
     runtime.navigation.go(To::Page(Page::Ride));
     runtime
         .navigation
-        .go(To::RidePage(crate::screens::ride::RidePage::Lap));
+        .go(To::RidePage(crate::screens::ride::RidePage::Map));
     let mut power = |runtime: &mut Runtime, screen: &mut Screen, event, rpm, now| {
         radio.data(POWER, [0x10, event, 0xff, rpm, 0, 0, 200, 0], now);
         tick(runtime, &mut journal, &mut radio, now);

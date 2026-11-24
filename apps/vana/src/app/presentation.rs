@@ -17,7 +17,6 @@ use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Row, Toast,
 use crate::screens::home::Home;
 use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
-use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
 use crate::screens::ride::summary::{After, Saving};
 use crate::screens::ride::{self, RidePage};
 use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
@@ -38,12 +37,9 @@ use device_api::storage::OwnedFlash;
 use firmware_services::why;
 use firmware_shell::shell::{Picture, Shell};
 
-/// Sensors whose battery wants changing, as Ready and Home name them. While
-/// any sensor is not live it is missing first and no battery is news.
 struct BatteryWarning {
     title: Text<24>,
     critical: bool,
-    several: bool,
 }
 
 impl BatteryWarning {
@@ -65,20 +61,7 @@ impl BatteryWarning {
         } else {
             let _ = write!(title, "{count} BATTERIES TO CHANGE");
         }
-        Some(Self {
-            title,
-            critical,
-            several: count > 1,
-        })
-    }
-
-    fn hint(&self) -> &'static str {
-        match (self.critical, self.several) {
-            (false, false) => "CHANGE IT SOON",
-            (false, true) => "CHANGE THEM SOON",
-            (true, false) => "CHANGE IT BEFORE RIDING",
-            (true, true) => "CHANGE THEM BEFORE RIDING",
-        }
+        Some(Self { title, critical })
     }
 }
 
@@ -357,15 +340,6 @@ impl Runtime {
         let readout = self.shown.readout();
         let (climbing, paused_secs) = (readout.climbing, readout.paused_secs);
         view.totals = readout.totals;
-        if page == Page::Ride && view.ride_page == RidePage::Lap {
-            let laps = self.ride.laps();
-            let kept = (0..crate::ride::laps::HISTORY).rev();
-            let bars = kept
-                .filter_map(|back| laps.finished(back))
-                .map(Into::into)
-                .collect();
-            view.show_laps(bars, readout.lap, readout.previous_lap);
-        }
         view.zone_time = readout.zone_time;
         view.profile = self.preferences.profile;
         view.rider = self.preferences.options.rider;
@@ -424,29 +398,9 @@ impl Runtime {
                 let shown = now.saturating_sub(first_frame).min(BRAND_MS);
                 view.reveal = (shown * u64::from(crate::screens::brand::DONE) / BRAND_MS) as u16;
             }
-            Page::Ready => {
-                view.show_ready(self.readiness(view.gps, view.battery, now));
-            }
             Page::Summary => {
-                view.show_summary(self.after(now), Text::new());
+                view.show_summary(self.after(now));
                 self.show_elevation(&mut view);
-            }
-            Page::Bests => {
-                view.show_bests(self.bests.bests, self.bests.mode());
-            }
-            Page::Form => view.show_form(self.form.mode),
-            Page::PastRide => self.past_view(&mut view),
-            Page::Phone => self.phone_view(&mut view),
-            Page::History => {
-                let offset = self.list_offset(List::Rides, now);
-                let pressed = match self.navigation.touches().pressed() {
-                    Some(Control::Composed(Action::List(ListAct::Tap(index)), _)) => {
-                        Some(usize::from(index))
-                    }
-                    _ => None,
-                };
-                view.scroll = offset;
-                view.show_rides(self.history_rides(offset, pressed));
             }
             Page::Format => view.format = self.format.shows(),
             Page::LoseRides => view.unsaved = self.sync.count() as u8,
@@ -475,7 +429,6 @@ impl Runtime {
                 });
             }
             Page::Workouts => {}
-            Page::Setup => self.setup_lines(&mut view),
         }
         if page == Page::Ride && view.ride_page == RidePage::Climb {
             // Borrowed from the ride and the look-ahead's own block, not copied.
@@ -572,9 +525,8 @@ impl Runtime {
 
     #[inline(never)]
     fn home(&self, gps_fix: bool, now: u64) -> Home {
-        let last = self.rides_line();
         let glance = self.glance(now);
-        let mut home = Home::new(gps_fix, &glance, last);
+        let mut home = Home::new(gps_fix, &glance);
         let (status, problem) = self.home_status(now);
         let warning = BatteryWarning::of(&glance).filter(|_| !problem && status == "READY TO RIDE");
         match (self.chosen_name(), warning) {
@@ -740,164 +692,12 @@ impl Runtime {
             page: self.navigation.summary_page(),
             saving: self.saving(),
             best: self.ride.efforts().best(),
-            climbs: Some(self.ride.climbing().count),
+            climbs: Some(self.ride.climbs_done()),
             // The open lap counts: a ride without a lap press is one lap.
             laps: Some(self.ride.laps().count().saturating_add(1)),
-            past: false,
-            send: false,
-            delete: false,
             elevation: self.has_elevation(),
-            found: self.ride.bests_found(),
             offer: self.summary_offer(),
             recovery: self.recovery.reading(now),
-        }
-    }
-
-    /// The Ready checks: GPS, sensors, battery and room to record, each in
-    /// plain words with what to do when something needs the rider.
-    pub(super) fn readiness(&self, gps: Gps, battery: Option<Battery>, now: u64) -> Readiness {
-        let mut readiness = Readiness::default();
-        if let Some(name) = self.chosen_name() {
-            let _ = readiness.riding.push_str(name.as_str());
-        }
-        let checks = &mut readiness.checks;
-        checks[ReadyLine::Gps as usize] = match gps {
-            Gps::Fixed => Check::new(Level::Good, "GPS LOCKED", ""),
-            Gps::Searching => Check::new(Level::Wait, "FINDING GPS", "YOU CAN START ANYWAY"),
-            Gps::Off => Check::new(Level::Off, "NO GPS", "RECORDS WITHOUT A MAP"),
-        };
-        checks[ReadyLine::Sensors as usize] = self.sensors_check(now);
-        checks[ReadyLine::Battery as usize] = match battery {
-            None => Check::new(Level::Off, "BATTERY", ""),
-            Some(Battery {
-                percent,
-                charging: true,
-                ..
-            }) => {
-                let mut title = Text::<24>::new();
-                let _ = write!(title, "CHARGING {percent}%");
-                Check::new(Level::Good, title.as_str(), "")
-            }
-            Some(Battery { percent, .. }) => {
-                let mut title = Text::<24>::new();
-                let _ = write!(title, "BATTERY {percent}%");
-                // Time left shows when the charge needs nothing from the
-                // rider, and only once the rate is trustworthy.
-                let mut left = Text::<28>::new();
-                if let Some(minutes) = self.readings.battery_life.minutes_left(now) {
-                    let _ = write!(
-                        left,
-                        "ABOUT {} LEFT",
-                        crate::ride::battery_life::about(minutes)
-                    );
-                }
-                let (level, hint) = match percent {
-                    30.. => (Level::Good, left.as_str()),
-                    15..30 => (Level::Wait, "CHARGE AFTER THE RIDE"),
-                    _ => (Level::Problem, "CHARGE BEFORE RIDING"),
-                };
-                Check::new(level, title.as_str(), hint)
-            }
-        };
-        checks[ReadyLine::Storage as usize] = self.storage_check();
-        readiness
-    }
-
-    fn sensors_check(&self, now: u64) -> Check {
-        if matches!(
-            self.startup,
-            Some(Startup::Uncertain | Startup::TimedOut | Startup::Unavailable)
-        ) {
-            return Check::new(Level::Wait, "SENSORS UNAVAILABLE", "TURN VANA OFF AND ON");
-        }
-        let glance = self.glance(now);
-        if glance.is_empty() {
-            return Check::new(Level::Off, "NO SENSORS", "TAP HERE TO PAIR ONE");
-        }
-        let mut title = Text::<24>::new();
-        let live = glance.iter().filter(|g| g.live).count();
-        // Short names, two spaces apart: at most four fit a line.
-        let mut names = Text::<19>::new();
-        let pick = |want_live: bool| glance.iter().filter(move |g| g.live == want_live);
-        if live == glance.len() {
-            if let Some(warning) = BatteryWarning::of(&glance) {
-                let level = if warning.critical {
-                    Level::Problem
-                } else {
-                    Level::Wait
-                };
-                return Check::new(level, warning.title.as_str(), warning.hint());
-            }
-            let plural = if live == 1 { "" } else { "S" };
-            let _ = write!(title, "{live} SENSOR{plural} LIVE");
-            for (index, g) in pick(true).enumerate() {
-                let separator = if index == 0 { "" } else { "  " };
-                let name = core::str::from_utf8(crate::screens::home::short_name(g.kind));
-                let _ = write!(names, "{separator}{}", name.unwrap_or(""));
-            }
-            return Check::new(Level::Good, title.as_str(), names.as_str());
-        }
-        // Name the sensors still waking; pedalling or wearing them helps.
-        for (index, g) in pick(false).enumerate() {
-            let separator = if index == 0 { "" } else { "  " };
-            let name = core::str::from_utf8(crate::screens::home::short_name(g.kind));
-            let _ = write!(names, "{separator}{}", name.unwrap_or(""));
-        }
-        Check::new(Level::Wait, "SENSORS WAKING UP", names.as_str())
-    }
-
-    /// Room for the ride about to start, wherever it will go.
-    fn storage_check(&self) -> Check {
-        const UNFORMATTED: (&str, &str) = ("STORAGE NOT FORMATTED", "OFF AND ON TO FORMAT");
-        if self.format.stops_own_storage() {
-            return Check::new(Level::Problem, UNFORMATTED.0, UNFORMATTED.1);
-        }
-        let medium = self.ride.medium();
-        let recorder = self.ride.recorder(medium);
-        let mut title = Text::<24>::new();
-        match recorder.status() {
-            Status::Scanning | Status::Formatting | Status::Clearing => {
-                Check::new(Level::Wait, "CHECKING STORAGE", "")
-            }
-            Status::Recording | Status::Paused => Check::new(Level::Good, "RECORDING", ""),
-            Status::Ready | Status::Saved | Status::Recovered
-                if !self.ride.admits_start(medium) =>
-            {
-                let title = if self.holds_unsynced() {
-                    "SYNC RIDES FIRST"
-                } else {
-                    "CLEAR RIDES FIRST"
-                };
-                Check::new(Level::Problem, title, "ON THE PHONE PAGE")
-            }
-            status @ (Status::Ready | Status::Saved | Status::Recovered) => {
-                let left = recorder.remaining_secs();
-                if left == 0 {
-                    return Check::new(Level::Problem, "STORAGE FULL", "EXPORT OLD RIDES");
-                }
-                // Seconds left still record; the ride counts them down.
-                if left < 60 {
-                    return Check::new(Level::Wait, "UNDER 1 MIN OF ROOM", "EXPORT OLD RIDES");
-                }
-                if left < LOW_STORAGE_S {
-                    let _ = write!(title, "ROOM FOR {} MIN", left / 60);
-                    return Check::new(Level::Wait, title.as_str(), "EXPORT OLD RIDES");
-                }
-                let _ = write!(title, "ROOM FOR {} H", left / 3600);
-                if self.ride.fallback() {
-                    return Check::new(Level::Wait, title.as_str(), "ON INTERNAL MEMORY");
-                }
-                // A ride cut short by power loss was kept; say so once here.
-                if status == Status::Recovered {
-                    return Check::new(Level::Good, title.as_str(), "LAST RIDE RECOVERED");
-                }
-                Check::new(Level::Good, title.as_str(), "")
-            }
-            Status::Full => Check::new(Level::Problem, "STORAGE FULL", "EXPORT OLD RIDES"),
-            _ if self.storage_health().foreign() => {
-                Check::new(Level::Problem, UNFORMATTED.0, UNFORMATTED.1)
-            }
-            _ => Check::new(Level::Problem, "STORAGE PROBLEM", "TURN VANA OFF AND ON"),
         }
     }
 
@@ -1090,7 +890,7 @@ impl Runtime {
             }
             Row::MainLeft => write!(value, "{}", options.main_slots.left.name()),
             Row::MainRight => write!(value, "{}", options.main_slots.right.name()),
-            Row::PageLap | Row::PageClimb | Row::PageMap => {
+            Row::PageClimb | Row::PageMap => {
                 let shown = row.ride_page().is_none_or(|page| options.deck.shows(page));
                 if row == Row::PageClimb && !shown {
                     let _ = write!(note, "NO CLIMB POP-UP");
@@ -1124,9 +924,6 @@ impl Runtime {
                 0 => write!(value, "NONE SAVED"),
                 count => write!(value, "{count} SAVED"),
             },
-            Row::Phone => write!(value, "SEND RIDES"),
-            Row::Bests => value.push_str(self.bests.summary().as_str()),
-            Row::Form => value.push_str(self.form.summary().as_str()),
             Row::Storage => {
                 if self.ride.bulk().status() != Status::Unsupported {
                     let _ = write!(note, "{}", self.ride.medium().label());
@@ -1190,8 +987,6 @@ impl Runtime {
                 power_3s_watts: self.readings.power_3s_watts,
                 totals: *ride.totals(),
                 zone_time: *ride.zone_time(),
-                lap: ride.laps().current(),
-                previous_lap: ride.laps().previous(),
                 climbing: ride.climbs().climbing(),
                 training: self.shown_workout(&self.preferences.profile),
                 paused_secs: self.navigation.paused_since().map_or(0, |since| {
@@ -1243,8 +1038,6 @@ pub(super) struct Readout {
     power_3s_watts: Option<u16>,
     totals: crate::ride::totals::Totals,
     zone_time: crate::ride::zones::ZoneTime,
-    lap: crate::ride::laps::Lap,
-    previous_lap: Option<crate::ride::laps::Lap>,
     climbing: Option<crate::ride::climb::Summary>,
     training: Option<ride::Training>,
     paused_secs: u32,

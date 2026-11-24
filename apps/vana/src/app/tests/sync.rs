@@ -10,7 +10,6 @@ use crate::ride::current::Request;
 use crate::ride::log::Status;
 use crate::screens::chrome::Tone;
 use crate::screens::power::Sheet as View;
-use crate::screens::ready::{Level, Line};
 use crate::screens::ride::summary::Saving;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::HEART_RATE;
@@ -145,15 +144,8 @@ fn toast(runtime: &mut Runtime, now: u64) -> Option<(String, Tone)> {
     ))
 }
 
-fn storage_line(runtime: &Runtime) -> (Level, String, String) {
-    let readiness = runtime.readiness(crate::screens::chrome::Gps::Fixed, None, 0);
-    let check = &readiness.checks[Line::Storage as usize];
-    assert_eq!(readiness.can_start(), check.level != Level::Problem);
-    (
-        check.level,
-        String::from(check.title.as_str()),
-        String::from(check.hint.as_str()),
-    )
+fn starts(runtime: &Runtime) -> bool {
+    runtime.ride.admits_start(runtime.ride.medium())
 }
 
 fn clear(runtime: &mut Runtime, journal: &mut Journal, now: u64) -> &'static str {
@@ -252,7 +244,6 @@ fn a_volatile_ride_is_protected_from_its_start_and_never_called_saved() {
     }
     runtime.input_received(press(Role::Back), now + 400, now + 400, &mut radio);
     assert_eq!(runtime.navigation.page(), Page::EndRide);
-    runtime.deleted.read_empty_table();
     assert!(!runtime.can_discard(), "a hidden ride could never sync");
     runtime.input_received(press(Role::Move), now + 800, now + 800, &mut radio);
     assert_eq!(runtime.navigation.page(), Page::EndRide, "no DISCARD RIDE?");
@@ -270,18 +261,8 @@ fn a_volatile_ride_is_protected_from_its_start_and_never_called_saved() {
     assert_eq!(runtime.after(now).saving, Saving::Unsynced);
     assert_eq!(runtime.broken(), None);
 
-    runtime.navigation.go(To::Page(Page::History));
-    runtime.open_past_ride(0);
-    assert_eq!(runtime.navigation.page(), Page::PastRide);
-    runtime.deleted.read_empty_table();
-    assert!(!runtime.deletable(), "DELETE RIDE? is not offered");
-
     now = sync(&mut runtime, &mut journal, now);
     assert!(!runtime.holds_unsynced());
-    runtime.navigation.go(To::Page(Page::History));
-    runtime.open_past_ride(0);
-    runtime.deleted.read_empty_table();
-    assert!(runtime.deletable(), "a synced ride can go");
     assert_eq!(runtime.home_status(now), ("READY TO RIDE", false));
 }
 
@@ -292,7 +273,6 @@ fn a_durable_ride_is_saved_and_can_be_discarded() {
     let mut runtime = cold(&mut journal, &mut radio);
     let now = start(&mut runtime, &mut journal, &mut radio, 1_000);
     assert!(!runtime.holds_unsynced());
-    runtime.deleted.read_empty_table();
     assert!(runtime.can_discard());
     assert_ne!(runtime.home_status(now).0, "NOT SAVED");
 }
@@ -458,24 +438,9 @@ fn sixteen_rides_fill_the_set_and_the_phone_saves_them_all() {
     runtime.open_power_sheet(now);
     assert_eq!(runtime.power.view(), Some(View::Confirm { unsaved: 16 }));
     runtime.power.sheet = Sheet::Closed;
-    assert_eq!(
-        storage_line(&runtime),
-        (
-            Level::Problem,
-            "SYNC RIDES FIRST".into(),
-            "ON THE PHONE PAGE".into()
-        )
-    );
+    assert!(!starts(&runtime) && runtime.holds_unsynced());
     sync(&mut runtime, &mut journal, now);
-    assert!(!runtime.holds_unsynced());
-    assert_eq!(
-        storage_line(&runtime),
-        (
-            Level::Problem,
-            "CLEAR RIDES FIRST".into(),
-            "ON THE PHONE PAGE".into()
-        )
-    );
+    assert!(!starts(&runtime) && !runtime.holds_unsynced());
 }
 
 #[test]
@@ -488,7 +453,7 @@ fn sixteen_synced_rides_need_a_clear_before_the_next() {
         now = ride(&mut runtime, &mut journal, &mut radio, now);
         now = sync(&mut runtime, &mut journal, now);
     }
-    assert_eq!(storage_line(&runtime).1, "CLEAR RIDES FIRST");
+    assert!(!starts(&runtime));
     runtime.navigation.go(To::Page(Page::Ride));
     runtime.input_received(press(Role::Act), now, now, &mut radio);
     for step in 0..20 {
@@ -518,7 +483,7 @@ fn sixteen_synced_rides_need_a_clear_before_the_next() {
         "nothing to lose"
     );
     wipe(&mut runtime, &mut journal, now);
-    assert_eq!(storage_line(&runtime).0, Level::Good);
+    assert!(starts(&runtime));
     ride(&mut runtime, &mut journal, &mut radio, now + 1_000);
     assert_eq!(runtime.ride.internal().next_ride_id(), 2, "ids start again");
     assert!(runtime.holds_unsynced());
@@ -684,23 +649,6 @@ fn the_page_cannot_clear_until_the_host_reads_its_own_clear() {
     );
 }
 
-/// No card in the slot, and hardware entropy that reads `self.0`.
-struct NoCard(u64);
-impl device_api::bulk::ReadWrite for NoCard {
-    fn entropy(&mut self) -> u64 {
-        self.0
-    }
-    fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
-        Err(device_api::bulk::Error::Unavailable)
-    }
-    fn owned_read(&mut self, _: u64, _: &mut [u8; 512]) -> Result<(), device_api::bulk::Error> {
-        Err(device_api::bulk::Error::Unavailable)
-    }
-    fn owned_write(&mut self, _: u64, _: &[u8; 512]) -> Result<(), device_api::bulk::Error> {
-        panic!("no card to write")
-    }
-}
-
 fn tick_on(
     runtime: &mut Runtime,
     store: &mut impl RideStorage,
@@ -721,67 +669,6 @@ fn tick_on(
             fitted: FITTED,
         },
     );
-}
-
-/// A boot with no card in, which rides ride 1 on its volatile journal.
-fn boot_without_the_card(entropy: u64) -> (Journal, Radio, Runtime, u64) {
-    let mut journal = in_memory();
-    let mut radio = Radio::new();
-    let mut runtime = booted(Profile::HeartRate);
-    attach(&mut runtime);
-    for _ in 0..MEMORY_SECTORS {
-        tick_on(&mut runtime, &mut journal, &mut NoCard(entropy), 0);
-    }
-    assert_eq!(runtime.ride.internal().status(), Status::Ready);
-    radio.connected(HEART_RATE, 0);
-    let now = ride(&mut runtime, &mut journal, &mut radio, 1_000);
-    (journal, radio, runtime, now)
-}
-
-#[test]
-fn a_card_read_late_never_hides_a_new_ride_behind_an_earlier_boots_records() {
-    use crate::kept::deleted::{Reason, Record, Ride, Shelf, save};
-    let mut card = crate::workout::library::tests::formatted();
-    let (_, _, earlier, _) = boot_without_the_card(1);
-    let ride_1 = earlier.journal_ride_id(Medium::Internal, 1).unwrap();
-    let deleted = Record {
-        ride: Ride::new(
-            Medium::Internal.journal(),
-            earlier.store(Medium::Internal),
-            1,
-            ride_1.first_utc_ms,
-            ride_1.active_ms,
-        ),
-        reason: Reason::Deleted,
-        hidden_utc_s: 0,
-    };
-    let shelf = std::vec![0; crate::kept::deleted::SHELF_BYTES].leak();
-    save(&mut card, &mut Shelf::new(shelf), &deleted).unwrap();
-    let workout = crate::workout::history::Record {
-        journal: Medium::Internal.journal(),
-        ride_id: 1,
-        started_utc_ms: ride_1.first_utc_ms,
-        name: crate::workout::model::Name::new("OLD RIDE"),
-        test: None,
-        summary: Default::default(),
-    };
-    crate::workout::history::save(&mut card, &workout).unwrap();
-
-    let (mut journal, _, mut runtime, now) = boot_without_the_card(2);
-    runtime.attach_deleted_rides(std::vec![0; crate::kept::deleted::SHELF_BYTES].leak());
-    runtime.navigation.go(To::Page(Page::History));
-    tick_on(&mut runtime, &mut journal, &mut card, now);
-    let shelf = runtime.deleted.shelf().expect("the card was read");
-    assert_eq!(shelf.len(), 1, "the earlier boot's record is there");
-    assert!(runtime.listed(0).is_some(), "the device lists ride 1");
-
-    let (mut phone, token) = session(&mut runtime, &mut journal, now);
-    let ids = unsaved(&listed(&mut phone, &token));
-    assert_eq!(ids.len(), 1, "the phone lists ride 1 as unsaved");
-    let (receipt, crc) = export(&mut phone, &token, &ids[0]);
-    assert_eq!(acknowledge(&mut phone, &token, &ids[0], receipt, crc), 204);
-    assert!(!phone.runtime.holds_unsynced());
-    assert_eq!(phone.runtime.broken(), None);
 }
 
 #[test]
@@ -828,20 +715,4 @@ fn the_hosts_clear_ends_a_phone_session() {
     phone.step();
     assert!(phone.runtime.phone_status().is_none());
     assert_eq!(phone.runtime.phone_closed(), Some(PhoneClosed::Ride));
-}
-
-#[test]
-fn a_clear_gives_the_volatile_journal_a_new_store_id() {
-    let (mut journal, _, mut runtime, now) = boot_without_the_card(1);
-    let before = runtime.ride.internal_store();
-    let now = sync(&mut runtime, &mut journal, now);
-    assert_eq!(clear(&mut runtime, &mut journal, now), "ACCEPTED");
-    wipe(&mut runtime, &mut journal, now);
-    tick_on(&mut runtime, &mut journal, &mut NoCard(2), now + 100);
-    assert_eq!(runtime.ride.internal().status(), Status::Ready);
-    assert_ne!(
-        runtime.ride.internal_store(),
-        before,
-        "a FILES record of a ride before the clear never names a ride after it"
-    );
 }

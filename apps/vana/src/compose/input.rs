@@ -88,16 +88,6 @@ pub enum OnPage {
     Answer(bool),
     /// Leave the page; its owner knows where, and what it closes on the way.
     Back,
-    /// Ask to clear the bests.
-    ClearBests,
-    /// Send the ride shown to the phone.
-    Send,
-    /// Delete the saved ride shown.
-    Delete,
-    /// Show the next phone code, or start a session again once one ended.
-    PhoneCode,
-    /// Start a session again once one ended; nothing while one runs.
-    PhoneRetry,
     /// Zero the power meter shown.
     Calibrate,
     /// Ask to forget the sensor shown.
@@ -173,14 +163,10 @@ impl Buttons {
         let next = self
             .move_
             .is_some_and(|button| button.action == Action::Go(Go::Next));
-        // A button that switches codes also tries again once a session ended.
-        let retry = |own: Action| {
-            own == Action::Page(OnPage::PhoneCode) && action == Action::Page(OnPage::PhoneRetry)
-        };
         pressed
             .map(|button| button.action)
             .chain(self.held)
-            .any(|own| own == action || retry(own))
+            .any(|own| own == action)
             || (next && action == Action::Go(Go::Map))
     }
 }
@@ -730,7 +716,7 @@ pub(super) mod tests {
         let nodes = [
             Node::col(3, Size::grow(1)),
             tap(1),
-            Node::scroll(crate::compose::data::ListKind::Rides, Size::grow(1)),
+            Node::scroll(crate::compose::data::ListKind::Workouts, Size::grow(1)),
             Node::leaf(TAP, 2, Size::units(60)),
             tap(3),
         ];
@@ -969,11 +955,6 @@ pub(super) mod tests {
             ("page", Action::Page(OnPage::Answer(true))),
             ("page", Action::Page(OnPage::Answer(false))),
             ("page", Action::Page(OnPage::Back)),
-            ("page", Action::Page(OnPage::ClearBests)),
-            ("page", Action::Page(OnPage::Send)),
-            ("page", Action::Page(OnPage::Delete)),
-            ("page", Action::Page(OnPage::PhoneCode)),
-            ("page", Action::Page(OnPage::PhoneRetry)),
             ("page", Action::Page(OnPage::Calibrate)),
             ("page", Action::Page(OnPage::Forget)),
             ("page", Action::Page(OnPage::Search)),

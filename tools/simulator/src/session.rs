@@ -1559,19 +1559,6 @@ impl Session {
         }
         shell.forget_frame();
         let mut sdk = vana::app::Runtime::new(profile, model.product, model.device);
-        {
-            use vana::ride::directory::{ENTRY, RIDES, RideIndex};
-            let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());
-            if memory.ride_index {
-                sdk.attach_ride_index(Box::leak(Box::new(RideIndex::new(bytes(), bytes()))));
-            }
-            let facts = vec![0u8; vana::kept::facts::record::SHELF_BYTES].into_boxed_slice();
-            if memory.ride_facts {
-                sdk.attach_ride_facts(Box::leak(facts));
-                let deleted = vec![0u8; vana::kept::deleted::SHELF_BYTES].into_boxed_slice();
-                sdk.attach_deleted_rides(Box::leak(deleted));
-            }
-        }
         sdk.load_preferences(&shell.settings.app, shell.settings_source);
         sdk.set_micros_clock(host_micros);
         // The look-ahead and its tile cache, which the device keeps in PSRAM;

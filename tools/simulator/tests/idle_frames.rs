@@ -52,9 +52,6 @@ fn idle_menus_draw_once_a_second() {
     sim.home("SETTINGS");
     expect_pace(&mut sim, "settings", STILL);
     go_home(&mut sim);
-    sim.home("RIDES");
-    expect_pace(&mut sim, "rides", STILL);
-    go_home(&mut sim);
     sim.home("SENSORS");
     expect_pace(&mut sim, "sensors", STILL);
     go_home(&mut sim);
@@ -102,7 +99,7 @@ fn a_paused_ride_draws_twice_a_second_on_every_page() {
         pages += 1;
         assert!(pages <= 8, "ride pages never returned to the paused screen");
     }
-    assert!(pages >= 4, "visited {pages} ride pages");
+    assert!(pages >= 3, "visited {pages} ride pages");
 }
 
 fn frames_over(sim: &mut Sim, ms: u64) -> u32 {
@@ -157,6 +154,7 @@ fn a_full_battery_on_usb_leaves_home_still() {
 #[test]
 fn a_capture_on_a_still_home_gets_a_frame() {
     let mut sim = device();
+    sim.advance(seconds(5));
     assert_eq!(frames_over(&mut sim, seconds(5)), 0, "still Home");
     let id = (u64::from(sim.device.boot) << 32) | 1;
     assert_eq!(sim.command("HARNESS OPEN 1 10000").0, "OK");

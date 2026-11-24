@@ -24,8 +24,8 @@ Copy is short, plain and the same everywhere:
 ## The ride
 
 ```text
-Home ── RIDE ──> Ready ── ACT or roll off ──> Ride pages (recording)
-                  │ BACK: Home                    │ ACT          ^
+Home ── RIDE or roll off ──> Ride pages (recording)
+                                                  │ ACT          ^
                                                   v              │ ACT (resume)
                                             Paused screen ───────┘
                                               │ MOVE: ride pages, and back
@@ -43,34 +43,13 @@ Home ── RIDE ──> Ready ── ACT or roll off ──> Ride pages (record
                                                       Home
 ```
 
-### Ready
+Home's RIDE card starts the ride at once, and rolling off on Home starts a
+free ride (auto-start). There is no countdown: it would delay the start at a
+light. Only storage stops a ride: when it cannot record, RIDE shows STORAGE
+NOT READY and Home stays.
 
-Home's RIDE card opens Ready. It answers "can I go?" in four lines, each a
-coloured dot, a headline and, when needed, what to do:
-
-| Line | Good (green) | Waiting or worth knowing (amber) | Problem (red) | Not in use (grey) |
-| --- | --- | --- | --- | --- |
-| GPS | GPS LOCKED | FINDING GPS, you can start anyway | | NO GPS, records without a map |
-| Sensors | n SENSORS LIVE, with their short names | SENSORS WAKING UP, naming the missing ones; HR LOW BATTERY or n BATTERIES TO CHANGE, change it soon, once every sensor is live; SENSORS UNAVAILABLE, turn VANA off and on | HR CRITICAL BATTERY (or n BATTERIES TO CHANGE), change it before riding | NO SENSORS, tap here to pair one |
-| Battery | BATTERY n%, with ABOUT n H LEFT once the drain rate is known; CHARGING n% on USB power | under 30%: charge after the ride | under 15%: charge before riding | BATTERY, while the level is unknown |
-| Storage | ROOM FOR n H; RECORDING while a ride records; LAST RIDE RECOVERED after a recovery | CHECKING STORAGE; ROOM FOR n MIN or UNDER 1 MIN OF ROOM: export old rides; ROOM FOR n H on internal memory | STORAGE FULL: export old rides; STORAGE NOT FORMATTED: off and on to format; STORAGE PROBLEM: turn VANA off and on; SYNC RIDES FIRST or CLEAR RIDES FIRST: on the phone page ([Rides kept in memory](#rides-kept-in-memory)) | |
-
-The headline sums them up: READY when every line is green or grey, ALMOST
-READY when a line is amber or red but storage can record, and NOT READY (red)
-when storage cannot record.
-Only storage stops a ride; everything else is advice, so a rider is never
-held at a green light by a sensor. Under the headline, the ride type reads
-FREE RIDE, or the chosen workout's name.
-
-ACT starts the ride (the green play cue points at it); there is no
-countdown, because a countdown delays the start at a light, and rolling off
-starts the ride from Ready anyway (auto-start). BACK returns Home. Tapping
-the sensors line opens Sensors. A ride that started a
-moment before the press (rolling off) is only shown, never paused, by ACT.
-
-A live saved ANT+ sensor that reports a low or critical battery turns the
-sensors line amber (red when critical), Home's count and that sensor's dot
-amber, and Home's status line names it, such as HR LOW BATTERY. A sensor that
+A live saved ANT+ sensor that reports a low or critical battery turns
+Home's count and that sensor's dot amber, and Home's status line names it, such as HR LOW BATTERY. A sensor that
 is not live is named first: a dead strap is missing, not low. Its row on
 SENSORS says BATTERY LOW, and its page shows the voltage, such as 2.4 V, in
 amber (red when critical). A
@@ -404,7 +383,7 @@ gives each reading's unit and colour.
 ### Choosing the ride pages
 
 Settings has a RIDE PAGES section with an ON or OFF row for each page a rider
-may not need: STATS, LAP, CLIMB and MAP. All are ON by default. MAIN
+may not need: STATS, CLIMB and MAP. All are ON by default. MAIN
 is always on, and so is the WORKOUT page while a workout is chosen. MOVE and
 swipes step through the pages that are on, wrapping from the last to the
 first, and the page dots count only those. While a course is loaded, MAP is
@@ -485,19 +464,12 @@ follows the same pattern as TURN OFF: BACK asks, ACT answers yes, BACK answers
 no. The question never times out. Answering yes finishes the ride, shows
 SAVING (keep VANA on) while the last samples are written, then the summary.
 
-With a card whose FILES store is formatted, a red trash cue sits beside MOVE.
-MOVE asks DISCARD RIDE? with the same time and distance and IT WILL NOT BE
-SAVED. ACT (red trash cue) discards the ride, BACK returns to END RIDE?. A
-discard saves the ride as usual and then hides it (`ride-recording.md`,
-"Discarded and deleted rides"), with no summary: Home shows RIDE DISCARDED,
-and Home's card, the list and the week leave the ride out. It sets no bests
-and keeps no facts. The same sheet follows an auto-pause (BACK took the pause
-over, so rolling on does not resume the ride under it), a lap (the whole ride
-goes, laps and all) and a 0 km test ride. If the ride cannot be hidden once
-saved, Home says NOT DISCARDED and the ride is kept as any other, with its
-bests and facts. A ride kept in memory that the phone has not saved
-([Rides kept in memory](#rides-kept-in-memory)) has no trash cue and cannot
-be discarded.
+A red trash cue sits beside MOVE. MOVE asks DISCARD RIDE? with the same
+time and distance and IT WILL NOT BE SAVED. ACT (red trash cue) answers it,
+BACK returns to END RIDE?. Nothing hides a saved ride any more, so the ride
+is kept as any other and Home says NOT DISCARDED. A ride kept in memory that
+the phone has not saved ([Rides kept in memory](#rides-kept-in-memory)) has
+no trash cue and cannot be discarded.
 
 ### Ride saved
 
@@ -516,8 +488,7 @@ The summary opens with a green check and RIDE SAVED, and pages through:
    minute is up, then the fall (-28 BPM). A rider who waits more than five
    seconds past the minute before ending the ride, a sensor that is silent at
    either moment (ANT+ or BLE, ride open or not), or leaving the summary
-   before the minute is up shows nothing. Once measured it is saved with the
-   ride's facts (see Saved rides).
+   before the minute is up shows nothing.
 3. Elevation, only for a ride that recorded altitude: ASCENT M, DESCENT M,
    MIN M and MAX M in amber over a filled chart of altitude across the whole
    distance, each stretch in its climb steepness colour. A ride without
@@ -532,12 +503,7 @@ write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED. A
 ride kept in memory that the phone has not saved says SYNC TO SAVE in amber
 instead, with no check.
 
-A ride recorded live that sets a personal best (see Bests below) opens its
-summary with one toast and the best chime: `BEST 5 MIN 312 W`, NEW LONGEST
-RIDE, NEW LONGEST TIME or NEW MOST ASCENT for one, `3 NEW BESTS` for more.
-[UI](ui.md#bests) gives how a new best shows on the summary's pages.
-
-**FTP offer.** When the ride's new 20 min best times 0.95 is at least 3% above
+**FTP offer.** When the ride's 20 min best times 0.95 is at least 3% above
 the stored FTP, the summary gets one more, last page: the fourth, or the
 fifth after an elevation page. It shows `FTP 245 W?`, over the
 20 min best it comes from and `NOW 215 W`. It is a page, not a sheet, so the
@@ -549,104 +515,10 @@ earlier page declines it, and the offer is never shown again for that ride.
 The extra page dot shows that it is there. It is reached only going forward
 (MOVE from the last page): a swipe back from the first page lands on the
 best-power page before it, where ACT is Done as everywhere else. It is dropped when the suggestion no
-longer beats the FTP in force by 3%. It is not offered for a saved ride read
-back from the list.
+longer beats the FTP in force by 3%.
 
 The 5 s and 1 min bests are exact. The 5 and 20 min bests use 10 s buckets, so
 they can read slightly low but never high.
-
-## Saved rides
-
-```text
-Home ── RIDES ──> Rides (newest first) ── ACT or tap ──> Saved ride (3 or 4 pages) ── ACT ──> Phone
-                   │ BACK: Home                            │ BACK: Rides               │ BACK: the ride
-                   ^                                       │ MOVE past the last page
-                   │                                       v
-                   └──── ACT (RIDE DELETED) ──────────── DELETE RIDE?
-```
-
-Home's last card, RIDES, names this week's distance (WEEK 84 KM) once the ride
-index has read both journals and the week has a distance. Otherwise it names
-the last ride's distance, how many rides are saved, or NONE YET. This week's
-distance is shown rather than the last ride's because it is the number that
-survives a reboot and keeps meaning something between rides; the last ride's
-distance is on the summary the rider just saw. The card opens the list. Each card shows when the ride started
-(OCT 17  7:12, or RIDE n when the clock was unknown), its recorded time and
-distance where kept, and its average heart rate. MOVE focuses the next ride
-(held, it pages four cards at a time), ACT or a tap opens it, BACK goes Home.
-Without a saved ride the list says NO RIDES YET.
-
-While the focus is on the first three rides, a header sits above the cards:
-THIS WEEK and the number of rides, the week's distance (KM) with its moving
-time under it, then the week's TSS in the power colour (the training stress
-of this week's rides that had power, on its own line under the time), a small
-bar for each day (Monday to Sunday, every other day named; ridden days white,
-today's ride blue, other days a dark stub) and, in grey, LAST WEEK with its
-distance. From the fourth ride on the header gives
-way to the RIDES headline and a fourth card. A week runs Monday 00:00 to the
-next Monday in the status-bar clock's zone, and a ride counts in the week and
-day it started. Rides without a start time (the clock was unknown) are in no
-week. Totals come from the ride index across both journals, so rides read
-back from the MMC and internal flash both count; a ride that moved from the
-MMC onto internal flash is two journal rides, as the list shows it, adding
-their times and distances without overlap and counting twice in the ride
-count. Distance is the recorded speed added up (wheel sensor or GPS). While
-the index is still reading, the header shows what it has found, or -- before
-it has found anything; without a clock (network time, or the GPS receiver's
-date from its last fix) it shows -- and no last week. Ride start times use the same clock, so a ride
-dated by the GPS receiver counts too.
-
-TSS adds each ride's training stress, worked out when the ride index reads
-the ride (normalized power over 30 s, as the live ride's TSS) against the
-FTP the ride was saved with, so changing FTP does not restate past weeks. A
-ride without facts (below) counts at the FTP set now. A ride without a
-power meter, or with under 30 s of power, adds nothing; a week with no ride that had power shows no TSS
-rather than 0; more than 9999 reads 9999+. Rides the index has not read yet carry none, and nothing is
-saved: the stress is rebuilt with the index after every boot. A 7-day against
-42-day load line is not in this header, which has no room for it beside the
-distance, the bars and LAST WEEK; it has its own page, FORM (below).
-
-A saved ride opens on the summary's pages, read back from its journal:
-SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
-read. Laps are counted from the ride's samples and read -- until the ride is
-read. Climbs and HR RECOVERY come from the ride's facts. Ascent and the
-elevation profile come from the altitude recorded with the ride, with the same
-3 m band as a live ride; a ride recorded without altitude estimates
-its ascent from the recorded gradient and shows no profile. MOVE or a swipe turns the page, BACK returns to
-the list, and ACT (an arrow cue) offers the ride to the phone. On a device
-without Wi-Fi these pages show no ACT cue and ACT does nothing. A ride whose
-record cannot be read says RIDE UNREADABLE.
-
-With a card whose FILES store is formatted, a saved ride gets one more page
-dot. MOVE past its last page shows, without the status bar, the ride's start,
-DELETE RIDE?, its time and distance and IT GOES FROM YOUR RIDES. ACT (red
-trash cue) deletes it and BACK returns to the list, as on every saved-ride
-page. Like the FTP offer it is reached only going forward, so a swipe back
-from the first page never lands on it. The list then says RIDE DELETED with
-the focus on the ride that took its place, and the ride count, the week's
-distance and TSS, FORM, Home's card and the phone's list drop the ride. The
-journal keeps it (`ride-recording.md`, "Discarded and deleted rides"), and
-the bests it set stay. Undated rides newer than it renumber (RIDE n counts
-list places). A ride kept in memory that the phone has not saved has no
-delete page.
-
-A ride's facts are what its journal does not hold: the FTP and LTHR in force
-when it was saved, its HR RECOVERY once measured, and the climbs it finished.
-They are a table on the FILES volume (`ride-recording.md`, "Ride facts"),
-written when the ride is saved, that keeps the newest 1000 rides: FORM's 120
-days at eight rides a day. A ride without them shows TSS at the FTP
-set now, CLIMBS --, and no HR RECOVERY. That is a ride saved with no card,
-FILES volume or formatted store, one saved without a clock, one recovered after
-a power cut, and one older than the newest 1000. A ride that moved from the MMC onto internal flash keeps its
-facts with its internal part.
-
-The list holds every saved ride of both journals (internal flash and the
-memory card's RIDES volume), newest first. A ride index, kept in PSRAM and
-rebuilt after each boot, reads each journal in the background a few records
-per tick once the list was first opened, about 20 bytes per ride and up to 1,000 rides per journal (the
-oldest drop out beyond that). Until it has read a journal, the last four rides
-each journal's catalog keeps still show, and a newly saved ride appears at
-once.
 
 ## Rides kept in memory
 
@@ -659,14 +531,14 @@ ride is protected:
 
 - Home's status line says NOT SAVED, and the ride pages show a NOT SAVED
   toast. A low-storage toast takes its place while one shows.
-- The summary and the saved ride say SYNC TO SAVE in place of RIDE SAVED
-  and SAVED RIDE, and so does a toast that would say RIDE SAVED.
+- The summary says SYNC TO SAVE in place of RIDE SAVED, and so does a toast
+  that would say RIDE SAVED.
 - The TURN OFF sheet says SYNC RIDE FIRST, or SYNC RIDES FIRST for more than
   one, in place of RIDES ARE SAVED, and shows no ACT corner. Every button
   closes the sheet, and the device stays on.
 - The idle timer never turns the device off. It refuses with no message,
   because Home already says NOT SAVED.
-- END RIDE? offers no discard, and the saved ride has no delete page.
+- END RIDE? offers no discard.
 
 A ride counts as saved once the phone page confirms it, and the ride then
 shows as on any other device. The rider loses a protected ride only by
@@ -675,9 +547,7 @@ crash or a power cut. A forced reboot loses every ride in memory, saved or
 not.
 
 The journal in memory takes 16 rides between clears, saved and unsaved
-alike. After the 16th ride starts, Ready's storage line says SYNC RIDES FIRST
-while any of them is unsaved, else CLEAR RIDES FIRST, over ON THE PHONE
-PAGE, and the headline says NOT READY. Neither ACT nor rolling off starts a
+alike. After the 16th ride starts, neither RIDE nor rolling off starts a
 ride until the rides are cleared.
 
 A CLEAR of the journal in memory, from the phone page's **Clear rides** or
@@ -688,83 +558,10 @@ UNSAVED RIDES? (LOSE 1 UNSAVED RIDE? for one), over THEY CANNOT COME BACK
 ACT (red trash cue) clears the journal and the unsaved rides with it. BACK
 keeps every ride, refuses the CLEAR and returns Home.
 
-## Bests
-
-The rider's all-time bests are 5 s, 1, 5 and 20 min power, the longest ride
-by distance and by time, and the most ascent. Settings, PROFILE, BESTS lists
-each with its value and the day it was set, and each power best also in W/KG
-once Settings, BODY holds a weight; BACK returns to Settings. The BESTS row's
-value counts the bests set (7 SET), says NONE YET, or names a problem below
-(NOT KEPT, DAMAGED, NOT FORMATTED, NOT SAVED). [UI](ui.md#bests) gives how
-the page looks.
-
-- Only a ride that finishes counts, never a discarded one. Deleting a saved
-  ride keeps the bests it set. Rides under 10 minutes can set a power best but not a distance, time or
-  ascent one, so a test press is not the longest ride.
-- A best is replaced only by a higher value; a tie keeps the older day.
-- A power above what a person holds for that length (2,500 W for 5 s,
-  1,500 W for 1 min, 800 W for 5 min, 600 W for 20 min) is a sensor glitch and
-  never a best.
-- They are ride history, not settings: a small file on the FILES volume
-  beside the workout outcomes (`ride-recording.md`, "Personal bests"), saved
-  when the ride is. Where there is no card, no FILES volume or no formatted
-  store, they are not kept: BESTS says BESTS NOT KEPT and NO PLACE TO KEEP
-  THEM, and a ride is never held up for it. VANA never formats a store on
-  its own. A store is formatted only by the host (`cycling format --confirm`)
-  or by the rider's yes to FORMAT STORAGE? at boot
-  ([volumes](mmc-volumes.md#format)), and either erases the bests. A device
-  that never recorded one shows NONE YET.
-- If the store would not take a write (full or failing), BESTS says BESTS NOT
-  SAVED and STORAGE REFUSED THEM; the bests merged so far stay in memory and
-  the next write keeps them. A read that failed only this time is tried again
-  with the ride waiting.
-- A file that cannot be read says BESTS FILE DAMAGED and IT CANNOT BE READ,
-  and is left alone.
-- A file of another version is foreign: BESTS says BESTS NOT FORMATTED and
-  OFF AND ON TO FORMAT, and ACT does nothing. Only a format replaces the
-  file.
-- ACT on BESTS asks CLEAR BESTS?: ACT (check cue) clears them, replacing a
-  damaged file too, and BACK (back cue) keeps them. A failed clear says CLEAR
-  FAILED in a toast.
-
-## Form
-
-Settings, PROFILE, FORM opens the rider's training load from the last four
-months of rides with power. Its row reads the
-current form number and word once the ride index has read the rides (it follows FTP
-changes), and OPEN TO SEE until then. FITNESS is the 42-day
-average of the daily training stress, FATIGUE the 7-day one, and FORM is
-fitness minus fatigue, with a word for it: RESTED above +25, FRESH
-from +5 to +25, EVEN from -10 to +4, BUILDING from -30 to -11
-(the normal cost of training) and VERY TIRED below -30. Under them one bar
-a week shows how form stood at the end of each of the last six weeks, up for
-positive and down for negative, from 6 WEEKS AGO to NOW. BACK returns to
-Settings. [UI](ui.md#form) gives the verdicts' colours and the bars' scale.
-
-- The stress is each ride's TSS (see the rides list), at the FTP the ride was
-  saved with where its facts are still kept, else the FTP now, added up by the
-  day the ride started in the status-bar clock's zone. A day with no ride
-  counts zero, so both averages decay. A ride without power counts for
-  nothing, and when there were any in the window the page says RIDES WITHOUT
-  POWER ARE LEFT OUT.
-- The averages need a starting value, and the first week of the 120 days
-  gives it (its mean stress). Its effect fades with the 42-day average to
-  0.057 of its error over the window: about 0.057 times the first week's mean
-  minus the rider's usual load, so +11 if that week was a training camp. The
-  numbers are an estimate until the rider has about four months of rides, and
-  settle within about a week once an unusual first week leaves the window.
-  Rides older than 120 days do not count.
-- Opening FORM starts the ride index if nothing has yet, and the page says
-  READING RIDES until both journals are read. Without a date it says NO DATE
-  YET and GET A GPS FIX, and with no ride with power in the window, NO POWER
-  RIDES and NEEDS A POWER METER.
-- Nothing is saved: the page is rebuilt from the ride index and the facts
-  after every boot.
-
 ## Sensors
 
 ```text
-Home, Ready, Settings or setup ──> SENSORS ── ACT on ADD SENSOR ──> NEARBY (searches)
+Home or Settings ──> SENSORS ── ACT on ADD SENSOR ──> NEARBY (searches)
    (straight to NEARBY              │ ACT on a sensor     ^          │ ACT on a sensor: connect it and
     when nothing is saved)          v                     │ BACK     │ stay; BACK: SENSORS, on it
                                Sensor's page ─────────────┘
@@ -804,38 +601,19 @@ SENSORS.
 
 A sensor's page shows its state, battery and number with button cues: back
 beside BACK, and the trash beside ACT, or beside MOVE on a power meter, whose
-ACT zeroes it (see Ready). The trash asks FORGET SENSOR? with the sensor's
+ACT zeroes it (see The ride). The trash asks FORGET SENSOR? with the sensor's
 name and number; ACT forgets it and returns to SENSORS, BACK returns to its
 page. MOVE does nothing on these pages but a power meter's. A forgotten
 sensor is never connected again until it is chosen on NEARBY.
 
 ## Connect phone
 
-Settings, DEVICE, PHONE (SEND RIDES) and ACT on a saved ride open Connect
-phone. It starts a session on VANA's own Wi-Fi that one phone uses with no
-app to install, through two QR codes. CONNECT PHONE and STARTING WI-FI show
-while the Wi-Fi starts.
-
-1. STEP 1 OF 2, JOIN VANA WI-FI: the network's name and password beside a
-   code that the phone's camera offers to join. The note says SCAN WITH THE
-   CAMERA, or how many phones joined (1 JOINED).
-2. STEP 2 OF 2, OPEN YOUR RIDES: once a phone joins, the screen moves here by
-   itself. The address and a code open the page that lists the rides,
-   downloads them as FIT files and loads a course or a workout (see Course
-   and Workouts from the phone). The note says ENDS AFTER 10 MIN IDLE, or how
-   many rides were sent (2 SENT).
-
-MOVE, ACT or a tap on the code switches between the two codes. BACK ends the
-session and returns to the saved ride it came from, else Home. The session
-also ends after 10 minutes without a request from the phone, or when a ride
-starts. The screen then says PHONE DISCONNECTED and why (SESSION ENDED,
-ENDED AFTER 10 MIN IDLE, NOT DURING A RIDE, WI-FI DID NOT START or NO HOME
-WI-FI) over TAP TO TRY AGAIN, and a press or a tap starts a new session. A
-session the terminal starts on the home network says ON HOME WI-FI and shows
-only the second code.
-
-A device without Wi-Fi has no phone feature. Settings, DEVICE has no PHONE
-row, and a saved ride offers no send ([Saved rides](#saved-rides)).
+The terminal's `PHONE START` opens a phone session on VANA's own Wi-Fi
+(`PHONE START HOME` on the home network), and `PHONE STOP` ends it. The
+phone's page lists the rides, downloads them as FIT files and loads a course
+or a workout (see Course and Workouts from the phone). The session also ends
+after 10 minutes without a request from the phone, or when a ride starts. A
+device without Wi-Fi has no phone feature.
 
 On a device that keeps rides in memory
 ([Rides kept in memory](#rides-kept-in-memory)), the page marks each
@@ -870,15 +648,15 @@ shortcut for navigation only; [UI](ui.md#input) gives the gestures.
 
 | Button | Home | Sensors | Settings | Workouts | Ride |
 | --- | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
+| BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Start the focused workout | Pause, resume; on the NEW FTP sheet, save it |
 | BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n), except on the workout page during a running step, where it extends the step (+1 MIN, +0.5 KM), and on the map while following a course, where it stops following (COURSE OFF) |
 | TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms, on a device that can turn off | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
-| Button | Ready | End ride? | Summary | Rides | Saved ride |
-| --- | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Start the ride | End and save it | Done: Home | Open the focused ride | Send to the phone; on the DELETE RIDE? page, delete the ride |
-| BottomLeft (MOVE) | Held 1.5 s: mark the moment (MARK n) | Ask DISCARD RIDE?, when the ride can be discarded | Next page (wraps); held 1.5 s: mark the moment (MARK n) | Focus the next ride (wraps; held, four on) | Next page (wraps) |
-| TopLeft (BACK) | Home, dropping a chosen workout | Keep the ride, paused | Home | Home | Back to Rides |
+| Button | End ride? | Summary |
+| --- | --- | --- |
+| BottomRight (ACT) | End and save it | Done: Home |
+| BottomLeft (MOVE) | Ask DISCARD RIDE?, when the ride can be discarded | Next page (wraps); held 1.5 s: mark the moment (MARK n) |
+| TopLeft (BACK) | Keep the ride, paused | Home |
 
 The rider's mark writes the moment into the session trace, so whoever reads
 the trace later starts where the rider noticed something. MOVE held for 1.5 s
@@ -914,7 +692,6 @@ it for every note. Rising runs mean go, falling ones stop.
 | Riding on while paused by ACT (see Paused) | middle, middle, high |
 | Lap | middle |
 | Ride saved | low, middle, high |
-| The summary of a ride that set a best | middle, high, high |
 | Battery low or critical, and BATTERY n LEFT | low, low |
 | Workout step's last three seconds | low, once a second |
 | Workout step begins, workout ends or a test measures FTP (in place of the lap chime) | high, high |

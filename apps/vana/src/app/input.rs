@@ -211,24 +211,18 @@ impl Runtime {
                 let screen = paused && !navigation.pause_hidden();
                 navigation.ride_page().index() as u32 | u32::from(screen) << 3
             }
-            Page::Summary | Page::PastRide => navigation.summary_page() as u32,
+            Page::Summary => navigation.summary_page() as u32,
             Page::Sensors => u32::from(self.menu.touch_view()),
             Page::Settings => {
                 let section = navigation.sections().section(navigation.settings_field()).0 as u32;
                 u32::from(navigation.editing()) | section << 1
             }
-            Page::Setup => u32::from(self.preferences.options.setup),
             Page::Boot
             | Page::Format
             | Page::Home
-            | Page::Ready
             | Page::EndRide
             | Page::DiscardRide
             | Page::LoseRides
-            | Page::Phone
-            | Page::Bests
-            | Page::Form
-            | Page::History
             | Page::Workouts => 0,
         };
         let sheet = u32::from(self.power.view().is_some() || self.ftp_sheet().is_some());
@@ -272,7 +266,7 @@ impl Runtime {
             // Settings swipes between sections, out of the editor too.
             swipes: matches!(
                 navigation.page(),
-                Page::Ride | Page::Summary | Page::PastRide | Page::Settings
+                Page::Ride | Page::Summary | Page::Settings
             ),
             pull: self.pulls_down(y).then_some(Pull::Down),
         };
@@ -369,8 +363,8 @@ impl Runtime {
         match self.navigation.page() {
             Page::Ride if next => self.next_ride_page(),
             Page::Ride => self.previous_ride_page(),
-            Page::Summary | Page::PastRide if next => self.next_summary_page(1),
-            Page::Summary | Page::PastRide => self.previous_summary_page(),
+            Page::Summary if next => self.next_summary_page(1),
+            Page::Summary => self.previous_summary_page(),
             Page::Settings => {
                 let navigation = &mut self.navigation;
                 let sections = navigation.sections();
@@ -395,8 +389,8 @@ impl Runtime {
 
     /// Show the sensor pages. With nothing saved they open on NEARBY,
     /// which searches.
-    pub(super) fn open_sensors(&mut self, from_setup: bool, ant: &mut impl Ant, now: u64) {
-        self.navigation.go(To::Sensors { from_setup });
+    pub(super) fn open_sensors(&mut self, ant: &mut impl Ant, now: u64) {
+        self.navigation.go(To::Page(Page::Sensors));
         self.refresh_sensor_menu(ant, now);
         let action = self.menu.open();
         self.sensors_action(action, now, ant);
@@ -412,7 +406,7 @@ impl Runtime {
             Some(Action::Calibrate(meter)) => self.calibrate(meter, ant, now),
             Some(Action::Ride) => {
                 self.cancel_search(ant, now);
-                self.after_sensors();
+                self.navigation.go(To::Page(Page::Home));
             }
             None => {}
         }
@@ -429,8 +423,7 @@ impl Runtime {
         match button {
             Role::Move => self.adjust_setting(-self.setting_step(), now, held),
             Role::Act => self.adjust_setting(self.setting_step(), now, held),
-            Role::Back if !self.setup_edit_finished(now) => self.navigation.go(To::EditDone),
-            _ => {}
+            Role::Back => self.navigation.go(To::EditDone),
         }
     }
 
@@ -442,15 +435,9 @@ impl Runtime {
             (Kind::Number, _) => self.navigation.go(To::Edit {
                 field: self.navigation.settings_field(),
                 wheel_origin: self.preferences.options.wheel,
-                from_setup: false,
             }),
             (Kind::Choice, _) => self.next_choice(row, now),
-            (_, Some(SettingsAction::Sensors)) => self.open_sensors(false, ant, now),
-            (_, Some(SettingsAction::Bests)) => self.open_bests(),
-            (_, Some(SettingsAction::Form)) => self.open_form(),
-            (_, Some(SettingsAction::ConnectPhone)) => {
-                self.enter_phone();
-            }
+            (_, Some(SettingsAction::Sensors)) => self.open_sensors(ant, now),
             _ => {}
         }
     }
@@ -484,7 +471,7 @@ impl Runtime {
             Row::AutoLap => options.auto_lap = after(&AUTO_LAP, options.auto_lap),
             Row::TimeZone => options.zone = after(&ZONES, options.zone),
             Row::WheelMode => options.wheel.manual = !options.wheel.manual,
-            Row::PageLap | Row::PageClimb | Row::PageMap => {
+            Row::PageClimb | Row::PageMap => {
                 if let Some(page) = row.ride_page() {
                     options.deck = options.deck.toggled(page);
                 }

@@ -26,18 +26,22 @@ WIDTH, HEIGHT = 240 * SCALE, 320 * SCALE
 # (file in docs/screenshots, scenario, checkpoint file in its artifacts)
 SHOTS = [
     ('home.png', 'home_shows_ride_sensors_and_the_last_ride_at_a_glance', '03-home-after-a-ride.png'),
-    ('ride.png', 'ride_shows_live_metrics_and_records_the_gps_track', '01-five-minutes-riding.png'),
+    ('ride.png', 'riding::ride_shows_live_metrics_and_records_the_gps_track', '01-five-minutes-riding.png'),
     (
         'map.png',
         'a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_track',
         '01-the-map-with-the-course-ahead-in-grey.png',
     ),
-    ('climb.png', 'climb_page_measures_a_six_percent_climb_over_the_top', '02-climb-page-mid-climb.png'),
-    ('radar.png', 'radar_tracks_a_group_of_six_vehicles_until_they_pass', '01-six-vehicles-behind.png'),
-    ('workout.png', 'a_structured_workout_runs_its_steps_with_targets_beeps_and_laps', '05-interval-on-target.png'),
+    ('climb.png', 'climb::climb_page_measures_a_six_percent_climb_over_the_top', '02-climb-page-mid-climb.png'),
+    ('radar.png', 'radar::radar_tracks_a_group_of_six_vehicles_until_they_pass', '01-six-vehicles-behind.png'),
+    (
+        'workout.png',
+        'workouts::a_structured_workout_runs_its_steps_with_targets_beeps_and_laps',
+        '05-interval-on-target.png',
+    ),
     (
         'light.png',
-        'the_light_theme_turns_every_screen_white_and_keeps_its_colours',
+        'screens::the_light_theme_turns_every_screen_white_and_keeps_its_colours',
         '03-ride-page-in-the-light-theme.png',
     ),
 ]
@@ -69,6 +73,11 @@ def panel(data):
     )
 
 
+def artifacts(scenario):
+    test = scenario.rsplit('::', 1)[-1]
+    return ARTIFACTS / f'{test}@c606'
+
+
 def main():
     shutil.rmtree(ARTIFACTS, ignore_errors=True)
     ARTIFACTS.mkdir(parents=True)
@@ -81,7 +90,7 @@ def main():
     )
     OUT.mkdir(parents=True, exist_ok=True)
     for name, scenario, checkpoint in SHOTS:
-        (OUT / name).write_bytes(panel((ARTIFACTS / f'{scenario}@c606' / checkpoint).read_bytes()))
+        (OUT / name).write_bytes(panel((artifacts(scenario) / checkpoint).read_bytes()))
         print(f'docs/screenshots/{name}')
 
 

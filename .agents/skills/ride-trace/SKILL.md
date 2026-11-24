@@ -365,8 +365,9 @@ rider saw, and the field that changed it.
    run; then the fixture stays a fixture. Without `--synthetic-course` the
    test rides the recorded track and is private; with it, a flat course of
    the same length at a made-up place. Read the remaining inputs before
-   committing it to `tools/simulator/tests/lifted_scenarios.rs`: `--json`
-   gives `left_out`, what the lift left out, and `private`.
+   committing it: `--json` gives `left_out`, what the lift left out, and
+   `private`. `--out tools/simulator/tests/lifted_scenarios/NAME.rs` writes
+   the file; add `mod NAME;` to `main.rs` beside it.
 5. Fix VANA; the fixture and the scenario go green.
 
 Done when the fixture or scenario is red before the fix and green after it.

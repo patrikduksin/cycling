@@ -31,7 +31,8 @@ loop's order and serves the terminal backend. The world and its observers:
   memory media with injected torn writes; memory media survives a power loss.
 - `rides.rs`: reads recorded rides back with VANA's journal decoder.
 
-Scenarios live in `tests/ride_scenarios.rs`. `cycling sim` runs them with
+Scenarios live in `tests/ride_scenarios/`, one module per subject; helpers that
+several modules use live in `support.rs`. `cycling sim` runs them with
 `SIM_ARTIFACTS` set: `recording.rs` writes checkpoint
 screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
 and JSON, a timeline and `result.json` for each scenario under

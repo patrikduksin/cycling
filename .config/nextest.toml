@@ -4,11 +4,11 @@ slow = { max-threads = "num-cpus" }
 [[profile.default.overrides]]
 filter = """
 test(=ride::recorder::explore::every_state_of_the_recorder_keeps_the_rules)
-| test(=a_two_hour_ride_with_a_pause_replays_exactly)
-| test(=a_five_hour_track_on_the_card_reads_back_after_a_restart)
+| test(=replay::a_two_hour_ride_with_a_pause_replays_exactly)
+| test(=track_map::a_five_hour_track_on_the_card_reads_back_after_a_restart)
 | test(=benchmark_screens_paint_their_recorded_pixels)
 | test(=navigation::arriving_shows_the_ride_totals_for_a_minute)
-| test(=bulk_media_keeps_a_long_ride_through_power_loss)
+| test(=bulk_media::bulk_media_keeps_a_long_ride_through_power_loss)
 """
 test-group = "slow"
 priority = 100
@@ -16,9 +16,9 @@ priority = 100
 [[profile.default.overrides]]
 filter = """
 test(/::share_[0-7]$/)
-| test(=pause_excludes_time_and_two_hour_ride_keeps_every_sample)
-| test(=heart_rate_band_and_eat_and_drink_alerts_sound_and_show)
-| test(=every_sensor_input_mutated_shows_in_its_replay)
+| test(=riding::pause_excludes_time_and_two_hour_ride_keeps_every_sample)
+| test(=riding::heart_rate_band_and_eat_and_drink_alerts_sound_and_show)
+| test(=replay_inputs::every_sensor_input_mutated_shows_in_its_replay)
 | test(=store::tests::every_power_cut_keeps_whole_files_and_their_synced_bytes)
 | test(=ride::course::turns::tests::a_recorded_track_names_its_turns_no_worse_than_the_course_as_kept)
 | test(=ride::course::follow::tests::noisy_fixes_round_a_roundabout_never_give_a_wrong_word)

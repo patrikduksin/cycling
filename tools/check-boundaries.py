@@ -77,8 +77,6 @@ ALIAS_RULE = 'write `device_api::` in full in VANA and the shell: an alias hides
 LINE_LIMIT = 2000
 GENERATED = 'Do not edit by hand.'
 LINE_CEILINGS = {
-    'tools/simulator/tests/ride_scenarios.rs': 8377,
-    'tools/simulator/tests/lifted_scenarios.rs': 6286,
     'tools/simulator/src/session.rs': 2776,
     'apps/vana/src/screens/ride/map/tests.rs': 2242,
     'apps/vana/src/app/tests/recording.rs': 2111,

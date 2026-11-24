@@ -382,7 +382,7 @@ TASKS = [
     ),
     task(
         'fixtures-planted',
-        'Prove a lifted scenario fails on its bug: tests/lifted_scenarios.rs under the planted-reading-bug feature',
+        'Prove a lifted scenario fails on its bug: tests/lifted_scenarios/ under the planted-reading-bug feature',
         'CARGO_TARGET_DIR=target/planted cargo test -p shell-simulator --locked --no-default-features '
         '--features planted-reading-bug --test lifted_scenarios the_planted_',
     ),

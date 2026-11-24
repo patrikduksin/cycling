@@ -393,7 +393,7 @@ pub fn calls(plan: &Plan, road: Road) -> Vec<Call> {
 /// that judge the end.
 pub fn print(name: &str, calls: &[Call], then: &str) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "#[test]\nfn {name}() {{");
+    let _ = writeln!(out, "#[test]\npub fn {name}() {{");
     let statements: Vec<String> = calls.iter().map(Call::rust).collect();
     let uses = |text: &str| statements.iter().any(|s| s.contains(text));
     for (named, import) in [

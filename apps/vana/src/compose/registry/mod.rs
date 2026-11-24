@@ -15,8 +15,8 @@ mod statics;
 
 #[allow(unused_imports)]
 pub use {
-    climb_workout::*, kit::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*, sensors::*,
-    statics::*,
+    climb_workout::*, kit::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*,
+    sensors::*, statics::*,
 };
 
 /// A family's block of ids and its tiles, the first at the block's start.

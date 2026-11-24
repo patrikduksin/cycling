@@ -94,7 +94,10 @@ impl Tile for Facts {
             color: theme.raised,
         });
         let (note, label) = (at.face(LAYOUT.face.note), at.face(LAYOUT.face.label));
-        let (left, right) = (rect.left + px(at, space.gutter), rect.right - px(at, space.gutter));
+        let (left, right) = (
+            rect.left + px(at, space.gutter),
+            rect.right - px(at, space.gutter),
+        );
         let row = px(at, space.row);
         for (at_row, fact) in card.spec().rows.iter().enumerate() {
             let top = rect.top + at_row * row;
@@ -114,10 +117,26 @@ impl Tile for Facts {
             let middle = top + row / 2;
             let shown = value(fact, data.metric(fact.metric));
             let base = middle + label.cap as usize / 2;
-            let run = out.fit(&[label], shown.as_bytes(), right - left, right, base, Align::Right, theme.text);
+            let run = out.fit(
+                &[label],
+                shown.as_bytes(),
+                right - left,
+                right,
+                base,
+                Align::Right,
+                theme.text,
+            );
             let base = middle + note.cap as usize / 2;
             let room = run.left.saturating_sub(left + px(at, space.gap));
-            out.fit(&[note], fact.label.as_bytes(), room, left, base, Align::Left, theme.sub);
+            out.fit(
+                &[note],
+                fact.label.as_bytes(),
+                room,
+                left,
+                base,
+                Align::Left,
+                theme.sub,
+            );
         }
     }
 }

@@ -93,10 +93,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// The main page's built-in, as stored.
 fn builtin_main() -> Vec<u8> {
-    main_tree()
-        .iter()
-        .flat_map(|node| node.bytes())
-        .collect()
+    main_tree().iter().flat_map(|node| node.bytes()).collect()
 }
 
 fn shown_main(runtime: &Runtime) -> Option<Vec<u8>> {

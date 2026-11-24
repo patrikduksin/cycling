@@ -137,7 +137,9 @@ fn the_page_shows_the_approved_grid_with_its_titles() {
     ] {
         assert!(canvas.shows(title), "{title}");
     }
-    for value in ["200", "142", "31.3", "92", "2.4", "%", "42.7", "1:23:45", "82%"] {
+    for value in [
+        "200", "142", "31.3", "92", "2.4", "%", "42.7", "1:23:45", "82%",
+    ] {
         assert!(canvas.shows(value), "{value}");
     }
     let field = |text: &str| canvas.find(text).unwrap();
@@ -159,7 +161,10 @@ fn power_and_heart_fill_with_their_zones_and_write_in_black() {
     let heart = profile.heart_zone(142);
     assert_eq!(
         fills(canvas),
-        [DARK.zone_fill[usize::from(power) - 1], DARK.zone_fill[usize::from(heart) - 1]]
+        [
+            DARK.zone_fill[usize::from(power) - 1],
+            DARK.zone_fill[usize::from(heart) - 1]
+        ]
     );
     for text in ["PWR 3S W", "200", "HEART BPM", "142"] {
         assert_eq!(color(canvas, text), DARK.on_fill, "{text}");
@@ -221,7 +226,7 @@ fn both_looks_draw_one_page_in_their_own_colours() {
 fn the_day_look_paints_white_and_black_untransformed() {
     let device = &crate::screens::C606;
     let mut day = view(RIDE, device, Flags::NONE, true);
-    let speed = day.canvas().find("SPD KM/H").unwrap().clone();
+    let speed = *day.canvas().find("SPD KM/H").unwrap();
     let blank = (speed.left + 4, speed.bottom() + 2);
     assert_eq!(day.pixel(blank.0, blank.1), LIGHT.bg);
     let inked = (speed.left..speed.left + 40)

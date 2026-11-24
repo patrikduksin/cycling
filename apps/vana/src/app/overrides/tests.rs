@@ -474,8 +474,5 @@ fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
     );
     assert!(overrides.shown().screen(MAIN).is_none());
     laids.update(choices, Flags::NONE, overrides.shown());
-    assert_eq!(
-        laids.main().screen().tree().nodes(),
-        main_tree().as_slice()
-    );
+    assert_eq!(laids.main().screen().tree().nodes(), main_tree().as_slice());
 }

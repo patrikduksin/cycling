@@ -132,6 +132,14 @@ impl Tile for Text {
             Align::Right => rect.left + advance,
         };
         let color = data.theme().tone(spec.tone);
-        out.fit(&[face], words, rect.width(), x, rect.bottom, spec.align, color);
+        out.fit(
+            &[face],
+            words,
+            rect.width(),
+            x,
+            rect.bottom,
+            spec.align,
+            color,
+        );
     }
 }

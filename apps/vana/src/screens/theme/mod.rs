@@ -214,7 +214,9 @@ mod tests {
     fn night_is_main_s_palette() {
         let t = &DARK;
         assert_eq!(
-            [t.bg, t.text, t.sub, t.rule, t.card, t.raised, t.off, t.focus],
+            [
+                t.bg, t.text, t.sub, t.rule, t.card, t.raised, t.off, t.focus
+            ],
             [
                 chrome::BLACK,
                 chrome::WHITE,

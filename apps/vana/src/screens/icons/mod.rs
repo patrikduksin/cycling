@@ -173,7 +173,7 @@ pub struct Art {
     pub arrow: &'static Icon,
     pub puck: &'static Icon,
     signs: &'static [[SignArt; 3]; 8],
-    symbols: &'static [Icon; 5],
+    symbols: &'static [Icon; 8],
 }
 
 impl Art {
@@ -322,12 +322,15 @@ mod tests {
         SignGlyph::Flag,
     ];
     const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
-    const SYMBOLS: [Symbol; 5] = [
+    const SYMBOLS: [Symbol; 8] = [
         Symbol::Power,
         Symbol::Heart,
         Symbol::Ramp,
         Symbol::Peak,
         Symbol::Satellite,
+        Symbol::Span,
+        Symbol::Up,
+        Symbol::Flag,
     ];
 
     fn ink(glyph: SignGlyph, form: SignForm) -> Rect {
@@ -394,8 +397,8 @@ mod tests {
         assert_eq!(Sensor::Heart.icon(Size::Large).size, 34);
         assert_eq!((ART_1.puck.size, ART_0_75.puck.size), (20, 15));
         let sizes = |art: &'static Art| SYMBOLS.map(|symbol| art.symbol(symbol).size);
-        assert_eq!(sizes(&ART_1), [11, 11, 11, 12, 15]);
-        assert_eq!(sizes(&ART_0_75), [8, 8, 8, 9, 11]);
+        assert_eq!(sizes(&ART_1), [11, 11, 11, 12, 15, 12, 12, 12]);
+        assert_eq!(sizes(&ART_0_75), [8, 8, 8, 9, 11, 9, 9, 9]);
     }
 
     #[test]

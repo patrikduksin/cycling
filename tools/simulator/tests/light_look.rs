@@ -111,7 +111,7 @@ fn every_screen_paints_its_colours_through_the_light_look() {
         // colours mapped through the look.
         if matches!(
             sim.ride_page_name().as_deref(),
-            Some("ride/main" | "ride/workout")
+            Some("ride/main" | "ride/climb" | "ride/workout")
         ) {
             continue;
         }

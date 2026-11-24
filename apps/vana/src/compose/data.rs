@@ -383,10 +383,20 @@ pub enum Metric {
     PowerDiff,
     /// Seconds the ride has been paused.
     Paused,
+    /// Metres above the sea.
+    Altitude,
+    /// Metres of the barometer's climb under way, so far.
+    ClimbDistance,
+    /// Metres gained on the barometer's climb under way.
+    ClimbGain,
+    /// Metres to the top of the map's climb.
+    ToTop,
+    /// Metres of height left to the top of the map's climb.
+    UpToGo,
 }
 
 impl Metric {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 35] = [
         Self::Cadence,
         Self::Distance,
         Self::NormalizedPower,
@@ -417,6 +427,11 @@ impl Metric {
         Self::SpeedDiff,
         Self::PowerDiff,
         Self::Paused,
+        Self::Altitude,
+        Self::ClimbDistance,
+        Self::ClimbGain,
+        Self::ToTop,
+        Self::UpToGo,
     ];
 
     /// The readings the lower line offers, in the order Settings steps
@@ -484,6 +499,11 @@ impl Metric {
             Self::SpeedDiff => "KM/H DIFF",
             Self::PowerDiff => "W DIFF",
             Self::Paused => "PAUSED",
+            Self::Altitude => "ALTITUDE",
+            Self::ClimbDistance => "CLIMB DIST",
+            Self::ClimbGain => "CLIMB ELEV",
+            Self::ToTop => "DIST TO TOP",
+            Self::UpToGo => "ELEV TO TOP",
         }
     }
 
@@ -511,7 +531,8 @@ impl Metric {
             Self::AvgPower | Self::AvgHeart | Self::AvgSpeed => "AVG",
             Self::Kcal => "KCAL",
             Self::Work => "KJ",
-            Self::Ascent => "M",
+            Self::Ascent | Self::Altitude | Self::ClimbGain | Self::UpToGo => "M",
+            Self::ClimbDistance | Self::ToTop => "KM",
             Self::Speed => "KM/H",
             Self::Power | Self::LapPower | Self::PrevLapPower | Self::PowerDiff => "W",
             Self::Heart | Self::LapHeart => "BPM",
@@ -549,7 +570,12 @@ impl Metric {
             | Self::Moving
             | Self::LapTime
             | Self::LapDistance
-            | Self::PrevLapTime => WHITE,
+            | Self::PrevLapTime
+            | Self::Altitude
+            | Self::ClimbDistance
+            | Self::ClimbGain
+            | Self::ToTop
+            | Self::UpToGo => WHITE,
             Self::NormalizedPower
             | Self::AvgPower
             | Self::Power
@@ -598,6 +624,9 @@ impl Metric {
             | Self::PrevLapNumber => (0, 9999),
             Self::Heart | Self::AvgHeart | Self::Cadence | Self::LapHeart => (0, 999),
             Self::Distance | Self::LapDistance => (0, 9_999_900),
+            Self::ClimbDistance | Self::ToTop => (0, 999_900),
+            Self::Altitude => (-999, 9999),
+            Self::ClimbGain | Self::UpToGo => (0, 9999),
             Self::Elapsed | Self::Moving | Self::LapTime | Self::PrevLapTime | Self::Paused => {
                 (0, 99 * 3600 + 59 * 60 + 59)
             }
@@ -653,6 +682,10 @@ impl Metric {
             Self::Distance | Self::LapDistance => {
                 ride::kilometres(out, u64::from(unsigned.unwrap_or(0)) * 1000)
             }
+            Self::ClimbDistance | Self::ToTop => match unsigned {
+                Some(metres) => ride::kilometres(out, u64::from(metres) * 1000),
+                None => whole(out),
+            },
             Self::Elapsed => ride::elapsed(out, u64::from(unsigned.unwrap_or(0))),
             Self::Moving | Self::LapTime | Self::PrevLapTime | Self::Paused => match unsigned {
                 Some(seconds) => ride::lap_time(out, u64::from(seconds)),
@@ -678,7 +711,10 @@ impl Metric {
             | Self::LapHeart
             | Self::LapNumber
             | Self::PrevLapNumber
-            | Self::PrevLapPower => whole(out),
+            | Self::PrevLapPower
+            | Self::Altitude
+            | Self::ClimbGain
+            | Self::UpToGo => whole(out),
         }
     }
 }

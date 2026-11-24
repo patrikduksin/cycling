@@ -17,6 +17,8 @@ pub mod chart;
 pub mod facts;
 pub mod field;
 pub mod item;
+pub mod profile;
+pub mod road_field;
 pub mod rule;
 pub mod step;
 pub mod symbol;

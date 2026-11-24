@@ -49,7 +49,16 @@ SENSORS = [
 SENSOR_SIZES = [22, 26, 34]
 MARKS = [("refresh", 18), ("plus", 18), ("arrow", 28)]
 # Small symbols beside titles, in `Symbol` order.
-SYMBOLS = [("power", 11), ("heart", 11), ("ramp", 11), ("peak", 12), ("satellite", 15)]
+SYMBOLS = [
+    ("power", 11),
+    ("heart", 11),
+    ("ramp", 11),
+    ("peak", 12),
+    ("satellite", 15),
+    ("span", 12),
+    ("up", 12),
+    ("flag", 12),
+]
 
 TURN = (
     '<path d="M-15 19 V-1 Q-15 -11 -5 -11 H4" fill="none" stroke="#fff" stroke-width="10" '

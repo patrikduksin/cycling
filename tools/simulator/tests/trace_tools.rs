@@ -370,7 +370,7 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
         last_two,
         [
             "ride/lap  (after button 1 code 1; shows none)",
-            "ride/climb  (after button 1 code 1; shows power,hr,grade)"
+            "ride/climb  (after button 1 code 1; shows time,power,hr,cad,grade)"
         ],
         "{pages:?}"
     );

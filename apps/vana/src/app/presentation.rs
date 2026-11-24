@@ -482,8 +482,6 @@ impl Runtime {
             view.show_climb(crate::screens::ride::ClimbLent {
                 climbs: self.ride.climbs(),
                 climbing,
-                trace: self.ride.trace(),
-                forecast: super::lookahead::forecast_of(&self.lookahead),
                 pinned: super::lookahead::pinned_of(&self.lookahead),
             });
         }

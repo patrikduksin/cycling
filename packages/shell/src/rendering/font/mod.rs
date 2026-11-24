@@ -13,9 +13,9 @@ use super::work;
 use core::ops::Range;
 
 pub use faces::{
-    BODY, CAPTION, DIGITS_15, DIGITS_26, DIGITS_40, FACES, FOOT_20, HEADING, HERO, LABEL, LARGE,
-    NOTE, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27, SIGN_32, SIGN_50, TAG, TITLE, TOTAL_11,
-    TOTAL_30, TOTAL_60, VALUE,
+    BODY, CAPTION, DIGITS_15, DIGITS_19, DIGITS_22, DIGITS_26, DIGITS_34, DIGITS_40, FACES,
+    FOOT_20, HEADING, HERO, LABEL, LARGE, NOTE, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27,
+    SIGN_32, SIGN_50, TAG, TITLE, TOTAL_11, TOTAL_30, TOTAL_60, VALUE,
 };
 
 /// What a face is for, the same at every scale step: `Faces` holds one face
@@ -46,10 +46,13 @@ pub enum FaceRole {
     Digits40,
     Digits26,
     Digits15,
+    Digits34,
+    Digits22,
+    Digits19,
 }
 
 /// Every role's face at one scale step.
-pub struct Faces(pub [&'static Face; 24]);
+pub struct Faces(pub [&'static Face; 27]);
 
 /// Each step has one set: sets are the same only when they are one static,
 /// and a set adds nothing to a hash that its step does not.

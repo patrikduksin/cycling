@@ -1348,7 +1348,7 @@ impl<'a> View<'a> {
             kind,
             look: super::look::look(self.light),
             theme: themed.then(|| crate::compose::data::Data::theme(self)),
-            bar: (!sheet && !self.full_screen()).then_some(&self.bar),
+            bar: (!sheet && !themed && !self.full_screen()).then_some(&self.bar),
             main_bar: self
                 .main()
                 .and_then(ride::main_status_bar)

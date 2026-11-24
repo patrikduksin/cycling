@@ -19,9 +19,10 @@ power. None draws in the 5 × 7 bitmap font.
 ## The kit and its two looks
 
 Kit screens are built from one small set of tiles, the kit
-(`apps/vana/src/compose/kit`), drawn in one of two looks. The Stats ride
-page (`ride/main`) and the Workout ride page (`ride/workout`) are two.
-Other screens follow the rules in the rest of this document.
+(`apps/vana/src/compose/kit`), drawn in one of two looks. The Stats
+(`ride/main`), Climb (`ride/climb`) and Workout (`ride/workout`) ride
+pages are three. Other screens follow the rules in the rest of this
+document.
 
 - **Looks are data.** `screens/theme` holds one `Theme` of colours by role.
   `DARK` (night) is main's palette. `LIGHT` (day) writes every word and
@@ -43,8 +44,12 @@ Other screens follow the rules in the rest of this document.
   not compile.
 - **Tiles in the kit.** `field` is a ride-grid cell: a capital title that
   carries the unit, with an optional symbol and zone tag, over 40 px
-  tabular digits, filled by zone or steepness with black ink, and a `%` at
-  two-thirds size on the baseline. `top line` shows the recording dot and
+  tabular digits (34 px where a chart shares the page), filled by zone or
+  steepness with black ink, and a `%` at two-thirds size on the baseline.
+  Beside a radar a field drops its symbol, then its wide margins, before
+  its digits shrink. `road field` is a field that follows the road: a
+  different field on the flat, on a climb and on a course's climb. `road
+  profile` is a three-column summary over the climb chart. `top line` shows the recording dot and
   time, and the satellite and battery coloured by state. `rule` is a 1 px
   line in the rule colour. `text` is one line of words or a metric, in
   sentence case where the face has lowercase. `symbol` is one icon in a
@@ -568,7 +573,7 @@ Applied to the cycling-specific charts:
 | --- | --- |
 | Zone gauge (main page) | One segment per zone, 5 px. Zones below the current one are lit in their colours. The current zone fills left to right as the reading moves through it. Zones above are `TERTIARY`. The zone chip (`Z4`) beside the reading is `BODY` in the zone colour, `Z-` without a zone. |
 | Time in zone (stats) | One 8 px bar per metric, `PWR` and `HR` captions on its left, segments proportional to time in each zone, in zone colours, with 2 px gaps and no empty zones. A `TERTIARY` track before any time is recorded. |
-| Elevation profile (climb) | A solid area per column, coloured by the steepness of that column's grade, on one `TERTIARY` baseline, with a 6 px `WHITE` disc for the rider. The grade sits in the top left, in `LARGE` while it fits beside power and heart rate (`VALUE` otherwise), each of those with its zone on a rounded chip in the zone's colour; a 5 px bar under them shows the current grade's steepness colour. The road the profile dims ([UX flows](ux-flows.md#climb) says which stretch the profile spans and what it dims) is at 25%. On a climb from the map, a 6 px progress bar under the chart, as wide as the chart, fills `WHITE`, with FOOT, `NN% UP` and TOP under it. The NO MAP caption is `SECONDARY`. |
+| Elevation profile (climb) | A solid area per column in the look's zone colour for the steepness of that column's grade, under a 2 px outline in the look's text colour, with a 10 px disc for the rider in the text colour on a 2 px ring of the background. The road behind the rider mixes its colour half way to the background ([UX flows](ux-flows.md#climb) says which stretch the profile spans). Over it, LAST or CLIMB, AVG and MAX in `TAG`, each over its number in `DIGITS_19`. |
 | Workout (workout page) | One bar per played step across the chart's box inside its gutters, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity, scaled so the hardest step nearly fills the chart. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the theme's zone colour of the target's middle, Z3's for cadence and the unlit colour without a target. Steps already ridden keep a third of their colour over the background; the step on now and those ahead are full colour. A 2 px line in the text colour runs the chart's height where the ride is now. |
 | Target band (main page) | During a workout, a 2 px `WHITE` bar under the power or heart gauge spans the step's target. |
 | Track (map) | See [Map page](#map-page) below. |

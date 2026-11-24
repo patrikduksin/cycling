@@ -258,10 +258,7 @@ fn the_climb_page_draws_on_both_test_panels() {
         twin.sim
             .checkpoint(&format!("ride climb on {}", model.name));
         assert!(lit(&twin.sim) > 2_000, "{} climb", model.name);
-        shows(
-            &twin.sim,
-            &["CLIMBING", "POWER 3S", "HEART", "SO FAR KM", "GAIN M"],
-        );
+        shows(&twin.sim, &["GRADE", "PWR 3S W", "CAD RPM", "AVG", "MAX"]);
     }
 }
 

@@ -382,7 +382,7 @@ pub(crate) mod scenes {
         while sim.world().distance_m < 1600.0 {
             sim.advance(seconds(1));
         }
-        sim.expect_text("CLIMBING");
+        sim.expect_text("CLIMB DIST KM");
         sim
     }
 

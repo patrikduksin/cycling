@@ -79,8 +79,7 @@ pub const fn strip(at: &Scaled) -> Strip {
     }
 }
 
-/// The text's margins from the body's left and right edges.
-pub(crate) const TEXT_LEFT: u16 = 10;
+/// The text's right margin from the body's right edge.
 pub(crate) const TEXT_RIGHT: u16 = 8;
 
 /// The regions a page drawn from a canvas lays out in, named, in its
@@ -406,13 +405,11 @@ const _: () = {
     }
 };
 
-/// What a ride page drawn from its tiles prepares before they draw: the
-/// climb chart, in the profile tile's box. The app lays out the workout
-/// chart from its player.
 pub(super) fn prepare_tiles(view: &mut View, laid: &crate::compose::builtin::Laid) {
     if view.ride_page == RidePage::Climb
-        && let Some(chart) = laid.box_of(crate::compose::registry::CLIMB_PROFILE)
+        && let Some(profile) = laid.box_of(crate::compose::registry::ROAD_PROFILE)
     {
+        let chart = crate::compose::kit::profile::chart(profile, &view.device.scaled);
         climb_frame(view, chart);
     }
 }
@@ -484,7 +481,7 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
         return;
     }
     match page {
-        RidePage::Climb => climb::paint_chart(scene.climb(), row),
+        RidePage::Climb => climb::paint_chart(scene.climb(), &mut row.plain()),
         RidePage::Workout => workout::paint_chart(scene.chart(), &mut row.plain()),
         _ => {}
     }
@@ -652,6 +649,9 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
             _ if page == RidePage::Workout => {
                 chrome::Shown(workout::chart_pixel(scene.chart(), x, y).unwrap_or(theme.bg))
             }
+            _ if page == RidePage::Climb => {
+                chrome::Shown(climb::chart_pixel(scene.climb(), x, y).unwrap_or(theme.bg))
+            }
             _ => chrome::Shown(theme.bg),
         };
         return scene.canvas().pixel(chrome::Look::PLAIN, x, y, under);
@@ -672,7 +672,7 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
         return look.ink(reference_radar_pixel(radar, x, y));
     }
     let under = match page {
-        RidePage::Climb => look.ink(climb::chart_pixel(scene.climb(), x, y)),
+        RidePage::Climb => climb::chart_pixel(scene.climb(), x, y).map_or(black, |c| look.ink(c)),
         _ => black,
     };
     scene.canvas().pixel(look, x, y, under)
@@ -1036,13 +1036,7 @@ mod tests {
         map.update(&track, map::ground(at, map::ground_rect(at)));
         match page {
             Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
-            Some(RidePage::Climb) => view.show_climb(ClimbLent {
-                climbs: Box::leak(Box::default()),
-                climbing: None,
-                trace: Box::leak(Box::default()),
-                forecast: &crate::ride::climb_ahead::Forecast::NONE,
-                pinned: None,
-            }),
+            Some(RidePage::Climb) => view.show_climb(ClimbLent::NONE),
             Some(RidePage::Map) => view.show_map(map.filled()),
             _ => {}
         }

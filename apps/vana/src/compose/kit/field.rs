@@ -15,7 +15,7 @@ use crate::screens::scaled::Scaled;
 use crate::screens::theme::{LAYOUT, Tone};
 use crate::screens::workout::Text;
 use core::fmt::Write;
-use firmware_shell::rendering::font::FaceRole;
+use firmware_shell::rendering::font::{FaceRole, SPILL};
 
 pub struct FieldTile;
 
@@ -44,6 +44,12 @@ pub enum Digits {
     Grade,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ladder {
+    Large,
+    Medium,
+}
+
 #[derive(Debug)]
 pub struct Spec {
     /// Capitals naming the metric and its unit, `SPD KM/H`.
@@ -55,6 +61,7 @@ pub struct Spec {
     pub fill: Fill,
     /// The widest number the field shows in the full-size digits.
     pub slot: &'static str,
+    pub ladder: Ladder,
 }
 
 impl Spec {
@@ -99,6 +106,7 @@ specs! {
             tone: Tone::Power,
             fill: Fill::Zone(Effort::Power),
             slot: "888",
+            ladder: Ladder::Large,
         },
         Heart = 1 => Spec {
             title: "HEART BPM",
@@ -108,6 +116,7 @@ specs! {
             tone: Tone::Heart,
             fill: Fill::Zone(Effort::Heart),
             slot: "188",
+            ladder: Ladder::Large,
         },
         Spd = 2 => Spec {
             title: "SPD KM/H",
@@ -117,6 +126,7 @@ specs! {
             tone: Tone::Speed,
             fill: Fill::None,
             slot: "88.8",
+            ladder: Ladder::Large,
         },
         Cad = 3 => Spec {
             title: "CAD RPM",
@@ -126,6 +136,7 @@ specs! {
             tone: Tone::Cadence,
             fill: Fill::None,
             slot: "188",
+            ladder: Ladder::Large,
         },
         Grade = 4 => Spec {
             title: "GRADE",
@@ -135,6 +146,7 @@ specs! {
             tone: Tone::Grade,
             fill: Fill::None,
             slot: "8.8%",
+            ladder: Ladder::Large,
         },
         Climb = 5 => Spec {
             title: "CLIMB M",
@@ -144,6 +156,7 @@ specs! {
             tone: Tone::Text,
             fill: Fill::None,
             slot: "888",
+            ladder: Ladder::Large,
         },
         Dist = 6 => Spec {
             title: "DIST KM",
@@ -153,6 +166,7 @@ specs! {
             tone: Tone::Text,
             fill: Fill::None,
             slot: "88.8",
+            ladder: Ladder::Large,
         },
         Np = 7 => Spec {
             title: "NP W",
@@ -162,42 +176,180 @@ specs! {
             tone: Tone::Power,
             fill: Fill::None,
             slot: "888",
+            ladder: Ladder::Large,
+        },
+        ClimbGrade = 32 => Spec {
+            title: "GRADE",
+            symbol: Some(Symbol::Ramp),
+            metric: Metric::Grade,
+            digits: Digits::Grade,
+            tone: Tone::Grade,
+            fill: Fill::Steep,
+            slot: "8.8%",
+            ladder: Ladder::Medium,
+        },
+        ClimbPwr = 33 => Spec {
+            title: "PWR 3S W",
+            symbol: Some(Symbol::Power),
+            metric: Metric::Power,
+            digits: Digits::Metric,
+            tone: Tone::Power,
+            fill: Fill::Zone(Effort::Power),
+            slot: "888",
+            ladder: Ladder::Medium,
+        },
+        ClimbHeart = 34 => Spec {
+            title: "HEART BPM",
+            symbol: Some(Symbol::Heart),
+            metric: Metric::Heart,
+            digits: Digits::Metric,
+            tone: Tone::Heart,
+            fill: Fill::Zone(Effort::Heart),
+            slot: "188",
+            ladder: Ladder::Medium,
+        },
+        ClimbCad = 35 => Spec {
+            title: "CAD RPM",
+            symbol: None,
+            metric: Metric::Cadence,
+            digits: Digits::Metric,
+            tone: Tone::Cadence,
+            fill: Fill::None,
+            slot: "188",
+            ladder: Ladder::Medium,
+        },
+        Altitude = 36 => Spec {
+            title: "ALTITUDE M",
+            symbol: Some(Symbol::Peak),
+            metric: Metric::Altitude,
+            digits: Digits::Metric,
+            tone: Tone::Text,
+            fill: Fill::None,
+            slot: "8888",
+            ladder: Ladder::Medium,
+        },
+        Ascent = 37 => Spec {
+            title: "ASCENT M",
+            symbol: Some(Symbol::Up),
+            metric: Metric::Ascent,
+            digits: Digits::Upto(9_999),
+            tone: Tone::Text,
+            fill: Fill::None,
+            slot: "8888",
+            ladder: Ladder::Medium,
+        },
+        ClimbDist = 38 => Spec {
+            title: "CLIMB DIST KM",
+            symbol: Some(Symbol::Span),
+            metric: Metric::ClimbDistance,
+            digits: Digits::Km,
+            tone: Tone::Text,
+            fill: Fill::None,
+            slot: "88.8",
+            ladder: Ladder::Medium,
+        },
+        ClimbElev = 39 => Spec {
+            title: "CLIMB ELEV M",
+            symbol: Some(Symbol::Up),
+            metric: Metric::ClimbGain,
+            digits: Digits::Metric,
+            tone: Tone::Text,
+            fill: Fill::None,
+            slot: "8888",
+            ladder: Ladder::Medium,
+        },
+        ToTop = 40 => Spec {
+            title: "DIST TO TOP KM",
+            symbol: Some(Symbol::Flag),
+            metric: Metric::ToTop,
+            digits: Digits::Km,
+            tone: Tone::Text,
+            fill: Fill::None,
+            slot: "88.8",
+            ladder: Ladder::Medium,
+        },
+        UpToGo = 41 => Spec {
+            title: "ELEV TO TOP M",
+            symbol: Some(Symbol::Peak),
+            metric: Metric::UpToGo,
+            digits: Digits::Metric,
+            tone: Tone::Text,
+            fill: Fill::None,
+            slot: "8888",
+            ladder: Ladder::Medium,
         },
     }
 }
 
-/// One look of a field, best first: each sheds what a narrow box cannot
-/// hold, the symbol, then the zone tag (the fill still says the zone), then
-/// the full-size digits.
 #[derive(Clone, Copy)]
 struct Look {
     digits: FaceRole,
+    percent: FaceRole,
     symbol: bool,
-    tag: bool,
+    margins: Margins,
 }
 
-const LOOKS: [Look; 4] = [
-    Look {
-        digits: LAYOUT.face.digits,
-        symbol: true,
-        tag: true,
-    },
-    Look {
-        digits: LAYOUT.face.digits,
-        symbol: false,
-        tag: true,
-    },
-    Look {
-        digits: LAYOUT.face.digits,
-        symbol: false,
-        tag: false,
-    },
-    Look {
-        digits: LAYOUT.face.digits_small,
-        symbol: false,
-        tag: false,
-    },
-];
+/// A field's margins: the page's gutter, or a tight left margin and the
+/// box's right edge less the ink a glyph spills, so a long title keeps its
+/// words beside a radar.
+#[derive(Clone, Copy)]
+enum Margins {
+    Wide,
+    Tight,
+}
+
+const fn looks(digits: FaceRole, percent: FaceRole) -> [Look; 5] {
+    const fn look(digits: FaceRole, percent: FaceRole, symbol: bool, margins: Margins) -> Look {
+        Look {
+            digits,
+            percent,
+            symbol,
+            margins,
+        }
+    }
+    let small = LAYOUT.face.digits_small;
+    [
+        look(digits, percent, true, Margins::Wide),
+        look(digits, percent, false, Margins::Wide),
+        look(digits, percent, false, Margins::Tight),
+        look(small, small, false, Margins::Wide),
+        look(small, small, false, Margins::Tight),
+    ]
+}
+
+const LARGE: [Look; 5] = looks(LAYOUT.face.digits, LAYOUT.face.digits_small);
+const MEDIUM: [Look; 5] = looks(LAYOUT.face.digits_mid, LAYOUT.face.percent_mid);
+const LEAST: Look = LARGE[LARGE.len() - 1];
+
+impl Ladder {
+    const fn looks(self) -> &'static [Look; 5] {
+        match self {
+            Self::Large => &LARGE,
+            Self::Medium => &MEDIUM,
+        }
+    }
+
+    /// The look whose height a field asks for: a large field grows with
+    /// its grid, a medium one leaves the rest of the page to a chart.
+    const fn asks(self) -> Look {
+        match self {
+            Self::Large => LEAST,
+            Self::Medium => MEDIUM[0],
+        }
+    }
+
+    /// The width every field of the ladder asks for, so fields that share
+    /// a row or a column share it evenly and a grid's rules line up.
+    fn width(self, at: &Scaled) -> usize {
+        Field::ALL
+            .iter()
+            .map(|field| field.spec())
+            .filter(|spec| spec.ladder == self)
+            .map(|spec| size(spec, LEAST, at).0)
+            .max()
+            .unwrap_or(0)
+    }
+}
 
 /// The zone tag the field shows beside its title.
 fn tag(zone: u8) -> Text<4> {
@@ -215,8 +367,12 @@ fn split(text: &[u8]) -> (&[u8], bool) {
 }
 
 /// The columns left of the words, and right of them.
-fn insets(at: &Scaled) -> (usize, usize) {
-    (px(at, LAYOUT.space.gutter), px(at, LAYOUT.space.gap))
+fn insets(look: Look, at: &Scaled) -> (usize, usize) {
+    let space = &LAYOUT.space;
+    match look.margins {
+        Margins::Wide => (px(at, space.gutter), px(at, space.gap)),
+        Margins::Tight => (px(at, space.tight), SPILL),
+    }
 }
 
 fn title_width(spec: &Spec, look: Look, at: &Scaled) -> usize {
@@ -226,32 +382,26 @@ fn title_width(spec: &Spec, look: Look, at: &Scaled) -> usize {
         None => 0,
     };
     let zone = match spec.fill {
-        Fill::Zone(_) if look.tag => px(at, LAYOUT.space.tight) + tag_face.fit_width(b"Z7"),
+        Fill::Zone(_) => px(at, LAYOUT.space.tight) + tag_face.fit_width(b"Z7"),
         _ => 0,
     };
     symbol + tag_face.fit_width(spec.title.as_bytes()) + zone
 }
 
-/// The room the number takes: its slot in the full-size digits, and in the
-/// small digits every number the field can show.
 fn number_width(spec: &Spec, look: Look, at: &Scaled) -> usize {
-    let small = at.face(LAYOUT.face.digits_small);
-    let width = |text: &[u8]| {
+    let width = |digits: FaceRole, text: &[u8]| {
         let (number, percent) = split(text);
-        let digits = at.face(look.digits);
-        digits.fit_width(number) + if percent { small.fit_width(b"%") } else { 0 }
+        let sign = at.face(look.percent);
+        at.face(digits).fit_width(number) + if percent { sign.fit_width(b"%") } else { 0 }
     };
-    let slot = width(spec.slot.as_bytes());
-    if look.digits != LAYOUT.face.digits_small {
-        return slot;
-    }
+    let slot = width(look.digits, spec.slot.as_bytes());
     let (low, high) = spec.metric.ends();
     [None, Some(low), Some(high), spec.metric.turn()]
         .into_iter()
         .map(|value| {
             let mut text = Text::<12>::new();
             spec.write(value, &mut text);
-            width(text.as_bytes())
+            width(LAYOUT.face.digits_small, text.as_bytes())
         })
         .fold(slot, usize::max)
 }
@@ -260,7 +410,7 @@ fn number_width(spec: &Spec, look: Look, at: &Scaled) -> usize {
 fn size(spec: &Spec, look: Look, at: &Scaled) -> (usize, usize) {
     let space = &LAYOUT.space;
     let digits = at.face(look.digits);
-    let (left, right) = insets(at);
+    let (left, right) = insets(look, at);
     let inner = title_width(spec, look, at).max(number_width(spec, look, at));
     let height = 2 * px(at, space.pad)
         + at.face(LAYOUT.face.tag).fit_height()
@@ -277,21 +427,12 @@ impl Tile for FieldTile {
         Some(Reads::Metric(field.spec().metric))
     }
 
-    /// Every field asks for one box, the room of the widest field's least
-    /// look, so fields that share a row or a column share it evenly and a
-    /// grid's rules line up. A field takes the best look its box holds.
     fn forms(field: Field, at: &Scaled) -> Forms {
         let spec = field.spec();
-        let least = LOOKS[LOOKS.len() - 1];
-        let width = Field::ALL
-            .iter()
-            .map(|field| size(field.spec(), least, at).0)
-            .max()
-            .unwrap_or(0);
         let shown = |shows: bool| u8::from(shows);
         forms(&[Form {
-            width: width as u16,
-            height: size(spec, least, at).1 as u16,
+            width: spec.ladder.width(at) as u16,
+            height: size(spec, spec.ladder.asks(), at).1 as u16,
             shapes: shown(!matches!(spec.fill, Fill::None)) + shown(spec.symbol.is_some()),
             runs: 2 + shown(matches!(spec.fill, Fill::Zone(_))) + shown(spec.percent()),
         }])
@@ -300,13 +441,16 @@ impl Tile for FieldTile {
     fn prepare(field: Field, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
         let spec = field.spec();
         let rect = placed.rect.rect();
-        let look = LOOKS
-            .into_iter()
+        let look = spec
+            .ladder
+            .looks()
+            .iter()
+            .copied()
             .find(|&look| {
                 let (width, height) = size(spec, look, at);
                 width <= rect.width() && height <= rect.height()
             })
-            .unwrap_or(LOOKS[LOOKS.len() - 1]);
+            .unwrap_or(LEAST);
         let theme = data.theme();
         let space = &LAYOUT.space;
         let (zone, filled) = match spec.fill {
@@ -331,7 +475,7 @@ impl Tile for FieldTile {
             }
             None => theme.tone(spec.tone),
         };
-        let (left, right) = insets(at);
+        let (left, right) = insets(look, at);
         let (left, right) = (rect.left + left, rect.right - right);
         let tag_face = at.face(LAYOUT.face.tag);
         let base = rect.top + px(at, space.pad) + tag_face.fit_height();
@@ -349,7 +493,7 @@ impl Tile for FieldTile {
             x += ink_box.width() + px(at, space.tight);
         }
         let mut title_right = right;
-        if let Some(zone) = zone.filter(|_| look.tag && filled.is_some()) {
+        if let Some(zone) = zone.filter(|_| filled.is_some()) {
             let tag = tag(zone);
             let run = out.fit(
                 &[tag_face],
@@ -391,7 +535,8 @@ fn number(
     spec.write(data.metric(spec.metric), &mut text);
     let (number, percent) = split(text.as_bytes());
     let small = at.face(LAYOUT.face.digits_small);
-    let percent_width = if percent { small.fit_width(b"%") } else { 0 };
+    let sign = at.face(look.percent);
+    let percent_width = if percent { sign.fit_width(b"%") } else { 0 };
     let base = bottom - px(at, LAYOUT.space.pad);
     let faces = [at.face(look.digits), small];
     let width = (right - left).saturating_sub(percent_width);
@@ -399,7 +544,7 @@ fn number(
     if percent {
         let after = run.left + run.line.face().ink_width(run.line.text());
         out.fit(
-            &[small],
+            &[sign],
             b"%",
             right.saturating_sub(after),
             after,

@@ -3,11 +3,11 @@
 //! its family's file.
 use super::tile::Component;
 
-mod climb_workout;
 mod kit;
 mod map_summary;
 mod primitive;
 mod ride;
+mod road;
 mod script;
 mod scroll;
 mod sensors;
@@ -16,8 +16,8 @@ mod statics;
 
 #[allow(unused_imports)]
 pub use {
-    climb_workout::*, kit::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*,
-    sensors::*, sheet::*, statics::*,
+    kit::*, map_summary::*, primitive::*, ride::*, road::*, script::*, scroll::*, sensors::*,
+    sheet::*, statics::*,
 };
 
 /// A family's block of ids and its tiles, the first at the block's start.
@@ -41,7 +41,7 @@ const FAMILIES: &[Family] = &[
         &[&super::tile::Erased::<super::input::tests::Tap>::NEW],
     ),
     family(16, 32, ride::TILES),
-    family(32, 36, climb_workout::TILES),
+    family(road::ROAD_FIELD, 36, road::TILES),
     family(40, 48, map_summary::TILES),
     family(48, 56, statics::TILES),
     family(statics::LINE, 64, statics::QUESTIONS),

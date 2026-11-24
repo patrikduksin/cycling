@@ -142,6 +142,8 @@ pub struct Summary {
     pub length_mm: u64,
     /// Recorded time on the climb.
     pub time_ms: u64,
+    /// The steepest 200 m on it, in tenths of a percent.
+    pub steepest_tenths: Option<i32>,
 }
 
 impl Summary {
@@ -194,18 +196,6 @@ impl Category {
             .filter(|&&from| gain_dm >= from)
             .count()]
     }
-
-    /// Its short name: `CAT 4` to `CAT 1`, `HC`, or `CLIMB`.
-    pub fn name(self) -> &'static [u8] {
-        match self {
-            Self::Uncategorised => b"CLIMB",
-            Self::Four => b"CAT 4",
-            Self::Three => b"CAT 3",
-            Self::Two => b"CAT 2",
-            Self::One => b"CAT 1",
-            Self::Hors => b"HC",
-        }
-    }
 }
 
 /// What a recorded step changed about climbing.
@@ -222,6 +212,7 @@ struct Climb {
     start: Point,
     peak: Point,
     confirmed: bool,
+    steepest_tenths: Option<i32>,
 }
 
 impl Climb {
@@ -232,6 +223,7 @@ impl Climb {
             gain_dm: (self.peak.altitude_dm - self.start.altitude_dm).max(0) as u32,
             length_mm: distance_mm.saturating_sub(self.start.distance_mm),
             time_ms: time_ms.saturating_sub(self.start.time_ms),
+            steepest_tenths: self.steepest_tenths,
         }
     }
 }
@@ -435,9 +427,11 @@ impl Climbs {
                 start,
                 peak,
                 confirmed: false,
+                steepest_tenths: None,
             });
         }
         let climb = self.current.as_mut()?;
+        climb.steepest_tenths = climb.steepest_tenths.max(grade);
         if point.altitude_dm > climb.peak.altitude_dm {
             climb.peak = point;
         }
@@ -486,6 +480,11 @@ impl Climbs {
         let span = now.wrapping_sub(then);
         (span >= VAM_MIN_DS)
             .then(|| (i32::from(to) - i32::from(from)).max(0) as u32 * 3600 / u32::from(span))
+    }
+
+    /// The odometer distance of the newest profile sample.
+    pub fn newest_mm(&self) -> Option<u64> {
+        (self.profile.len > 0).then(|| self.next_mm - STEP_MM)
     }
 
     /// The profile, oldest first, into `out`; returns how many samples it has.
@@ -844,7 +843,6 @@ mod tests {
         ] {
             assert_eq!(Category::of(gain_dm), category, "{gain_dm}");
         }
-        assert_eq!(Category::Hors.name(), b"HC");
     }
 
     #[test]

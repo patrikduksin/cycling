@@ -1,21 +1,15 @@
-//! The climb page as a tree of tiles: the status bar, then the road's title,
-//! the grade as the hero, power and heart rate with their zones side by
-//! side, the steepness band and the road's two readings, each in the page's
-//! text margins, and the road's profile under them. The text and the profile share the room
-//! by weight, and the text's share becomes even gaps between its tiles.
-use super::{Builtin, Choices};
-use crate::compose::data::{Effort, Metric};
+//! The Climb ride page (#517).
+use super::{Builtin, Nodes};
 use crate::compose::input::{Action, Button, Buttons, Go};
-use crate::compose::node::{Flags, MAX_NODES, Node, Size, When};
-use crate::compose::registry::{
-    CLIMB_EFFORT, CLIMB_PROFILE, CLIMB_ROAD, READING, SPACE, STATUS, STEEPNESS,
-};
-use crate::compose::tiles::reading::{Inline, Shown};
-use crate::compose::tiles::road::Part;
+use crate::compose::kit::field::Field;
+use crate::compose::kit::road_field::RoadSlot;
+use crate::compose::kit::{field, grid, rule};
+use crate::compose::node::{Flags, Node, Size, When};
+use crate::compose::registry::{ROAD_FIELD, ROAD_PROFILE, SPACE, TOP_LINE};
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| tree().into_iter().collect(),
+    tree: |_| tree(),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Ride(Role::Act),
@@ -33,55 +27,30 @@ pub const BUILTIN: &Builtin = &Builtin {
     },
 };
 
-const BAR_UNITS: u8 = 24;
 const RADAR_UNITS: u8 = crate::screens::ride::RADAR_WIDTH as u8;
-const LEFT_UNITS: u8 = crate::screens::ride::TEXT_LEFT as u8;
-const RIGHT_UNITS: u8 = crate::screens::ride::TEXT_RIGHT as u8;
-/// How the text and the profile share the rows they leave.
-const TEXT_WEIGHT: u8 = 1;
-const PROFILE_WEIGHT: u8 = 1;
-/// The grade's largest look, on the readings' ladder of faces.
-const LARGE: u8 = 1;
-pub const NODES: usize = 18;
-const _: () = assert!(NODES <= MAX_NODES);
 
-const fn space(units: u8) -> Node {
-    Node::leaf(SPACE, 0, Size::units(units))
+const fn road(slot: RoadSlot) -> Node {
+    Node::leaf(ROAD_FIELD, slot as u8, Size::grow(1))
 }
 
-const fn radar() -> Node {
-    space(RADAR_UNITS).when(When::new(Flags::RADAR, Flags::NONE))
-}
-
-const fn road(part: Part) -> Node {
-    Node::leaf(CLIMB_ROAD, part as u8, Size::CONTENT)
-}
-
-const fn effort(effort: Effort) -> Node {
-    Node::leaf(CLIMB_EFFORT, effort.id(), Size::grow(1))
-}
-
-pub const fn tree() -> [Node; NODES] {
-    let (grow, content) = (Size::grow(1), Size::CONTENT);
-    let grade = Inline(Shown::left(Metric::Grade, LARGE)).byte();
+pub fn tree() -> Nodes {
+    let grow = Size::grow(1);
+    let radar = When::new(Flags::RADAR, Flags::NONE);
+    let rows = [
+        [field(Field::ClimbGrade), field(Field::ClimbPwr)],
+        [field(Field::ClimbHeart), field(Field::ClimbCad)],
+        [road(RoadSlot::First), road(RoadSlot::Second)],
+    ];
     [
         Node::col(3, grow),
-        Node::leaf(STATUS, 0, Size::units(BAR_UNITS)),
-        Node::row(4, Size::grow(TEXT_WEIGHT)),
-        radar(),
-        space(LEFT_UNITS),
-        Node::col(5, grow),
-        road(Part::Title),
-        Node::leaf(READING, grade, content).hero(),
-        Node::row(2, content),
-        effort(Effort::Power),
-        effort(Effort::Heart),
-        Node::leaf(STEEPNESS, 0, content),
-        road(Part::Facts),
-        space(RIGHT_UNITS),
-        Node::row(2, Size::grow(PROFILE_WEIGHT)),
-        radar(),
-        Node::row(1, grow),
-        Node::leaf(CLIMB_PROFILE, 0, content),
+        Node::leaf(TOP_LINE, 0, Size::CONTENT),
+        rule(),
+        Node::row(2, grow),
+        Node::leaf(SPACE, 0, Size::units(RADAR_UNITS)).when(radar),
+        Node::col(3, grow),
     ]
+    .into_iter()
+    .chain(grid(&rows, Size::CONTENT))
+    .chain([rule(), Node::leaf(ROAD_PROFILE, 0, grow)])
+    .collect()
 }

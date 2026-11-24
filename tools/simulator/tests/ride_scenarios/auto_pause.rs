@@ -8,17 +8,17 @@ fn traffic_light_stop_auto_pauses_and_excludes_the_wait() {
 }
 
 #[test]
-fn riding_off_starts_the_ride_by_itself() {
+fn riding_off_on_home_waits_for_the_rider_to_start() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
-    sim.advance(seconds(5));
+    sim.ride_at(20.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(30));
     assert!(sim.rides().is_empty());
     assert!(sim.on_home(), "{}", sim.screen().text());
-    sim.checkpoint("waiting at standstill on Home");
-    sim.ride_at(20.0, 0.0, 0.0, 0.0);
-    sim.wait_for("AUTO START", seconds(15)).unwrap();
+    sim.checkpoint("rolling on Home, no ride");
+    sim.start_ride();
     assert!(recording(&mut sim));
-    sim.checkpoint("auto started");
+    sim.checkpoint("started by the rider");
     sim.ride_page("ride/map");
     let rec = sim.screen().run("REC").expect("REC in the status bar");
     assert_eq!((rec.y < 24, rec.color), (true, RED));
@@ -177,42 +177,12 @@ fn gps_rider(doppler: bool) -> Sim {
 }
 
 #[test]
-fn rolling_off_with_the_sheet_open_starts_nothing_until_it_closes() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.swipe((120, 4), (120, 200));
-    sim.expect_text("Sensors");
-    sim.ride_at(25.0, 0.0, 140.0, 80.0);
-    sim.advance(seconds(30));
-    assert_eq!(sim.vana_page(), "home");
-    assert_eq!(sim.ride_state(), "ready");
-    // The first press may only wake the dimmed screen.
-    for _ in 0..2 {
-        if sim.screen().contains("Sensors") {
-            sim.press(Role::Back);
-        }
-    }
-    for _ in 0..30 {
-        if sim.ride_state() == "recording" {
-            break;
-        }
-        sim.advance(seconds(1));
-    }
-    assert_eq!(sim.vana_page(), "ride", "{}", sim.screen().text());
-}
-
-#[test]
 fn riding_with_gps_only_shows_speed_and_distance() {
     for doppler in [true, false] {
         let mut sim = gps_rider(doppler);
         sim.ride_at(25.0, 0.0, 140.0, 0.0);
-        for _ in 0..30 {
-            if sim.ride_state() == "recording" {
-                break;
-            }
-            sim.advance(seconds(1));
-        }
-        assert_eq!(sim.vana_page(), "ride", "{}", sim.screen().text());
+        sim.advance(seconds(10));
+        sim.start_ride();
         sim.advance(minutes(10));
         // Doppler is exact; positions jitter, so their speed wobbles a little.
         let tolerance = if doppler { 0.15 } else { 1.5 };
@@ -305,20 +275,6 @@ fn gps_only_tunnel_keeps_recording_without_inventing_distance() {
     let ride = &sim.rides()[0];
     let blind = ride.samples().filter(|s| s.speed_mm_s.is_none()).count();
     assert!((38..=45).contains(&blind), "{blind} samples without speed");
-}
-
-#[test]
-fn gps_only_rider_rolling_off_starts_the_ride() {
-    let mut sim = gps_rider(true);
-    sim.advance(seconds(5));
-    // Walking the bike out is not a start.
-    sim.ride_at(5.0, 0.0, 0.0, 0.0);
-    sim.advance(seconds(30));
-    assert!(sim.rides().is_empty());
-    sim.ride_at(20.0, 0.0, 0.0, 0.0);
-    sim.wait_for("AUTO START", seconds(15)).unwrap();
-    assert!(recording(&mut sim));
-    sim.checkpoint("GPS only: auto started");
 }
 
 #[test]

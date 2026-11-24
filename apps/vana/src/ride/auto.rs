@@ -1,28 +1,26 @@
-//! Auto-pause and auto-start policy, decided from the ride's speed source.
+//! Auto-pause policy, decided from the ride's speed source. A ride starts only
+//! from the rider; automation pauses and resumes one that is under way.
 //!
 //! Pure state machine: it never touches the recorder. The caller feeds it the
 //! recorder status and the current `Motion` once per tick and performs the
 //! returned `Decision` through the ordinary request path, so an automatic
-//! action is journaled as the same Pause, Resume and Start events a button
-//! press produces and every storage rule applies unchanged.
+//! action is journaled as the same Pause and Resume events a button press
+//! produces and every storage rule applies unchanged.
 //!
 //! Motion comes from a wheel sensor when one measures, otherwise from GPS
 //! (`ride::gps_speed`). Each source has its own `Rules`: a wheel measures a
 //! standstill exactly, while GPS lags by a second or two and jitters by
 //! about a metre at rest, so GPS needs a faster speed held longer before it
-//! resumes or starts a ride. Only a measured speed pauses, resumes or starts
-//! a ride. An unmeasured but live source (a wheel not yet turning, a fix with
-//! poor geometry) changes nothing, and an auto-pause whose sources are all
+//! resumes a ride. Only a measured speed pauses or resumes a ride. An
+//! unmeasured but live source (a wheel not yet turning, a fix with poor
+//! geometry) changes nothing, and an auto-pause whose sources are all
 //! lost resumes after the timeout of the source it was measured by, rather
 //! than stay paused forever. A ride the rider paused is never resumed by
-//! motion, but one that rides on at a start speed is reminded to resume.
+//! motion, but one that rides on is reminded to resume.
 //! The decision table test lists every combination.
 
 use crate::ride::log::Status;
 use firmware_services::why;
-
-/// Auto-pause and auto-start are on by default; a settings screen can drive this.
-pub const ENABLED: bool = true;
 
 /// How often a manually paused ride that is riding again asks to be resumed.
 pub const REMIND_EVERY_MS: u64 = 30_000;
@@ -47,37 +45,37 @@ pub struct Rules {
     pub resume_at: u32,
     /// The speed must hold this long to resume, so a single glitch does not.
     pub resume_after: u64,
-    /// At or above this a ride that has not started begins.
-    pub start_at: u32,
-    /// The speed must hold this long to start.
-    pub start_after: u64,
+    /// At or above this a ride the rider paused is riding again.
+    pub remind_at: u32,
+    /// The speed must hold this long to remind the rider to resume.
+    pub remind_after: u64,
     /// An auto-pause measured by this source resumes after it has been lost
     /// this long.
     pub lost_resume_after: u64,
 }
 
-/// A wheel sensor: 3 km/h stops, 4.5 km/h resumes, 6 km/h starts.
+/// A wheel sensor: 3 km/h stops, 4.5 km/h resumes, 6 km/h reminds.
 pub const WHEEL: Rules = Rules {
     pause_below: 833,
     pause_after: 1_000,
     resume_at: 1_250,
     resume_after: 1_000,
-    start_at: 1_667,
-    start_after: 3_000,
+    remind_at: 1_667,
+    remind_after: 3_000,
     lost_resume_after: 3_000,
 };
 
 /// GPS: standing reads zero below 3.6 km/h (`gps_speed::STOPPED_BELOW_MM_S`).
 /// 7.2 km/h held 2 s resumes, which standstill jitter does not reach; 10 km/h
-/// held 5 s starts, so walking the bike out of the door does not. A lost fix
-/// (a tunnel, a garage) resumes only after 10 s.
+/// held 5 s reminds, so walking the bike does not. A lost fix (a tunnel, a
+/// garage) resumes only after 10 s.
 pub const GPS: Rules = Rules {
     pause_below: 1_000,
     pause_after: 2_000,
     resume_at: 2_000,
     resume_after: 2_000,
-    start_at: 2_778,
-    start_after: 5_000,
+    remind_at: 2_778,
+    remind_after: 5_000,
     lost_resume_after: 10_000,
 };
 
@@ -107,7 +105,6 @@ pub enum Motion {
 pub enum Decision {
     Pause,
     Resume,
-    Start,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,20 +149,15 @@ impl Auto {
         self.paused = decision == Decision::Pause;
     }
 
-    /// Advance one tick. `ready` is whether a ride may start now (ride screen
-    /// shown, nothing pending). `automatic` is the AUTO PAUSE option: off, every
+    /// Advance one tick. `automatic` is the AUTO PAUSE option: off, every
     /// pause is the rider's, so only the reminder remains.
     pub fn update(
         &mut self,
         now: u64,
         status: Status,
         motion: Motion,
-        ready: bool,
         automatic: bool,
     ) -> Option<Call> {
-        if !ENABLED {
-            return None;
-        }
         // The caller skips ticks with a request in flight, so a ride that is
         // recording is not about to pause: any automatic pause is over.
         if status != Status::Paused || !automatic {
@@ -206,14 +198,9 @@ impl Auto {
                 ),
             },
             Status::Paused => (
-                speed.is_some_and(|speed| speed >= rules.start_at),
-                rules.start_after,
+                speed.is_some_and(|speed| speed >= rules.remind_at),
+                rules.remind_after,
                 Call::Remind,
-            ),
-            Status::Ready | Status::Saved if ready && automatic => (
-                speed.is_some_and(|speed| speed >= rules.start_at),
-                rules.start_after,
-                Call::Do(Decision::Start),
             ),
             _ => {
                 self.since = None;
@@ -276,7 +263,7 @@ mod tests {
         ms: u64,
     ) -> Option<(u64, Call)> {
         (from..from + ms).step_by(100).find_map(|now| {
-            auto.update(now, status, wheel, true, true)
+            auto.update(now, status, wheel, true)
                 .map(|decision| (now, decision))
         })
     }
@@ -292,7 +279,7 @@ mod tests {
     #[test]
     fn decision_table() {
         use Call::Remind;
-        use Decision::{Pause, Resume, Start};
+        use Decision::{Pause, Resume};
         let hold = |ms| Some(ms);
         // (status, paused by auto, wheel, expected first decision and its time)
         type Row = (Status, bool, Motion, Option<(Call, u64)>);
@@ -329,30 +316,15 @@ mod tests {
                 Status::Paused,
                 false,
                 RIDING,
-                Some((Remind, WHEEL.start_after)),
+                Some((Remind, WHEEL.remind_after)),
             ),
             (Status::Paused, false, CRAWL, None),
             (Status::Paused, false, STOPPED, None),
             (Status::Paused, false, UNKNOWN, None),
             (Status::Paused, false, Motion::Lost, None),
-            // Ready: only a measured start speed starts.
-            (
-                Status::Ready,
-                false,
-                RIDING,
-                Some((Call::Do(Start), WHEEL.start_after)),
-            ),
-            (Status::Ready, false, CRAWL, None),
+            (Status::Ready, false, RIDING, None),
             (Status::Ready, false, STOPPED, None),
-            (Status::Ready, false, UNKNOWN, None),
-            (Status::Ready, false, Motion::Lost, None),
-            // Saved, after a ride: the next one starts as from Ready.
-            (
-                Status::Saved,
-                false,
-                RIDING,
-                Some((Call::Do(Start), WHEEL.start_after)),
-            ),
+            (Status::Saved, false, RIDING, None),
             (Status::Saved, false, STOPPED, None),
         ];
         for &(status, by_auto, wheel, expected) in rows {
@@ -394,13 +366,13 @@ mod tests {
                 Status::Paused,
                 false,
                 RIDING,
-                Some((Remind, WHEEL.start_after)),
+                Some((Remind, WHEEL.remind_after)),
             ),
             (
                 Status::Paused,
                 true,
                 RIDING,
-                Some((Remind, WHEEL.start_after)),
+                Some((Remind, WHEEL.remind_after)),
             ),
             (Status::Paused, false, STOPPED, None),
             (Status::Paused, true, STOPPED, None),
@@ -414,7 +386,7 @@ mod tests {
                 auto.accepted(Decision::Pause);
             }
             let got = (0..10_000).step_by(100).find_map(|now| {
-                auto.update(now, status, wheel, true, false)
+                auto.update(now, status, wheel, false)
                     .map(|call| (call, now))
             });
             assert_eq!(got, expected, "{status:?} auto={by_auto} {wheel:?}");
@@ -432,7 +404,7 @@ mod tests {
     #[test]
     fn gps_decision_table() {
         use Call::Remind;
-        use Decision::{Pause, Resume, Start};
+        use Decision::{Pause, Resume};
         // (status, paused by auto, last measured by, motion, expected)
         type Row = (Status, bool, Option<Source>, Motion, Option<(Call, u64)>);
         let rows: &[Row] = &[
@@ -462,7 +434,7 @@ mod tests {
                 false,
                 None,
                 GPS_RIDING,
-                Some((Remind, GPS.start_after)),
+                Some((Remind, GPS.remind_after)),
             ),
             (Status::Paused, false, None, GPS_ROLLING, None),
             (Status::Paused, false, None, GPS_POOR, None),
@@ -481,20 +453,12 @@ mod tests {
                 Motion::Lost,
                 Some((Call::Do(Resume), WHEEL.lost_resume_after)),
             ),
-            (
-                Status::Ready,
-                false,
-                None,
-                GPS_RIDING,
-                Some((Call::Do(Start), GPS.start_after)),
-            ),
-            (Status::Ready, false, None, GPS_ROLLING, None),
-            (Status::Ready, false, None, GPS_POOR, None),
+            (Status::Ready, false, None, GPS_RIDING, None),
         ];
         for &(status, by_auto, measured_by, motion, expected) in rows {
             let mut auto = Auto::default();
             if let Some(source) = measured_by {
-                auto.update(0, Status::Saved, Motion::Measured(source, 0), true, true);
+                auto.update(0, Status::Saved, Motion::Measured(source, 0), true);
             }
             if by_auto {
                 auto.accepted(Decision::Pause);
@@ -558,8 +522,7 @@ mod tests {
         let mut auto = Auto::default();
         let mut due = [3_000, 33_000, 63_000, 93_000].into_iter();
         for now in (0..100_000).step_by(100) {
-            let reminded =
-                auto.update(now, Status::Paused, RIDING, true, true) == Some(Call::Remind);
+            let reminded = auto.update(now, Status::Paused, RIDING, true) == Some(Call::Remind);
             let expected = reminded.then(|| due.next());
             assert!(
                 !reminded || expected == Some(Some(now)),
@@ -577,7 +540,7 @@ mod tests {
         let mut count = 0;
         for now in (0..90_000).step_by(100) {
             let motion = if now % 6_000 < 4_000 { RIDING } else { STOPPED };
-            if auto.update(now, Status::Paused, motion, true, true) != Some(Call::Remind) {
+            if auto.update(now, Status::Paused, motion, true) != Some(Call::Remind) {
                 continue;
             }
             match last {
@@ -665,31 +628,13 @@ mod tests {
     }
 
     #[test]
-    fn start_waits_for_the_ride_screen_and_is_retried_after_a_refusal() {
+    fn a_ride_started_while_rolling_gets_a_fresh_pause_debounce() {
         let mut auto = Auto::default();
-        let blocked = (0..10_000)
-            .step_by(100)
-            .find_map(|now| auto.update(now, Status::Ready, RIDING, false, true));
-        assert_eq!(blocked, None);
-        let first = run(&mut auto, Status::Ready, RIDING, 10_000, 5_000);
-        assert_eq!(first, Some((13_000, Call::Do(Decision::Start))));
-        // Storage refused: the hold starts over instead of retrying every tick.
-        auto.declined();
-        assert_eq!(auto.update(13_100, Status::Ready, RIDING, true, true), None);
-        let retry = run(&mut auto, Status::Ready, RIDING, 13_200, 5_000);
-        assert_eq!(retry, Some((16_100, Call::Do(Decision::Start))));
-    }
-
-    #[test]
-    fn a_host_start_during_the_start_hold_gets_a_fresh_pause_debounce() {
-        let mut auto = Auto::default();
-        // 2.5 s into the auto-start hold the host starts the ride, and the
-        // rider has stopped by then.
         assert_eq!(run(&mut auto, Status::Ready, RIDING, 0, 2_500), None);
         assert_eq!(
             run(&mut auto, Status::Recording, STOPPED, 2_500, 900),
             None,
-            "the start hold's clock must not count toward the pause"
+            "time on Ready must not count toward the pause"
         );
         assert_eq!(
             run(&mut auto, Status::Recording, STOPPED, 3_400, 1_000),
@@ -698,16 +643,9 @@ mod tests {
     }
 
     #[test]
-    fn five_kmh_is_not_enough_to_start() {
-        let mut auto = Auto::default();
-        let five = Motion::Measured(Source::Wheel, 1_388);
-        assert_eq!(run(&mut auto, Status::Ready, five, 0, 20_000), None);
-    }
-
-    #[test]
     fn leaving_the_ride_forgets_the_automatic_pause() {
         let mut auto = auto_paused();
-        assert_eq!(auto.update(0, Status::Saved, STOPPED, true, true), None);
+        assert_eq!(auto.update(0, Status::Saved, STOPPED, true), None);
         assert!(!auto.paused());
     }
 

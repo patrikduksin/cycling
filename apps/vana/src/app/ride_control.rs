@@ -210,7 +210,6 @@ fn step(page: Page, seen: Seen, event: Event) -> Step {
         Event::Auto(Call::Do(decision)) => submit(match decision {
             Decision::Pause => Action::Pause,
             Decision::Resume => Action::Resume,
-            Decision::Start => Action::Start,
         }),
         Event::Auto(Call::Remind) => effect(Effect::Remind),
         Event::Serviced { before } => serviced(page, seen, before),
@@ -260,14 +259,7 @@ fn answered(page: Page, action: Action, accepted: bool, origin: Origin) -> Step 
             note: Some(RideMessage::Clear),
             ..STAY
         },
-        (Page::Home, Action::Start, false) if matches!(origin, Origin::Rider { .. }) => {
-            effect(Effect::NotReadyToast)
-        }
-        (Page::Done, Action::Start, true) => Step {
-            go: Some(Go::OpenRide),
-            note: Some(RideMessage::Clear),
-            ..STAY
-        },
+        (Page::Home, Action::Start, false) => effect(Effect::NotReadyToast),
         (Page::EndRide, Action::Finish, true) => Step {
             go: Some(Go::Done),
             note: Some(RideMessage::Clear),
@@ -394,7 +386,6 @@ impl Runtime {
                 let toast = match decision {
                     Decision::Pause => "",
                     Decision::Resume => "AUTO RESUME",
-                    Decision::Start => "AUTO START",
                 };
                 self.notices.auto_toast = Some((toast, now));
                 self.display.redraw();
@@ -547,7 +538,6 @@ mod tests {
 
     #[test]
     fn answers() {
-        let start = Origin::Auto(Decision::Start);
         let clear = RideMessage::Clear;
         let refused = RideMessage::StorageNotReady;
         check(&[
@@ -593,18 +583,6 @@ mod tests {
                 answer(Action::Pause, false, AUTO),
                 STAY,
             ),
-            (
-                Page::Home,
-                seen(Ready),
-                answer(Action::Start, false, start),
-                note(refused),
-            ),
-            (
-                Page::Done,
-                seen(Recording),
-                answer(Action::Start, true, start),
-                both(Go::OpenRide, clear),
-            ),
         ]);
     }
 
@@ -622,12 +600,6 @@ mod tests {
                 seen(Paused),
                 Event::Auto(Call::Do(Decision::Resume)),
                 submit(Action::Resume),
-            ),
-            (
-                Page::Home,
-                seen(Ready),
-                Event::Auto(Call::Do(Decision::Start)),
-                submit(Action::Start),
             ),
             (
                 Page::Ride,

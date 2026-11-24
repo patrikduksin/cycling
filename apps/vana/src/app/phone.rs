@@ -1398,10 +1398,7 @@ impl Runtime {
         if self.recorder_busy() {
             return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
         }
-        let cleared = today::clear(bulk);
-        self.training.read_today(bulk);
-        self.display.redraw();
-        match cleared {
+        match self.clear_today(bulk) {
             Ok(true) => {
                 log::info!(target: "phone", "VANA_PHONE workout_deleted");
                 self.reply(id, 204, None);

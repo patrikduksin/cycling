@@ -873,11 +873,11 @@ mod tests {
                 Some(mm_s) => Motion::Measured(Source::Wheel, mm_s),
                 None => Motion::Unknown(Source::Wheel),
             };
-            if let Some(Call::Do(decision)) = auto.update(now, status, motion, false, true) {
+            if let Some(Call::Do(decision)) = auto.update(now, status, motion, true) {
                 auto.accepted(decision);
                 status = match decision {
                     Decision::Pause => Status::Paused,
-                    Decision::Resume | Decision::Start => Status::Recording,
+                    Decision::Resume => Status::Recording,
                 };
                 calls.push((now, decision));
             }

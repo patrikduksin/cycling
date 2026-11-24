@@ -1,5 +1,5 @@
-//! Ride done: the saved ride as a treat, full screen until a key, a tap or
-//! riding on. Under "Ride saved" and the day, its picture: the route drawn
+//! Ride done: the saved ride as a treat, full screen until a key or a tap.
+//! Under "Ride saved" and the day, its picture: the route drawn
 //! from the GPS track with a dot at the start; without a track the whole
 //! ride's power as bars in zone colours; without power either the distance
 //! as one big number. Three numbers under it follow the picture, and the

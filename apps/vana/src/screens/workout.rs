@@ -30,7 +30,7 @@ pub enum Page {
     Ride,
     /// "End ride?" over a paused ride.
     EndRide,
-    /// The saved ride as a treat, until a key, a tap or riding on.
+    /// The saved ride as a treat, until a key or a tap.
     Done,
     /// LOSE n UNSAVED RIDES?, which a host CLEAR asks while the phone has
     /// not confirmed every ride of a volatile journal.

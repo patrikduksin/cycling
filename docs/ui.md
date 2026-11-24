@@ -82,8 +82,8 @@ planned, one big Ride button. Home opens on the card or on Ride every time,
 with a ring 2 px outside it; MOVE steps to "Just ride" and then the widget,
 and ACT or a tap runs what has the focus. The card starts the workout, and
 Ride and "Just ride" start a ride with none, though one stays planned.
-There is no Ready page and no fix to wait for. Rolling off on Home starts a
-free ride. BACK asks to turn off, and a refused turn-off shows as a toast.
+There is no Ready page and no fix to wait for. Rolling off on Home starts
+nothing. BACK asks to turn off, and a refused turn-off shows as a toast.
 
 The swipe-down sheet (`compose/tiles/sheet.rs`) paints its card in the
 look's own colours over the dimmed screen. It shows the brightness bar with a
@@ -454,7 +454,7 @@ centred over the bottom of the content.
 Only one toast shows at a time. From highest priority to lowest:
 
 1. The lap just taken.
-2. An automatic start or resume (AUTO START, AUTO RESUME), shown briefly.
+2. An automatic resume (AUTO RESUME), shown briefly.
 3. Transient announcements, shown for 2 s: RECORDING, RESUMED, RIDE SAVED
    (when a ride ends away from RIDE SAVED), RIDE RECOVERED. A pause has no
    toast: the paused screen says it. Battery news shows for 4 s, on any

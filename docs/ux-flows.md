@@ -24,7 +24,7 @@ Copy is short, plain and the same everywhere:
 ## The ride
 
 ```text
-Home ── RIDE or roll off ──> Ride pages (recording)
+Home ── RIDE ──> Ride pages (recording)
                                                   │ ACT          ^
                                                   v              │ ACT (resume)
                                             Paused screen ───────┘
@@ -34,16 +34,16 @@ Home ── RIDE or roll off ──> Ride pages (recording)
                                           END RIDE? ── MOVE or BACK ──> Paused screen
                                               │ ACT
                                               v
-                                         SAVING ──> RIDE SAVED ── ride on ──> Ride pages (a new free ride)
+                                         SAVING ──> RIDE SAVED
                                                        │ any key or a tap
                                                        v
                                                       Home
 ```
 
-Home's RIDE card starts the ride at once, and rolling off on Home starts a
-free ride (auto-start). There is no countdown: it would delay the start at a
-light. Only storage stops a ride: when it cannot record, RIDE shows STORAGE
-NOT READY and Home stays.
+Home's RIDE card starts the ride at once. Only the rider starts a ride:
+rolling off on Home or Ride done starts nothing. There is no countdown: it
+would delay the start at a light. Only storage stops a ride: when it cannot
+record, RIDE shows STORAGE NOT READY and Home stays.
 
 A live saved ANT+ sensor that reports a low or critical battery turns
 Home's count and that sensor's dot amber, and Home's status line names it, such as HR LOW BATTERY. A sensor that
@@ -363,7 +363,7 @@ AUTO PAUSED, how long the pause has lasted, the ride time and the distance.
 The pause chime plays once. An automatic pause adds RIDE ON TO RESUME, and
 rolling on resumes it with AUTO RESUME. ACT resumes either pause (RESUMED
 toast and the start chime). Riding on after a pause by ACT never resumes the ride, but VANA
-plays a rising three-note reminder once the bike has held start speed (6 km/h
+plays a rising three-note reminder once the bike has held riding speed (6 km/h
 on a wheel sensor, 10 km/h on GPS) for a few seconds, then at most once every 30 s
 of that pause while the rider keeps riding, however often they stop and go. It
 stops when the rider presses ACT. It sounds on any page, follows the SOUNDS setting
@@ -412,8 +412,8 @@ crash or a power cut. A forced reboot loses every ride in memory, saved or
 not.
 
 The journal in memory takes 16 rides between clears, saved and unsaved
-alike. After the 16th ride starts, neither RIDE nor rolling off starts a
-ride until the rides are cleared.
+alike. After the 16th ride starts, RIDE starts no ride until the rides are
+cleared.
 
 A CLEAR of the journal in memory, from the phone page's **Clear rides** or
 the terminal's `RIDE CLEAR CONFIRM`, empties it without a question when

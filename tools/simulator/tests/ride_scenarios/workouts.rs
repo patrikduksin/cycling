@@ -347,3 +347,28 @@ fn a_host_loaded_workout_is_todays_and_rides() {
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     assert_eq!(sim.workout()["workout"], "none", "a free ride");
 }
+
+#[test]
+fn a_ridden_workout_leaves_files_and_a_free_ride_keeps_it() {
+    let mut sim = training_rider();
+    sim.load_workout(&vana::workout::fixtures::FTP_TWENTY);
+    sim.home("Just ride");
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    sim.done();
+    assert_eq!(sim.command("WORKOUT LOAD").0, "OK");
+    assert_ne!(sim.workout()["workout"], "none", "a free ride keeps it");
+    assert!(sim.file(vana::workout::today::FILE).is_some());
+    sim.expect_text("Today's workout");
+
+    sim.press_home_start();
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    assert!(sim.file(vana::workout::today::FILE).is_none());
+    sim.done();
+    assert_eq!(sim.command("WORKOUT LOAD").0, "OK");
+    assert_eq!(sim.workout()["workout"], "none", "ridden, it is gone");
+    sim.expect_no_text("Today's workout");
+}

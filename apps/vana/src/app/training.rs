@@ -169,6 +169,15 @@ impl Runtime {
         self.training.chosen &= self.navigation.page() == Page::Ride;
     }
 
+    pub(super) fn clear_today(&mut self, media: &mut impl ReadWrite) -> Result<bool, LoadError> {
+        let cleared = today::clear(media);
+        if cleared.is_ok() {
+            self.training.read_today(media);
+        }
+        self.display.redraw();
+        cleared
+    }
+
     /// Leaving the ride screen: the workout's summary stays readable, and
     /// today's workout, once ridden, leaves Home until a new one is loaded.
     /// The next ride is free unless Home's workout card starts it.

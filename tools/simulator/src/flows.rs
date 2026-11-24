@@ -179,12 +179,8 @@ impl Sim {
     }
 
     /// Press Home's start, the stop Home opens on. A second press covers a
-    /// dimmed screen, which a press only wakes. Nothing to press when a
-    /// rider rolling off on Home started the ride already.
+    /// dimmed screen, which a press only wakes.
     pub fn press_home_start(&mut self) {
-        if self.vana_page() == "ride" {
-            return;
-        }
         assert!(self.on_home(), "{}", self.screen().text());
         self.press(Role::Act);
         if self.on_home() {
@@ -193,9 +189,6 @@ impl Sim {
     }
 
     pub fn start_ride(&mut self) {
-        if self.vana_page() == "ride" {
-            return;
-        }
         self.press_home_start();
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }

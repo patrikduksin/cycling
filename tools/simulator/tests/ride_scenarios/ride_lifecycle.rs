@@ -152,10 +152,10 @@ fn the_ride_lifecycle_walks_from_home_to_ride_done() {
     sim.checkpoint("home after the ride");
 }
 
-/// Riding on after a workout starts a new ride, free of the workout the
-/// last one played; a ride of nothing still saves.
+/// Riding on at Ride done starts nothing; the next ride the rider starts is
+/// free of the workout the last one played, and a ride of nothing still saves.
 #[test]
-fn riding_on_after_a_workout_starts_a_new_free_ride() {
+fn the_ride_after_a_workout_is_a_free_ride() {
     let mut sim = training_rider();
     sim.start_workout(&vana::workout::fixtures::FTP_TWENTY);
     sim.advance(seconds(20));
@@ -163,15 +163,19 @@ fn riding_on_after_a_workout_starts_a_new_free_ride() {
     assert_eq!(sim.vana_page(), "ride_done");
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.advance(seconds(10));
+    assert_eq!(sim.vana_page(), "ride_done");
+    assert_eq!(sim.rides().len(), 1);
+    sim.checkpoint("riding on at ride done starts nothing");
+    sim.done();
+    sim.start_ride();
     assert_eq!(sim.ride_state(), "recording");
-    assert_eq!(sim.vana_page(), "ride");
     assert_eq!(sim.rides().len(), 2);
     assert_ne!(
         sim.ride_page_name().as_deref(),
         Some("ride/workout"),
         "a free ride"
     );
-    sim.checkpoint("riding on starts a free ride");
+    sim.checkpoint("the next ride is free");
 
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.stop_ride();
@@ -180,13 +184,13 @@ fn riding_on_after_a_workout_starts_a_new_free_ride() {
 }
 
 #[test]
-fn rolling_off_from_home_starts_and_stopping_auto_pauses() {
+fn a_started_ride_auto_pauses_at_a_stop_and_resumes_riding_on() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
+    sim.start_ride();
     sim.ride_at(20.0, 0.0, 0.0, 80.0);
-    sim.wait_for("AUTO START", seconds(10)).unwrap();
     assert_eq!(sim.vana_page(), "ride");
-    sim.checkpoint("auto start from home");
+    sim.checkpoint("started from home");
     sim.advance(minutes(1));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.wait_for("Auto paused", seconds(15)).unwrap();
@@ -197,23 +201,6 @@ fn rolling_off_from_home_starts_and_stopping_auto_pauses() {
     sim.expect_no_text("Ride time");
     assert!(recording(&mut sim));
     sim.checkpoint("auto resumed onto the ride pages");
-}
-
-/// Riding on from Ride done starts a new free ride by itself.
-#[test]
-fn riding_on_from_ride_done_starts_a_new_ride() {
-    let mut sim = rider();
-    sim.pair(&["SPEED/CAD"]);
-    sim.ride_at(20.0, 0.0, 0.0, 80.0);
-    sim.wait_for("AUTO START", seconds(10)).unwrap();
-    sim.advance(minutes(1));
-    sim.stop_ride();
-    assert_eq!(sim.vana_page(), "ride_done");
-    sim.ride_at(20.0, 0.0, 0.0, 80.0);
-    sim.wait_for("AUTO START", seconds(15)).unwrap();
-    assert_eq!(sim.vana_page(), "ride");
-    assert!(recording(&mut sim));
-    sim.checkpoint("riding on from ride done starts a ride");
 }
 
 /// A ride started from the host while Ride done shows takes the rider to

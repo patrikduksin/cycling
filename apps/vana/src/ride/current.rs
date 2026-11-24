@@ -113,7 +113,7 @@ pub(crate) struct Ride {
     settled: Option<(Sample, Step, Option<u32>)>,
     /// The last `count` took a fresh pressure reading into the totals' altitude.
     altitude_fresh: bool,
-    /// Auto-pause and auto-start state.
+    /// Auto-pause state.
     auto: Auto,
     continuation: Continuation,
     /// The medium of the latest ride, whose outcome the rider sees until the
@@ -483,11 +483,10 @@ impl Ride {
         &mut self,
         now: u64,
         motion: Motion,
-        ready: bool,
         automatic: bool,
     ) -> Option<Call> {
         let status = self.active().status();
-        self.auto.update(now, status, motion, ready, automatic)
+        self.auto.update(now, status, motion, automatic)
     }
 
     pub(crate) fn lap(&mut self, now: u64) -> Option<Lap> {

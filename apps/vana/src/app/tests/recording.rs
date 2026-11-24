@@ -538,7 +538,6 @@ fn a_refused_answer_to_end_ride_returns_to_the_ride_and_says_storage_not_ready()
 
 #[test]
 fn no_ride_starts_while_the_format_question_is_up() {
-    use crate::ride::auto::{Call, Decision};
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -547,7 +546,7 @@ fn no_ride_starts_while_the_format_question_is_up() {
         scope: crate::app::format::Scope::of([crate::app::Store::Rides]).unwrap(),
     };
     runtime.navigation.go(To::Page(Page::Home));
-    runtime.ride_auto(Call::Do(Decision::Start), 2000);
+    runtime.input_received(press(Role::Act), 2000, 2000, &mut radio);
     assert_eq!(
         host(&mut runtime, &mut journal, 2000, "RIDE START").0,
         "BUSY"
@@ -1331,54 +1330,24 @@ fn a_lost_wheel_sensor_never_pauses_and_releases_an_auto_pause() {
 }
 
 #[test]
-fn riding_off_auto_starts_and_storage_not_ready_does_not() {
-    let mut journal = Journal::erased();
-    let mut radio = Radio::new();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    radio.connected(SPEED, 0);
-    let mut wheel = Wheel { time: 0, count: 0 };
-    let at = roll(
-        (&mut runtime, &mut journal, &mut radio),
-        &mut wheel,
-        1000,
-        6,
-        true,
-    );
-    assert_eq!(runtime.ride.internal().status(), Status::Recording);
-    assert_eq!(runtime.notices.auto_toast(at), "AUTO START");
-
-    // Off the ride screen nothing starts.
-    let mut journal = Journal::erased();
-    let mut radio = Radio::new();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    radio.connected(SPEED, 0);
-    let mut wheel = Wheel { time: 0, count: 0 };
-    roll(
-        (&mut runtime, &mut journal, &mut radio),
-        &mut wheel,
-        1000,
-        20,
-        true,
-    );
-    assert_eq!(runtime.ride.internal().status(), Status::Ready);
-
-    // Storage still scanning: the request is refused and reported, not forced.
-    let mut journal = Journal::erased();
-    let mut radio = Radio::new();
-    let mut runtime = booted(Profile::HeartRate);
-    on_ride_page(&mut runtime);
-    radio.connected(SPEED, 0);
-    let mut wheel = Wheel { time: 0, count: 0 };
-    *runtime.ride.internal_mut() = crate::ride::recorder::Recorder::default();
-    roll(
-        (&mut runtime, &mut journal, &mut radio),
-        &mut wheel,
-        1000,
-        20,
-        true,
-    );
-    assert_ne!(runtime.ride.internal().status(), Status::Recording);
+fn riding_off_does_not_start_a_ride() {
+    for page in [Page::Home, Page::Ride] {
+        let mut journal = Journal::erased();
+        let mut radio = Radio::new();
+        let mut runtime = ready_runtime(&mut journal, &mut radio);
+        runtime.navigation.go(To::Page(page));
+        radio.connected(SPEED, 0);
+        let mut wheel = Wheel { time: 0, count: 0 };
+        roll(
+            (&mut runtime, &mut journal, &mut radio),
+            &mut wheel,
+            1000,
+            60,
+            true,
+        );
+        assert_eq!(runtime.ride.internal().status(), Status::Ready, "{page:?}");
+        assert!(!runtime.ride.open(), "{page:?}");
+    }
 }
 
 #[test]

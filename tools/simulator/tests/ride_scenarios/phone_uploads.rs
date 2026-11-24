@@ -126,7 +126,10 @@ fn a_workout_added_from_the_phone_is_todays_and_ridden() {
 
     sim.connect_phone();
     let (_, body) = sim.phone_request(Method::Get, "/api/workouts", b"");
-    assert!(body.contains(r#""name":"FROM THE PHONE""#), "{body}");
+    assert!(body.contains(r#""workout":null"#), "{body}");
+    assert_eq!(sim.file(vana::workout::today::FILE), None);
+    let (status, body) = sim.phone_request(Method::Put, "/api/workouts", &bytes);
+    assert_eq!(status, 200, "{body}");
     let (status, _) = sim.phone_request(Method::Delete, "/api/workouts", b"");
     assert_eq!(status, 204);
     assert_eq!(sim.file(vana::workout::today::FILE), None);

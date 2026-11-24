@@ -1,7 +1,7 @@
 //! Ride done, full screen after a ride is saved: a green tick, "Ride saved"
 //! and the day across the top, the picture (`screens::done`) taking most of
 //! the screen, three numbers under it and the time in each power zone along
-//! the foot. Any key or a tap goes Home; riding on starts a new ride.
+//! the foot. Any key or a tap goes Home.
 use super::{Builtin, Nodes};
 use crate::compose::input::{Action, Button, Buttons};
 use crate::compose::kit::bar::Gauge;

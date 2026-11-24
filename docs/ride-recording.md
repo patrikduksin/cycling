@@ -269,11 +269,12 @@ Speed and distance:
 - `POSITION` on the terminal reports `hdop_tenths` and `speed_mm_s`, so an
   outdoor check shows whether the receiver sends Doppler.
 
-Auto-pause and auto-start (`OPTION AUTO_PAUSE`, on by default; constants in
-`ride/auto.rs`):
+Auto-pause (`OPTION AUTO_PAUSE`, on by default; constants in `ride/auto.rs`).
+A ride starts only from the rider: riding off on Home or Ride done starts
+nothing.
 
-- Only a measured speed pauses, resumes or starts a ride. Without a wheel or
-  GPS speed nothing pauses or starts.
+- Only a measured speed pauses or resumes a ride. Without a wheel or GPS speed
+  nothing pauses.
 - Wheel: pause below 3 km/h for 1 s. Packets that repeat the last count bound
   the speed to one circumference per the time past the sensor's count interval
   plus 300 ms; silence alone does not decay it. A stop pauses the ride about 4 s
@@ -282,17 +283,14 @@ Auto-pause and auto-start (`OPTION AUTO_PAUSE`, on by default; constants in
   turned, and about 5 s for one that counts once a second, whose last count
   trails the last revolution. The interval is the latest time between counts by
   the sensor's event times, capped at 1.5 s, and is not updated when the reading
-  had already fallen to zero or more than 1 s passed without a packet. Resume: at or
-  above 4.5 km/h for 1 s. Start: at or above 6 km/h for 3 s. The debounce stays
-  in active time; time paused is excluded like a manual pause.
+  had already fallen to zero or more than 1 s passed without a packet. Resume:
+  at or above 4.5 km/h for 1 s. The debounce stays in active time; time paused
+  is excluded like a manual pause.
 - GPS: pause at zero (below 3.6 km/h) for 2 s, resume at or above 7.2 km/h for
-  2 s, start at or above 10 km/h for 5 s. In the simulator the pause takes
-  about 3 s with Doppler and 7 s from positions; jitter of 2 m at a light
-  neither resumes the ride nor adds distance.
-- Auto-start runs on Ready or the ride pages, through the ordinary start
-  request (refused while storage is not ready). Only a Ready ride starts
-  itself, not one that is Saved or Recovered.
-- The journal gets the same Pause, Resume and Start events as the buttons; the
+  2 s. In the simulator the pause takes about 3 s with Doppler and 7 s from
+  positions; jitter of 2 m at a light neither resumes the ride nor adds
+  distance.
+- The journal gets the same Pause and Resume events as the buttons; the
   record format and export do not tell them apart.
 - A manual pause never auto-resumes. ACT on an auto-pause keeps the ride paused
   as a manual pause; the next ACT resumes. If every speed source is lost during
@@ -585,7 +583,9 @@ steps=S files=ok`, or `workout=none files=<why>`. `WORKOUT STATUS` reports
 the player during a ride and today's workout before one.
 
 When a ride with a workout is saved, VANA writes how the workout went beside
-it as `rides/<i|b><ride id>.workout` on FILES. The record holds the name,
+it as `rides/<i|b><ride id>.workout` on FILES and deletes
+`workouts/today.vw`, so a ridden workout stays off Home after a restart. A
+free ride leaves today's workout planned. The record holds the name,
 test, steps done and skipped, time in, under and over target, the FTP a test
 measured, and the ride's start time. Clearing or initializing a journal
 deletes its records, as its ride ids start over. It is a versioned 70-byte

@@ -6,7 +6,6 @@ use crate::ride::log::{Sample, Status};
 use crate::ride::medium::Medium;
 use crate::ride::settle::{self, Saved};
 use crate::ride::storage::RideStorage;
-use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
 
 impl Runtime {
@@ -27,7 +26,7 @@ impl Runtime {
         self.sync.count() > 0
     }
 
-    /// Pause, resume or start the ride from its speed source (see `ride::auto`),
+    /// Pause or resume the ride from its speed source (see `ride::auto`),
     /// through the same request path as the buttons.
     pub(super) fn auto_control(&mut self, now: u64) {
         // A ride moving to internal media keeps its automatic pause: the
@@ -36,14 +35,9 @@ impl Runtime {
         if self.ride.pending() || self.ride.moving() {
             return;
         }
-        // Not while the sheet is open: a hand on the screen is not a start,
-        // and its hold starts again once the sheet closes. Rolling off rides
-        // free, as only Home's workout card plays today's workout.
-        let starts = matches!(self.navigation.page(), Page::Ride | Page::Home | Page::Done)
-            && !self.sheet_open();
         let motion = self.readings.motion;
         let automatic = self.preferences.options.auto_pause;
-        if let Some(call) = self.ride.auto_update(now, motion, starts, automatic) {
+        if let Some(call) = self.ride.auto_update(now, motion, automatic) {
             self.ride_auto(call, now);
         }
     }
@@ -91,7 +85,11 @@ impl Runtime {
         self.ride.after_settle(now);
         // The ride saved its workout's record: the next ride is free.
         if finished {
+            let played = self.training.player.is_some();
             self.leave_workout();
+            if played && let Err(error) = self.clear_today(bulk) {
+                log::warn!(target: "workout", "VANA_WORKOUT today_not_cleared error={error:?}");
+            }
         }
         // Stamp milestones after the synchronous writes, so their cost shows:
         // storage once neither journal scans, recording once the ride does.

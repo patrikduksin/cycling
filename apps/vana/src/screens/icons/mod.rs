@@ -8,7 +8,7 @@ mod art_0_75;
 
 use super::chrome::{Rect, Row, Shown, blend};
 use crate::sensors::ant::device_type;
-pub use art::{ARROW, PLUS, PUCK, REFRESH, Sensor, SignGlyph};
+pub use art::{ARROW, PLUS, PUCK, REFRESH, Sensor, SignGlyph, Symbol};
 
 /// One icon at one pixel size: coverage for the box its ink fills inside a
 /// `size` square, two columns a byte with the left one in the high nibble.
@@ -173,6 +173,7 @@ pub struct Art {
     pub arrow: &'static Icon,
     pub puck: &'static Icon,
     signs: &'static [[SignArt; 3]; 8],
+    symbols: &'static [Icon; 5],
 }
 
 impl Art {
@@ -182,6 +183,10 @@ impl Art {
 
     pub fn sensor(&self, sensor: Sensor, size: Size) -> &'static Icon {
         &self.sensors[size as usize][sensor as usize]
+    }
+
+    pub fn symbol(&self, symbol: Symbol) -> &'static Icon {
+        &self.symbols[symbol as usize]
     }
 }
 
@@ -212,6 +217,7 @@ pub static ART_1: Art = Art {
     arrow: &art::ARROW,
     puck: &art::PUCK,
     signs: &art::SIGN_GLYPHS,
+    symbols: &art::SYMBOLS,
 };
 
 pub static ART_0_75: Art = Art {
@@ -225,6 +231,7 @@ pub static ART_0_75: Art = Art {
     arrow: &art_0_75::ARROW,
     puck: &art_0_75::PUCK,
     signs: &art_0_75::SIGN_GLYPHS,
+    symbols: &art_0_75::SYMBOLS,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -296,6 +303,7 @@ mod tests {
                 [Size::Small, Size::Row, Size::Large].map(|size| art.sensor(sensor, size))
             })
             .chain([art.plus, art.refresh, art.arrow, art.puck])
+            .chain(SYMBOLS.map(|symbol| art.symbol(symbol)))
             .chain(
                 SIGN_GLYPHS
                     .into_iter()
@@ -314,6 +322,13 @@ mod tests {
         SignGlyph::Flag,
     ];
     const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
+    const SYMBOLS: [Symbol; 5] = [
+        Symbol::Power,
+        Symbol::Heart,
+        Symbol::Ramp,
+        Symbol::Peak,
+        Symbol::Satellite,
+    ];
 
     fn ink(glyph: SignGlyph, form: SignForm) -> Rect {
         let art = ART_1.sign(glyph, form);
@@ -378,6 +393,9 @@ mod tests {
         assert_eq!(Sensor::Generic.icon(Size::Row).size, 26);
         assert_eq!(Sensor::Heart.icon(Size::Large).size, 34);
         assert_eq!((ART_1.puck.size, ART_0_75.puck.size), (20, 15));
+        let sizes = |art: &'static Art| SYMBOLS.map(|symbol| art.symbol(symbol).size);
+        assert_eq!(sizes(&ART_1), [11, 11, 11, 12, 15]);
+        assert_eq!(sizes(&ART_0_75), [8, 8, 8, 9, 11]);
     }
 
     #[test]

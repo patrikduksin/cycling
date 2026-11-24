@@ -334,7 +334,7 @@ fn only_nearby_searches_from_the_sensor_pages() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
-    runtime.focus_stop(1);
+    runtime.focus_stop(0);
     runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
     runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
@@ -678,7 +678,7 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
     };
     runtime.input_received(press(Role::Move), 1000, 1000, &mut radio);
     runtime.input_received(press(Role::Back), 1400, 1400, &mut radio);
-    runtime.focus_stop(1);
+    runtime.focus_stop(0);
     radio.reject = Some(device_api::ant::Error::Busy);
     runtime.input_received(press(Role::Act), 1800, 1800, &mut radio);
     runtime.input_received(press(Role::Move), 2200, 2200, &mut radio);

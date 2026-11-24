@@ -3,6 +3,7 @@
 //! `ride::current` describes.
 use super::Runtime;
 use super::navigation::To;
+use crate::ride::auto::{Call, Decision};
 use crate::ride::current::Ended;
 use crate::ride::log::{Sample, Status};
 use crate::ride::medium::Medium;
@@ -39,10 +40,16 @@ impl Runtime {
         if self.ride.pending() || self.ride.moving() {
             return;
         }
-        let starts = matches!(self.navigation.page(), Page::Ride | Page::Home | Page::Done);
+        let page = self.navigation.page();
+        // Not while the sheet is open: a hand on the screen is not a start,
+        // and its hold starts again once the sheet closes.
+        let starts = matches!(page, Page::Ride | Page::Home | Page::Done) && !self.sheet_open();
         let motion = self.readings.motion;
         let automatic = self.preferences.options.auto_pause;
         if let Some(call) = self.ride.auto_update(now, motion, starts, automatic) {
+            if page == Page::Home && call == Call::Do(Decision::Start) {
+                self.training.free = true;
+            }
             self.ride_auto(call, now);
         }
     }

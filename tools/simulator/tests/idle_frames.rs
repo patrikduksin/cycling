@@ -1,5 +1,5 @@
 //! An idle screen draws at its page's pace and no faster: once a second for
-//! still pages, twice while something animates, such as the charging battery.
+//! still pages, twice while something animates.
 use device_api::input::Role;
 use shell_simulator::ant::device_type;
 use shell_simulator::sim::{Sim, seconds};
@@ -49,14 +49,11 @@ fn device() -> Sim {
 fn idle_menus_draw_once_a_second() {
     let mut sim = device();
     expect_pace(&mut sim, "home", STILL);
-    sim.home("SETTINGS");
-    expect_pace(&mut sim, "settings", STILL);
-    go_home(&mut sim);
     sim.home("SENSORS");
     expect_pace(&mut sim, "sensors", STILL);
     go_home(&mut sim);
     sim.set_battery(60, true);
-    expect_pace(&mut sim, "home charging", ANIMATED);
+    expect_pace(&mut sim, "home charging", STILL);
 }
 
 #[test]
@@ -77,11 +74,11 @@ fn saved_sensors_out_of_range_do_not_add_frames() {
     }
     sim.power_loss();
     sim.wait_usable();
-    sim.expect_text("0/4 LIVE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
     // VANA keeps asking for each saved sensor while it is away.
     expect_pace(&mut sim, "home, 4 sensors away", STILL);
     sim.set_battery(80, true);
-    expect_pace(&mut sim, "home charging, 4 sensors away", ANIMATED);
+    expect_pace(&mut sim, "home charging, 4 sensors away", STILL);
 }
 
 #[test]
@@ -120,7 +117,7 @@ fn a_still_home_draws_only_when_what_it_shows_changes() {
     let minute_turns_in = seconds(40);
     sim.sync_network_time(next_minute_ms - minute_turns_in);
     sim.advance(seconds(3));
-    sim.expect_text("1/1 LIVE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
     let clock = sim.screen().text();
     assert_eq!(frames_over(&mut sim, seconds(30)), 0, "still Home");
     assert!(frames_over(&mut sim, seconds(10)) >= 1, "the minute turned");
@@ -130,24 +127,28 @@ fn a_still_home_draws_only_when_what_it_shows_changes() {
     assert!(frames_over(&mut sim, seconds(3)) >= 1, "the battery fell");
     sim.expect_text("12%");
     sim.set_present(device_type::HEART_RATE, 1, false);
-    sim.wait_for("0/1 LIVE", seconds(30)).unwrap();
+    sim.advance(seconds(30));
     sim.set_battery(12, true);
     let frames = frames_over(&mut sim, seconds(30));
-    assert!(frames >= 50, "{frames} charging frames in 30 s");
+    assert!(
+        frames <= 2,
+        "{frames} frames in 30 s: plugging in recolours 12%"
+    );
 }
 
 #[test]
-fn a_full_battery_on_usb_leaves_home_still() {
+fn a_battery_on_usb_leaves_home_still() {
     let mut sim = device();
     sim.set_battery(100, true);
     let next_minute_ms = 1_800_000_000_000;
     sim.sync_network_time(next_minute_ms - seconds(50));
     sim.advance(seconds(5));
-    assert_eq!(frames_over(&mut sim, seconds(30)), 0, "no fill to animate");
+    assert_eq!(frames_over(&mut sim, seconds(30)), 0, "still Home");
     sim.set_battery(50, true);
-    assert!(
-        frames_over(&mut sim, seconds(5)) >= 8,
-        "a fill climbing from 50% animates"
+    assert_eq!(
+        frames_over(&mut sim, seconds(5)),
+        1,
+        "the percentage changes once"
     );
 }
 

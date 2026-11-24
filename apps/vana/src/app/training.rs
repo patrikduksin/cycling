@@ -52,6 +52,7 @@ pub(super) struct Training {
     pub(super) library: Library,
     /// The workout the next ride plays; `None` rides free.
     pub(super) selected: Option<Id>,
+    pub(super) free: bool,
     pub(super) picker_cursor: usize,
     /// The picker's scroll, which follows the finger.
     pub(super) picker_scroll: Kinetic,
@@ -137,7 +138,7 @@ impl Training {
         &self,
         media: &mut impl ReadWrite,
     ) -> Result<Option<Player>, LoadError> {
-        let Some(id) = self.selected else {
+        let Some(id) = self.selected.filter(|_| !self.free) else {
             return Ok(None);
         };
         self.library.load(id, media).map(|w| Some(Player::new(w)))
@@ -195,7 +196,8 @@ impl Runtime {
 
     /// The ride screen has a workout page.
     pub(super) fn workout_pages(&self) -> bool {
-        self.training.player.is_some() || self.training.selected.is_some()
+        let training = &self.training;
+        training.player.is_some() || (training.selected.is_some() && !training.free)
     }
 
     /// List the uploads when the library is out of date: at boot and when
@@ -239,8 +241,9 @@ impl Runtime {
     pub(super) fn leave_workout(&mut self) {
         if let Some(player) = self.training.player.take() {
             self.training.last = Some((player.workout().name, player.summary()));
+            self.training.selected = None;
         }
-        self.training.selected = None;
+        self.training.free = false;
     }
 
     /// The picker scrolled to `offset`, with the card under a resting finger.
@@ -579,10 +582,12 @@ impl Runtime {
         }
     }
 
-    /// The Home ride card names the workout the next ride plays.
     pub(super) fn chosen_name(&self) -> Option<Name> {
-        let id = self.training.selected?;
-        Some(self.training.library.outline(id)?.0)
+        Some(self.today()?.0)
+    }
+
+    pub(super) fn today(&self) -> Option<(Name, Outline)> {
+        self.training.library.outline(self.training.selected?)
     }
 }
 

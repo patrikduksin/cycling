@@ -216,6 +216,8 @@ pub struct Type {
     pub label: FaceRole,
     /// Subtitles and list labels.
     pub note: FaceRole,
+    /// Home's time of day.
+    pub clock: FaceRole,
 }
 
 #[cfg(test)]

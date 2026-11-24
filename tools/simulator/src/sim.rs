@@ -14,8 +14,8 @@ use firmware_shell::rendering::row::Look;
 use std::fmt::Write as _;
 use vana::app::Store;
 
-/// Cards on VANA's Home, in MOVE order: RIDE, SENSORS, TRAIN, SETTINGS.
-pub const HOME_CARDS: usize = 4;
+/// The most focus stops Home has: the widget, today's card and Just ride.
+pub const HOME_STOPS: usize = 3;
 /// Power-on never takes longer than this to open Home in the simulator.
 const BOOT_TIMEOUT_MS: u64 = 15_000;
 /// Firmware passes between a press and the next one VANA accepts (debounce is 350 ms).

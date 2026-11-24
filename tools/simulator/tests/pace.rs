@@ -74,13 +74,6 @@ fn saved_rides(rides: &[u64]) -> Sim {
     sim
 }
 
-fn workouts_list() -> Sim {
-    let mut sim = device();
-    sim.home("TRAIN");
-    sim.advance(seconds(1));
-    sim
-}
-
 /// Advance until a rest is under way: the last pass ran before this slice.
 fn resting(sim: &mut Sim) {
     for _ in 0..5 {
@@ -102,9 +95,6 @@ fn still_pages_rest_between_passes() {
     sim.advance(seconds(10));
     assert!(sim.device.shell.dimmed(), "Home dims after 30 s");
     expect_still(&mut sim, "home dimmed");
-    sim.home("SETTINGS");
-    expect_still(&mut sim, "settings");
-    sim.press(Role::Back);
     sim.set_battery(60, true);
     expect_still(&mut sim, "home charging");
 }
@@ -224,17 +214,6 @@ fn a_press_waiting_for_its_frame_keeps_the_busy_pace() {
     assert_eq!(sim.device.sdk.page(), Page::Home);
 }
 
-#[test]
-fn a_list_coasting_after_a_fling_keeps_the_busy_pace() {
-    let mut sim = workouts_list();
-    resting(&mut sim);
-    let before = sim.screen().text();
-    sim.drag((120, 280), (120, 230), 50, 0);
-    expect_busy(&mut sim, 500, "a list coasting");
-    sim.advance(seconds(3));
-    assert_ne!(sim.screen().text(), before, "the list moved");
-}
-
 /// A rider moving on Home with a terrain pack: the look-ahead's first
 /// steps, some of them computing only, run at the busy pace.
 #[test]
@@ -334,24 +313,4 @@ fn a_resting_session_with_a_press_replays_exactly() {
     assert_eq!(first_difference(&capture, &replayed.trace()), None);
     let frames = sim.frame_hashes();
     assert!(!frames.is_empty() && replayed.frame_hashes() == frames);
-}
-
-/// A drag that starts while the console rests is stamped as it arrives, so
-/// its fling coasts as far as one that starts just after a pass.
-#[test]
-fn a_fling_from_a_resting_list_coasts_as_from_a_busy_one() {
-    let fling = |rested: bool| {
-        let mut sim = workouts_list();
-        resting(&mut sim);
-        while !rested && sim.device.clock_ms() > sim.device.now {
-            sim.advance(10);
-        }
-        let before = sim.screen().text();
-        sim.drag((120, 280), (120, 230), 50, 0);
-        sim.advance(seconds(3));
-        let after = sim.screen().text();
-        assert_ne!(after, before, "the list moved");
-        after
-    };
-    assert_eq!(fling(true), fling(false));
 }

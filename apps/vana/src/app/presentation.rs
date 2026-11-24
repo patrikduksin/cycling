@@ -6,15 +6,15 @@ use super::view::{Presented, Shows};
 use crate::clock::Zone;
 use crate::compose::builtin::ScreenId;
 use crate::compose::input::{Action, ListAct};
-use crate::compose::registry::CHART;
+use crate::compose::registry::{CHART, TODAY};
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::current::Request;
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::medium::Medium;
 use crate::ride::turn_back::Turn;
-use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Row, Toast, Tone};
-use crate::screens::home::Home;
+use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Row, Toast, Tone};
+use crate::screens::home::{self, Home, Strip, Today};
 use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ride::summary::{After, Saving};
@@ -23,7 +23,7 @@ use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
 use crate::screens::settings;
 use crate::screens::touch::{Control, List};
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
-use crate::sensors::ant::{BatteryStatus, device_type};
+use crate::sensors::ant::device_type;
 use crate::sensors::radar::Beep;
 use core::fmt::Write;
 use device_api::display::Display as Panel;
@@ -36,34 +36,6 @@ use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
 use firmware_services::why;
 use firmware_shell::shell::{Picture, Shell};
-
-struct BatteryWarning {
-    title: Text<24>,
-    critical: bool,
-}
-
-impl BatteryWarning {
-    fn of(glance: &[crate::screens::sensors::Glance]) -> Option<Self> {
-        if glance.iter().any(|g| !g.live) {
-            return None;
-        }
-        let mut low = glance.iter().filter(|g| g.battery_low());
-        let first = low.next()?;
-        let count = 1 + low.count();
-        let critical = glance
-            .iter()
-            .any(|g| g.battery == Some(BatteryStatus::Critical));
-        let mut title = Text::<24>::new();
-        if count == 1 {
-            let name = core::str::from_utf8(crate::screens::home::short_name(first.kind));
-            let state = if critical { "CRITICAL" } else { "LOW" };
-            let _ = write!(title, "{} {state} BATTERY", name.unwrap_or(""));
-        } else {
-            let _ = write!(title, "{count} BATTERIES TO CHANGE");
-        }
-        Some(Self { title, critical })
-    }
-}
 
 /// The brand stays this long after VANA's first frame, then Home opens. The
 /// device keeps the backlight dark until VANA runs, so this is all a rider sees.
@@ -416,7 +388,7 @@ impl Runtime {
             Page::Ride => {}
             Page::Done => view.show_done(&self.done),
             Page::Home => {
-                view.set_home(self.home(gps_fix, now));
+                view.set_home(self.home(local, now));
             }
             Page::Sensors => {
                 view.show_sensors(&self.menu);
@@ -459,42 +431,6 @@ impl Runtime {
         }
     }
 
-    /// Home says what is still starting, why turning off did not happen, or
-    /// that rides are not saved; `true` when it is a problem.
-    pub(super) fn home_status(&self, now: u64) -> (&'static str, bool) {
-        if let Some(notice) = self.power.notice(now) {
-            return (notice.text(), true);
-        }
-        // Rides the phone has not confirmed stay named until it has.
-        if self.holds_unsynced() {
-            return ("NOT SAVED", true);
-        }
-        let status = if self.ride.internal().status() == Status::Scanning
-            || self.ride.bulk().status() == Status::Scanning
-        {
-            "CHECKING STORAGE"
-        } else if matches!(
-            self.startup,
-            Some(
-                Startup::NotSubmitted
-                    | Startup::Probing
-                    | Startup::Pending
-                    | Startup::Waiting
-                    | Startup::WakePending
-            )
-        ) {
-            "STARTING SENSORS"
-        } else if matches!(
-            self.startup,
-            Some(Startup::Uncertain | Startup::TimedOut | Startup::Unavailable)
-        ) {
-            return ("SENSORS UNAVAILABLE", true);
-        } else {
-            "READY TO RIDE"
-        };
-        (status, false)
-    }
-
     /// The sensors Home and Ready summarise: the saved ANT sensors, then the
     /// selected BLE sensor. A live ANT heart-rate sensor stands for the role,
     /// as the ride prefers it; with none live the rider is on the BLE strap.
@@ -525,23 +461,31 @@ impl Runtime {
     }
 
     #[inline(never)]
-    fn home(&self, gps_fix: bool, now: u64) -> Home {
-        let glance = self.glance(now);
-        let mut home = Home::new(gps_fix, &glance);
-        let (status, problem) = self.home_status(now);
-        let warning = BatteryWarning::of(&glance).filter(|_| !problem && status == "READY TO RIDE");
-        match (self.chosen_name(), warning) {
-            (_, Some(warning)) => {
-                let color = if warning.critical { RED } else { AMBER };
-                home.set_status_in(warning.title.as_bytes(), color)
+    fn home(&self, local: Option<crate::clock::Local>, now: u64) -> Home {
+        let today = self.today();
+        let card = self.composition.laids().get(ScreenId::Home);
+        let card = card.and_then(|laid| laid.box_of(TODAY));
+        let strip = match (today, card) {
+            (Some((_, outline)), Some(card)) => {
+                let rect = crate::compose::tiles::home::strip(card, &self.device.scaled);
+                Strip::lay(outline.shape.pieces(), rect)
             }
-            // A workout waiting to be ridden names itself on the ride card.
-            (Some(name), None) if !problem && status == "READY TO RIDE" => {
-                home.set_status(name.as_bytes(), false)
-            }
-            _ => home.set_status(status.as_bytes(), problem),
+            _ => Strip::default(),
+        };
+        Home {
+            local,
+            sensors: self
+                .glance(now)
+                .iter()
+                .take(home::SENSORS)
+                .copied()
+                .collect(),
+            today: today.map(|(name, outline)| Today {
+                name,
+                planned_secs: outline.planned_secs,
+            }),
+            strip,
         }
-        home
     }
 
     /// What the toast band shows now: a lap just finished first, then an automatic start or resume, then the latest
@@ -563,6 +507,12 @@ impl Runtime {
         {
             why!("toast.confirmation", shown = shown(&toast), until);
             return Some(toast);
+        }
+        if let Some(notice) = self.power.notice(now)
+            && navigation.page() == Page::Home
+        {
+            why!("toast.power", notice = notice.text());
+            return Some(Toast::new(notice.text(), Tone::Alert));
         }
         if navigation.page() != Page::Ride {
             why!("toast.none", page = navigation.page());

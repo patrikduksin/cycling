@@ -4,31 +4,27 @@
 //! screens updates its hash here and shows the new screen in its sim-compare.
 use shell_simulator::bench::{SCENES, hash, measure};
 
-const HASHES: [(&str, u64); 24] = [
-    ("home", 0x9b65_c3d8_8917_03c8),
-    ("ride main + radar", 0x1dcd_5a09_16e2_7ae2),
-    ("climb", 0xe292_a776_61df_eae8),
-    ("ride done", 0x150a_ebcc_0966_90a5),
+const HASHES: [(&str, u64); 20] = [
+    ("home", 0xb999_9673_cc95_c2ad),
+    ("ride main + radar", 0x9eb1_9b81_0a53_fb1e),
+    ("climb", 0x35ab_917c_4ca1_9fa4),
+    ("ride done", 0xdf0b_4e9a_877f_f909),
     ("sensors list", 0x328d_b813_7dee_22a5),
-    ("workouts", 0x7832_b3fd_9df0_0bc3),
     ("ride stats", 0xb1e5_83a4_9246_782b),
-    ("workout", 0x6712_77b3_69b1_f236),
-    ("map", 0x37c2_7857_c6cb_e81b),
-    ("map course", 0x0cff_3534_7556_b5d1),
+    ("workout", 0xfc07_1ea6_1302_5198),
+    ("map", 0x663d_79af_53cc_1f1e),
+    ("map course", 0x5cb4_7234_acbc_af0a),
     ("map off course", 0xa7fb_126c_606e_08bb),
-    ("map santiago 15 km/h", 0xe2ca_2566_4cd6_2db0),
-    ("map santiago 25 km/h", 0x8656_8472_e442_d64e),
-    ("map santiago 50 km/h", 0x6c6a_1533_1183_136f),
-    ("map santiago 90 km/h", 0x98cd_079a_0e28_4cea),
-    ("paused", 0x762c_8bfe_f4f3_593d),
-    ("end ride", 0x842f_6fb4_9c1e_aad9),
-    ("settings", 0x4f04_dc7f_2016_6b9e),
+    ("map santiago 15 km/h", 0xbeb5_76b0_752d_a326),
+    ("map santiago 25 km/h", 0x25d9_5f64_e0ac_dbb2),
+    ("map santiago 50 km/h", 0x24d5_2f25_91bf_eb0f),
+    ("map santiago 90 km/h", 0x24d9_02df_f101_df6c),
+    ("paused", 0x1764_e279_a7ca_8da2),
+    ("end ride", 0x8c30_46b0_741a_9a2e),
     ("sensor detail", 0xb3e2_caaf_1260_c5e9),
     ("boot", 0x8099_3d2c_de83_6750),
-    ("settings editing", 0x020e_1ae4_9ad4_27b3),
-    ("main with workout band", 0x74bd_c70d_3585_bc6d),
-    ("settings light", 0x6f90_3724_84f3_bde8),
-    ("home light", 0xcd4e_ca43_ee2d_3c20),
+    ("main with workout band", 0x0e83_d401_b06a_b6ca),
+    ("home light", 0x4936_5942_5094_f847),
 ];
 
 #[test]

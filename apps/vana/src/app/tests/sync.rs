@@ -216,7 +216,6 @@ fn a_cold_volatile_boot_reaches_ready_and_protects_nothing() {
     assert!(runtime.ride.volatile(Medium::Internal));
     assert_eq!(runtime.ride.internal().slots(), Some(MEMORY_SECTORS * 16));
     assert!(!runtime.holds_unsynced());
-    assert_eq!(runtime.home_status(0), ("READY TO RIDE", false));
 }
 
 #[test]
@@ -227,7 +226,6 @@ fn a_volatile_ride_is_protected_from_its_start_and_never_called_saved() {
     let mut now = start(&mut runtime, &mut journal, &mut radio, 1_000);
     assert!(runtime.holds_unsynced(), "protected from its start");
     assert_eq!(runtime.ride.internal().written_samples(), 0);
-    assert_eq!(runtime.home_status(now), ("NOT SAVED", true));
     for _ in 0..40 {
         radio.data(HEART_RATE, HEART_72, now);
         tick(&mut runtime, &mut journal, &mut radio, now);
@@ -259,9 +257,8 @@ fn a_volatile_ride_is_protected_from_its_start_and_never_called_saved() {
     assert_eq!(runtime.done.kept(), Kept::Unsynced, "never called saved");
     assert_eq!(runtime.broken(), None);
 
-    now = sync(&mut runtime, &mut journal, now);
+    sync(&mut runtime, &mut journal, now);
     assert!(!runtime.holds_unsynced());
-    assert_eq!(runtime.home_status(now), ("READY TO RIDE", false));
 }
 
 #[test]
@@ -269,10 +266,9 @@ fn a_durable_ride_is_saved_and_can_be_discarded() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = cold(&mut journal, &mut radio);
-    let now = start(&mut runtime, &mut journal, &mut radio, 1_000);
+    start(&mut runtime, &mut journal, &mut radio, 1_000);
     assert!(!runtime.holds_unsynced());
     assert!(runtime.can_discard());
-    assert_ne!(runtime.home_status(now).0, "NOT SAVED");
 }
 
 #[test]
@@ -299,7 +295,7 @@ fn turning_off_and_auto_off_wait_until_the_phone_has_every_ride() {
         assert_eq!(runtime.power.sheet, Sheet::Closed, "auto-off refuses");
     }
     assert!(switch.requests.is_empty());
-    assert_eq!(runtime.home_status(now), ("NOT SAVED", true));
+    assert!(runtime.holds_unsynced());
 
     now = sync(&mut runtime, &mut journal, now + 2 * AUTO_OFF_MS);
     runtime.navigation.go(To::Page(Page::Home));

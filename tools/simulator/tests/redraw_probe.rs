@@ -14,19 +14,21 @@ fn no_page_submits_a_frame_the_panel_already_shows() {
 
 #[test]
 fn a_still_page_submits_no_frame() {
-    let result = run(case("settings (still)"), 30);
+    let result = run(case("home"), 30);
     assert!(result.changes.len() <= 1, "{}", result.changes.len());
 }
 
 #[test]
-fn home_on_usb_draws_only_while_its_battery_fill_visibly_climbs() {
-    let climbing = run(case("home, charging at 50%"), 30);
-    assert!(climbing.fps() >= 1.9, "{}", climbing.fps());
-    for full in ["home, charging at 99%", "home, charging at 100%"] {
-        let result = run(case(full), 30);
+fn home_on_usb_draws_only_when_its_percentage_changes() {
+    for charging in [
+        "home, charging at 50%",
+        "home, charging at 99%",
+        "home, charging at 100%",
+    ] {
+        let result = run(case(charging), 30);
         assert!(
             result.changes.len() <= 2,
-            "{full}: {}",
+            "{charging}: {}",
             result.changes.len()
         );
     }

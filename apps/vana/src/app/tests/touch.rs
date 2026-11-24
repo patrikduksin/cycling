@@ -22,18 +22,26 @@ pub(super) fn touch(runtime: &mut Runtime, radio: &mut Radio, points: &[(u16, u1
     );
 }
 
+fn widget(runtime: &mut Runtime) -> (u16, u16) {
+    let rect = runtime.stop_rect(0);
+    (
+        rect.center_x() as u16,
+        ((rect.top + rect.bottom) / 2) as u16,
+    )
+}
+
 #[test]
-fn tapping_a_home_tile_opens_it() {
+fn tapping_home_s_status_widget_opens_the_sensors() {
     let mut radio = Radio::new();
     let mut runtime = booted(Profile::HeartRate);
     runtime.navigation.go(To::Page(Page::Home));
     touch(&mut runtime, &mut radio, &[(120, 40)], 1000);
-    let toast = runtime.toast(1000).expect("a toast");
-    assert_eq!(toast.text(), b"STORAGE NOT READY");
-    assert!(runtime.navigation.page() == Page::Home);
-    runtime.navigation.go(To::Page(Page::Home));
-    let y = (runtime.stop_rect(1).top + 20) as u16;
-    touch(&mut runtime, &mut radio, &[(120, y)], 2000);
+    assert!(
+        runtime.navigation.page() == Page::Home,
+        "the clock does nothing"
+    );
+    let widget = widget(&mut runtime);
+    touch(&mut runtime, &mut radio, &[widget], 2000);
     assert!(runtime.navigation.page() == Page::Sensors);
 }
 
@@ -145,12 +153,10 @@ fn a_contact_never_completes_on_another_screen() {
         runtime.input_received(Input::Touch(Point { x, y }), now, now, radio)
     };
     runtime.navigation.go(To::Page(Page::Home));
-    let sensors = (120, (runtime.stop_rect(1).top + 20) as u16);
+    let sensors = widget(&mut runtime);
 
     let mut screen = super::presentation::Screen::new();
     runtime.power(&mut screen.shell, &mut super::power::Switch::new(true), 0);
-    // A finger down on Sensors while BACK returns Home lifts over the RIDE
-    // card: Home never saw it begin, so it opens nothing.
     runtime.navigation.go(To::Page(Page::Sensors));
     down(&mut runtime, &mut radio, (120, 40), 1000);
     runtime.input_received(press(Role::Back), 1100, 1100, &mut radio);
@@ -385,13 +391,13 @@ fn a_tap_off_every_tile_and_key_tab_of_a_static_screen_does_nothing() {
 }
 
 #[test]
-fn a_move_hold_before_home_s_first_frame_back_keeps_its_remembered_card() {
+fn a_move_hold_before_home_s_first_frame_back_marks_and_home_opens_on_its_start() {
     let mut radio = Radio::new();
     let mut runtime = booted(Profile::HeartRate);
     runtime.navigation.go(To::Page(Page::Home));
-    runtime.focus_stop(3);
+    runtime.focus_stop(0);
     runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
-    assert_eq!(runtime.navigation.page(), Page::Settings);
+    assert_eq!(runtime.navigation.page(), Page::Sensors);
     runtime.compose_shown();
     runtime.input_received(press(Role::Back), 2000, 2400, &mut radio);
     assert_eq!(runtime.navigation.page(), Page::Home);
@@ -400,5 +406,5 @@ fn a_move_hold_before_home_s_first_frame_back_keeps_its_remembered_card() {
         runtime.input_received(press(Role::Move), now, now, &mut radio);
     }
     assert_eq!(runtime.toast_at(3900).unwrap().text(), b"MARK 1");
-    assert_eq!(runtime.focus_index(), 3, "SETTINGS keeps the focus");
+    assert_eq!(runtime.focus_index(), 1, "Home opens on Ride again");
 }

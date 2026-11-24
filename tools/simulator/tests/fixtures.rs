@@ -213,7 +213,7 @@ fn a_recorded_tap_replays_as_the_same_tap() {
     use shell_simulator::sim::Sim;
     let mut sim = Sim::new();
     sim.wait_usable();
-    sim.tap(120, 210);
+    sim.tap(40, 125);
     sim.expect_text("NEARBY");
     let lifted = lift(&sim.trace()).unwrap();
     assert!(

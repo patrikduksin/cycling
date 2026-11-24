@@ -62,6 +62,7 @@ FACES = [
     ("DIGITS_34", 700, 34, NUMBERS, 0, "Ride-grid field digits where a chart shares the page."),
     ("DIGITS_22", 700, 22, NUMBERS, 0, "The % beside 34 px digits."),
     ("DIGITS_19", 700, 19, NUMBERS + "km", 0, "A chart's summary: lengths in km and grades."),
+    ("CLOCK", 700, 64, NUMBERS, 0, "Home's time of day."),
 ]
 SHIPPED_ADVANCES = {"CAPTION": {"_": 7}}
 

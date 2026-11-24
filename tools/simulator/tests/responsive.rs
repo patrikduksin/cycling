@@ -9,7 +9,7 @@ use shell_simulator::sim::{NoteKind, Sim, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::app::Store;
 use vana::compose::Flags;
-use vana::compose::builtin::{Choices, Laid, ScreenId};
+use vana::compose::builtin::{Laid, ScreenId};
 use vana::screens::workout::Page;
 
 const KINDS: [&str; 4] = ["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"];
@@ -283,9 +283,8 @@ fn the_paused_end_and_done_screens_draw_on_both_test_panels() {
 fn the_workout_page_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let mut twin = Twin::paired(model, world, &KINDS);
-        twin.guide(|sim| {
-            sim.start_workout("VO2 MAX 5X3");
-        });
+        twin.both(|sim| sim.choose_workout("VO2 MAX 5X3"));
+        twin.guide(|sim| sim.start_ride());
         twin.both(|sim| sim.ride_at(30.0, 120.0, 142.0, 90.0));
         twin.advance(seconds(20));
         assert_eq!(twin.guide.ride_page_name().as_deref(), Some("ride/workout"));
@@ -365,7 +364,7 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
         let name = model.name;
         let mut twin = Twin::paired(model, world, &KINDS);
         assert_eq!(twin.sim.device.sdk.page(), Page::Home);
-        shows(&twin.sim, &["RIDE", "SENSORS", "LIVE", "TRAIN", "SETTINGS"]);
+        shows(&twin.sim, &["Ride"]);
         twin.sim.checkpoint(&format!("home on {name}"));
         let laid = Laid::new(
             ScreenId::Home,
@@ -376,112 +375,28 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
         )
         .expect("Home has a tree");
         let solved = laid.solved();
-        let cards = solved.focus_order().skip(1).map(|placed| placed.rect);
-        let pages = [Page::Sensors, Page::Workouts, Page::Settings];
-        for (card, page) in cards.zip(pages) {
-            let (x, y) = (card.left + card.width() / 2, card.top + card.height() / 2);
-            twin.sim.tap(x, y);
-            twin.sim.advance(seconds(1));
-            assert_eq!(twin.sim.device.sdk.page(), page, "{name}: a tap at {x},{y}");
-            twin.sim.press(Role::Back);
-            twin.sim.advance(seconds(1));
-            assert_eq!(
-                twin.sim.device.sdk.page(),
-                Page::Home,
-                "{name}: back from {page:?}"
-            );
-        }
-    }
-}
-
-/// The number editor's plus pad on `model`'s panel.
-fn raise_pad(model: Model) -> vana::screens::chrome::Rect {
-    let choices = Choices {
-        editing: true,
-        ..Choices::default()
-    };
-    let laid =
-        Laid::new(ScreenId::Settings, model.device, choices, Flags::NONE, None).expect("Settings");
-    let nodes = laid.screen().tree().nodes();
-    let pads = laid.leaves().iter().filter(|placed| {
-        let what = nodes[usize::from(placed.node)].what();
-        what == Some(vana::compose::node::What::Leaf {
-            component: vana::compose::registry::PAD,
-            arg: 1,
-        })
-    });
-    pads.map(|placed| placed.rect.rect())
-        .next()
-        .expect("the plus pad")
-}
-
-#[test]
-fn settings_draw_scroll_and_edit_on_both_test_panels() {
-    for model in [WIDE, SMALL] {
-        let name = model.name;
-        let mut twin = Twin::paired(model, world, &KINDS);
-        twin.guide(|sim| {
-            sim.home("SETTINGS");
-            sim.expect_text("PROFILE");
-        });
-        shows(&twin.sim, &["PROFILE", "FTP WATTS", "LTHR BPM"]);
-        twin.sim.checkpoint(&format!("settings on {name}"));
-
-        twin.guide(|sim| {
-            sim.press(Role::Act);
-            sim.advance(seconds(1));
-        });
-        shows(&twin.sim, &["PROFILE", "FTP WATTS", "215"]);
-        twin.sim.checkpoint(&format!("number editor on {name}"));
-        let raise = raise_pad(model);
-        let middle = (raise.top + raise.height() / 2) as u16;
-        twin.sim.tap(raise.center_x() as u16, middle);
+        let middle = |card: vana::compose::Rect16| {
+            (card.left + card.width() / 2, card.top + card.height() / 2)
+        };
+        let mut stops = solved.focus_order().map(|placed| middle(placed.rect));
+        let (widget, ride) = (stops.next().unwrap(), stops.next().unwrap());
+        twin.sim.tap(widget.0, widget.1);
         twin.sim.advance(seconds(1));
-        shows(&twin.sim, &["FTP WATTS", "220"]);
-        catch_up(&mut twin);
-
-        twin.guide(|sim| {
-            sim.press(Role::Back);
-            sim.expect_text("LTHR BPM");
-            for _ in 0..5 {
-                sim.press(Role::Move);
-            }
-            sim.expect_text("DISPLAY");
-            for _ in 0..4 {
-                sim.press(Role::Move);
-            }
-            sim.advance(seconds(1));
-        });
-        shows(&twin.sim, &["DISPLAY", "THEME", "MODE"]);
-        twin.sim.checkpoint(&format!("settings scrolled on {name}"));
-    }
-}
-
-fn catch_up(twin: &mut Twin) {
-    let behind = twin.sim.now() - twin.guide.now();
-    twin.guide.advance(behind);
-}
-
-#[test]
-fn the_workout_picker_draws_and_scrolls_on_both_test_panels() {
-    for model in [WIDE, SMALL] {
-        let name = model.name;
-        let mut twin = Twin::paired(model, world, &KINDS);
-        twin.guide(|sim| {
-            sim.home("TRAIN");
-            sim.expect_text("WORKOUTS");
-        });
-        shows(&twin.sim, &["WORKOUTS", "FREE RIDE", "NO TARGETS"]);
-        twin.sim.checkpoint(&format!("workouts on {name}"));
-        twin.guide(|sim| {
-            for _ in 0..9 {
-                sim.press(Role::Move);
-            }
-            sim.advance(seconds(1));
-        });
-        assert!(!twin.sim.screen().contains("FREE RIDE"), "{name} scrolled");
-        shows(&twin.sim, &["WORKOUTS", "MIN"]);
-        twin.sim.checkpoint(&format!("workouts scrolled on {name}"));
+        assert_eq!(
+            twin.sim.device.sdk.page(),
+            Page::Sensors,
+            "{name}: the widget"
+        );
+        twin.sim.press(Role::Back);
+        twin.sim.advance(seconds(1));
+        assert_eq!(twin.sim.device.sdk.page(), Page::Home, "{name}");
+        twin.sim.tap(ride.0, ride.1);
+        twin.sim.advance(seconds(1));
+        assert_eq!(
+            twin.sim.device.sdk.page(),
+            Page::Ride,
+            "{name}: Ride starts it"
+        );
     }
 }
 
@@ -489,9 +404,8 @@ fn the_workout_picker_draws_and_scrolls_on_both_test_panels() {
 fn the_ftp_sheet_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let mut twin = Twin::paired(model, world, &KINDS);
-        twin.guide(|sim| {
-            sim.start_workout("FTP TEST 20 MIN");
-        });
+        twin.both(|sim| sim.choose_workout("FTP TEST 20 MIN"));
+        twin.guide(|sim| sim.start_ride());
         twin.both(|sim| sim.ride_at(30.0, 150.0, 142.0, 90.0));
         twin.advance(seconds(30));
         twin.guide(|sim| {

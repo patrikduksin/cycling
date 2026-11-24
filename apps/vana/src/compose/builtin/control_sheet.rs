@@ -38,7 +38,7 @@ const TREE: [Node; 13] = [
     Node::row(3, Size::units(52)),
     Node::leaf(SHEET_SENSORS, 0, Size::grow(1)),
     space(Size::units(8)),
-    Node::leaf(DAY_NIGHT, 0, Size::units(58)),
+    Node::leaf(DAY_NIGHT, 0, Size::units(52)),
     space(Size::units(10)),
     space(Size::grow(1)),
 ];

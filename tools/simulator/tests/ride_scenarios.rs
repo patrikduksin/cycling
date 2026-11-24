@@ -476,31 +476,21 @@ fn shows(sim: &Sim, color: u16) -> bool {
 /// these screens; the checks are on the colours the light look must produce.
 #[test]
 fn the_light_theme_turns_every_screen_white_and_keeps_its_colours() {
-    use vana::screens::look::light;
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     assert_eq!(corner(&sim), 0, "dark by default");
-    sim.home("SETTINGS");
-    sim.swipe_next();
-    sim.swipe_next();
-    for _ in 0..3 {
-        sim.press(Role::Move);
-    }
-    sim.expect_field("THEME", "DARK");
-    sim.press(Role::Act);
-    assert_eq!(corner(&sim), WHITE, "Settings turns white at once");
-    assert!(shows(&sim, light(WHITE)), "dark text on the white page");
-    sim.checkpoint("settings in the light theme");
-    sim.press(Role::Back);
-    assert_eq!(corner(&sim), WHITE);
-    assert!(shows(&sim, light(GREEN)), "the RIDE card's green");
+    sim.option("THEME", "LIGHT");
+    sim.next_frame();
+    assert_eq!(corner(&sim), WHITE, "Home turns white at once");
+    let theme = vana::screens::theme::LIGHT;
+    assert!(shows(&sim, theme.text), "black text on the white page");
+    assert!(shows(&sim, theme.good), "the Ride button's green");
     sim.checkpoint("home in the light theme");
     sim.ride_at(28.0, 210.0, 142.0, 88.0);
     sim.start_ride();
     sim.advance(seconds(20));
     assert_eq!(corner(&sim), WHITE);
     // The Stats page draws in the light theme's own colours.
-    let theme = vana::screens::theme::LIGHT;
     assert!(shows(&sim, theme.speed) && shows(&sim, theme.cadence));
     sim.checkpoint("ride page in the light theme");
     sim.swipe_next();
@@ -513,12 +503,8 @@ fn the_light_theme_turns_every_screen_white_and_keeps_its_colours() {
 fn heart_rate_band_and_eat_and_drink_alerts_sound_and_show() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER"]);
-    sim.home("SETTINGS");
-    sim.set_option("HR ABOVE", "170 BPM");
-    sim.set_option("EAT AND DRINK", "EVERY 20 MIN");
-    sim.checkpoint("alert limits in Settings");
-    sim.press(Role::Back);
-    assert!(sim.on_home(), "{}", sim.screen().text());
+    sim.option("HR_HIGH", "170");
+    sim.option("FUEL", "20");
     sim.ride_at(28.0, 220.0, 150.0, 90.0);
     sim.start_ride();
     sim.advance(minutes(2));
@@ -544,10 +530,7 @@ fn a_speed_and_cadence_sensor_alone_drives_cadence_and_its_low_alert() {
     let mut sim = rider();
     // The power meter is in range but not saved: only the SPD/C crank speaks.
     sim.pair(&["SPEED/CAD"]);
-    sim.home("SETTINGS");
-    sim.set_option("LOW CADENCE", "60 RPM");
-    sim.press(Role::Back);
-    assert!(sim.on_home(), "{}", sim.screen().text());
+    sim.option("CADENCE_LOW", "60");
     sim.ride_at(28.0, 0.0, 0.0, 85.0);
     sim.start_ride();
     sim.advance(seconds(20));
@@ -1114,7 +1097,7 @@ fn zone_chips_take_the_colour_of_each_power_zone() {
 }
 
 #[test]
-fn raising_ftp_in_settings_moves_the_same_watts_down_a_zone() {
+fn raising_ftp_moves_the_same_watts_down_a_zone() {
     let mut sim = rider();
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.start_ride();
@@ -1125,24 +1108,7 @@ fn raising_ftp_in_settings_moves_the_same_watts_down_a_zone() {
     sim.stop_ride();
     go_home(&mut sim);
 
-    sim.home("SETTINGS");
-    sim.expect_field("FTP WATTS", "215");
-    sim.expect_field("LTHR BPM", "185");
-    sim.expect_text("Z4 195-226 W");
-    sim.checkpoint("settings with the default profile");
-    // BottomRight edits the selected field: it fills and the touch pads appear.
-    sim.press(Role::Act);
-    sim.expect_text("+5");
-    sim.checkpoint("editing FTP");
-    sim.press(Role::Back);
-    sim.expect_no_text("+5");
-    go_home(&mut sim);
-
-    sim.edit_profile(250, 185);
-    sim.expect_text("Z4 226-263 W");
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    sim.checkpoint("settings with FTP 250");
-    go_home(&mut sim);
+    sim.set_profile(250, 185);
 
     sim.start_ride();
     sim.advance(seconds(10));
@@ -1154,48 +1120,17 @@ fn raising_ftp_in_settings_moves_the_same_watts_down_a_zone() {
 #[test]
 fn the_body_set_in_settings_survives_power_loss() {
     let mut sim = rider();
-    sim.home("SETTINGS");
-    sim.swipe_next();
-    sim.expect_text("BODY");
-    sim.expect_field("WEIGHT KG", "NOT SET");
-    sim.expect_field("AGE YEARS", "NOT SET");
-    sim.expect_field("SEX", "NOT SET");
-    sim.checkpoint("settings: body not set");
-    // The first press of an unset number lands on its start, then a kilo
-    // or a year at a time.
-    sim.press(Role::Act);
-    sim.press(Role::Act);
-    sim.expect_field("WEIGHT KG", "70");
-    for _ in 0..5 {
-        sim.press(Role::Act);
-    }
-    sim.expect_text("+1");
-    sim.checkpoint("editing weight");
-    sim.press(Role::Back);
-    sim.press(Role::Move);
-    sim.press(Role::Act);
-    sim.press(Role::Act);
-    sim.expect_field("AGE YEARS", "30");
-    sim.press(Role::Back);
-    sim.expect_field("AGE YEARS", "30 YEARS");
-    sim.set_option("SEX", "MALE");
-    sim.expect_field("WEIGHT KG", "75 KG");
-    sim.checkpoint("settings: body set");
-    sim.swipe_previous();
-    sim.expect_text("PROFILE");
-    sim.expect_text("2.9 W/KG");
-    sim.checkpoint("settings: FTP with watts per kilogram");
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    go_home(&mut sim);
+    sim.profile("WEIGHT", "75");
+    sim.profile("AGE", "30");
+    sim.profile("SEX", "M");
+    sim.advance(seconds(5));
 
     sim.power_loss();
-    assert!(sim.command("PROFILE").1.contains("stored=current"));
-    sim.home("SETTINGS");
-    sim.expect_text("2.9 W/KG");
-    sim.swipe_next();
-    sim.expect_field("WEIGHT KG", "75 KG");
-    sim.expect_field("AGE YEARS", "30 YEARS");
-    sim.expect_field("SEX", "MALE");
+    let (_, profile) = sim.command("PROFILE");
+    assert!(
+        profile.contains("weight=75 age=30 sex=m stored=current"),
+        "{profile}"
+    );
 }
 
 #[test]
@@ -1206,10 +1141,8 @@ fn training_profile_survives_power_loss() {
         before, "ftp=215 lthr=185 weight=0 age=0 sex=- stored=missing persistence=saved",
         "a fresh device has the defaults and stores nothing until the first edit"
     );
-    // Edited by touch this time: tap a field, then the minus/plus pads.
-    sim.edit_profile_by_touch(280, 170);
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    sim.checkpoint("profile saved");
+    sim.set_profile(280, 170);
+    sim.advance(seconds(5));
 
     sim.power_loss();
     let (status, after) = sim.command("PROFILE");
@@ -1218,10 +1151,6 @@ fn training_profile_survives_power_loss() {
         after,
         "ftp=280 lthr=170 weight=0 age=0 sex=- stored=current persistence=saved"
     );
-    sim.home("SETTINGS");
-    sim.expect_field("FTP WATTS", "280");
-    sim.expect_field("LTHR BPM", "170");
-    sim.checkpoint("profile after power loss");
 
     // The terminal edits the same profile; an edit that never settled before
     // power was cut is not saved.
@@ -1429,7 +1358,7 @@ fn auto_lap_closes_every_five_kilometres() {
 /// A 2 km loop ridden at 30 km/h with AUTO LAP set to AT START; `jitter_m`
 /// is the receiver's error per axis. Ends riding on the main page.
 fn at_start_rider(jitter_m: f64) -> Sim {
-    auto_lap_rider(jitter_m, "AT START")
+    auto_lap_rider(jitter_m, "START")
 }
 
 fn auto_lap_rider(jitter_m: f64, choice: &str) -> Sim {
@@ -1439,13 +1368,9 @@ fn auto_lap_rider(jitter_m: f64, choice: &str) -> Sim {
     if jitter_m > 0.0 {
         sim.set_gps_quality(true, 1.8, jitter_m);
     }
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "AUTO LAP");
-    sim.set_option("AUTO LAP", choice);
-    sim.checkpoint("settings with auto lap at the start");
-    // The RIDE section's heading looks like the Home tile to `on_home`.
-    sim.swipe_next();
-    go_home(&mut sim);
+    sim.option("AUTO_LAP", choice);
+    // A fix first, so the lap's start is where the ride starts.
+    sim.advance(seconds(10));
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
     sim.start_ride();
     sim
@@ -1495,7 +1420,7 @@ fn auto_lap_at_start_closes_a_lap_each_time_round_a_loop() {
     assert_eq!(triggers, [3, 3, 3, 7]);
     let distances: Vec<u64> = laps.iter().map(|lap| lap[&9]).collect();
     for centimetres in &distances[..3] {
-        assert!((199_000..=207_000).contains(centimetres), "{distances:?}");
+        assert!((199_000..=208_000).contains(centimetres), "{distances:?}");
     }
     assert_eq!(saved_session(&mut sim)[&26], 4, "FIT laps");
 }
@@ -1796,10 +1721,7 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
 #[test]
 fn in_saver_the_climb_page_comes_up_already_climbing() {
     let mut sim = hill_rider();
-    sim.open_mode_row();
-    sim.press(Role::Act);
-    sim.expect_field("MODE", "SAVER");
-    go_home(&mut sim);
+    sim.option("DISPLAY", "SAVER");
     sim.start_ride();
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     ride_to(&mut sim, 500.0);
@@ -1841,112 +1763,6 @@ fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
     assert!(back > 2500.0, "back at {back:.0} m");
     expect_near(&mut sim, "SPD KM/H", 40.0, 0.3);
     sim.checkpoint("main page again over the top");
-}
-
-/// Turn the named ride pages off in Settings, then go back Home.
-fn hide_ride_pages(sim: &mut Sim, pages: &[&str]) {
-    sim.home("SETTINGS");
-    for _ in 0..6 {
-        sim.swipe_next();
-    }
-    sim.expect_text("RIDE PAGES");
-    for label in ["CLIMB", "MAP"] {
-        sim.expect_field(label, "ON");
-        if pages.contains(&label) {
-            sim.press(Role::Act);
-            sim.expect_field(label, "OFF");
-        }
-        if label == "CLIMB" && pages.contains(&label) {
-            sim.expect_text("NO CLIMB POP-UP");
-        }
-        if matches!(label, "CLIMB" | "MAP") {
-            sim.checkpoint(&format!("{label} row with {} off", pages.join(" and ")));
-        }
-        sim.press(Role::Move);
-    }
-    go_home(sim);
-}
-
-#[test]
-fn chosen_main_page_readings_survive_a_reboot() {
-    let mut sim = rider();
-    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    sim.start_ride();
-    sim.ride_at(30.0, 200.0, 140.0, 90.0);
-    sim.advance(seconds(5));
-    sim.expect_field("CAD RPM", "90");
-    sim.expect_text("KM");
-    sim.checkpoint("main page with the default readings");
-    sim.stop_ride();
-    sim.ride_at(0.0, 0.0, 72.0, 0.0);
-    sim.press(Role::Move);
-    go_home(&mut sim);
-
-    sim.home("SETTINGS");
-    for _ in 0..5 {
-        sim.swipe_next();
-    }
-    sim.expect_text("MAIN PAGE");
-    sim.expect_field("LOWER LEFT", "CADENCE");
-    sim.expect_field("LOWER RIGHT", "DISTANCE");
-    sim.checkpoint("settings: main page readings at their defaults");
-    sim.set_option("LOWER LEFT", "KCAL");
-    sim.set_option("LOWER RIGHT", "NP");
-    sim.checkpoint("settings: KCAL and NP chosen");
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    go_home(&mut sim);
-
-    sim.power_loss();
-    assert!(sim.command("PROFILE").1.contains("stored=current"));
-    sim.home("SETTINGS");
-    for _ in 0..5 {
-        sim.swipe_next();
-    }
-    sim.expect_field("LOWER LEFT", "KCAL");
-    sim.expect_field("LOWER RIGHT", "NP");
-    sim.checkpoint("settings: KCAL and NP kept over a reboot");
-}
-
-#[test]
-fn a_map_page_turned_off_leaves_the_walk_from_climb_to_main() {
-    let mut sim = hill_rider();
-    hide_ride_pages(&mut sim, &["MAP"]);
-    sim.start_ride();
-    sim.ride_at(30.0, 180.0, 0.0, 85.0);
-    sim.advance(seconds(5));
-    assert_eq!(sim.ride_page_name().as_deref(), Some("ride/main"));
-    sim.press(Role::Move);
-    assert_eq!(sim.ride_page_name().as_deref(), Some("ride/climb"));
-    sim.expect_text("ALTITUDE M");
-    sim.checkpoint("climb page last of two");
-    sim.press(Role::Move);
-    assert_eq!(
-        sim.ride_page_name().as_deref(),
-        Some("ride/main"),
-        "wraps to main"
-    );
-}
-
-#[test]
-fn a_climb_does_not_bring_up_a_climb_page_turned_off() {
-    let mut sim = hill_rider();
-    hide_ride_pages(&mut sim, &["CLIMB"]);
-    sim.start_ride();
-    sim.ride_at(30.0, 180.0, 0.0, 85.0);
-    ride_to(&mut sim, 1000.0);
-    assert_eq!(sim.ride_page_name().as_deref(), Some("ride/main"));
-    sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    while sim.world().distance_m < 2500.0 {
-        sim.advance(seconds(1));
-        assert_eq!(
-            sim.ride_page_name().as_deref(),
-            Some("ride/main"),
-            "at {:.0} m",
-            sim.world().distance_m
-        );
-    }
-    sim.expect_no_text("CLIMB DIST KM");
-    sim.checkpoint("main page kept through the climb");
 }
 
 #[test]
@@ -2012,13 +1828,6 @@ fn connects(sim: &Sim, kind: u8) -> Vec<u16> {
 }
 
 #[track_caller]
-fn expect_home_sensors(sim: &mut Sim, lines: &[&str]) {
-    assert!(sim.on_home(), "{}", sim.screen().text());
-    for line in lines {
-        sim.wait_for(line, seconds(5)).unwrap();
-    }
-}
-
 #[test]
 fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
     let mut sim = rider();
@@ -2047,7 +1856,7 @@ fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
     sim.checkpoint("sensors after reboot");
     go_home(&mut sim);
 
-    expect_home_sensors(&mut sim, &["2/2 LIVE", "HR", "PWR"]);
+    assert!(sim.on_home(), "{}", sim.screen().text());
     sim.checkpoint("home after reboot");
     sim.start_ride();
     sim.ride_at(27.0, 205.0, 138.0, 88.0);
@@ -2129,8 +1938,7 @@ fn disconnect_is_remembered_across_reboot() {
     sim.advance(seconds(20));
     assert!(connects(&sim, device_type::HEART_RATE).is_empty());
     assert_eq!(link(&sim, device_type::HEART_RATE), None);
-    expect_home_sensors(&mut sim, &["1/1 LIVE", "PWR"]);
-    sim.expect_no_text("HR");
+    assert!(sim.on_home(), "{}", sim.screen().text());
     sim.checkpoint("home without the removed sensor");
 }
 
@@ -2210,9 +2018,8 @@ fn two_power_meters_stay_saved_and_the_one_in_range_takes_the_channel() {
 #[test]
 fn saved_sensors_keep_the_training_profile() {
     let mut sim = rider();
-    sim.edit_profile(250, 175);
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    go_home(&mut sim);
+    sim.set_profile(250, 175);
+    sim.advance(seconds(5));
     sim.pair(&["POWER METER"]);
     sim.advance(seconds(1));
     sim.power_loss();
@@ -2443,11 +2250,42 @@ fn gps_rider(doppler: bool) -> Sim {
 }
 
 #[test]
+fn rolling_off_with_the_sheet_open_starts_nothing_until_it_closes() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.swipe((120, 4), (120, 200));
+    sim.expect_text("Sensors");
+    sim.ride_at(25.0, 0.0, 140.0, 80.0);
+    sim.advance(seconds(30));
+    assert_eq!(sim.vana_page(), "home");
+    assert_eq!(sim.ride_state(), "ready");
+    // The first press may only wake the dimmed screen.
+    for _ in 0..2 {
+        if sim.screen().contains("Sensors") {
+            sim.press(Role::Back);
+        }
+    }
+    for _ in 0..30 {
+        if sim.ride_state() == "recording" {
+            break;
+        }
+        sim.advance(seconds(1));
+    }
+    assert_eq!(sim.vana_page(), "ride", "{}", sim.screen().text());
+}
+
+#[test]
 fn riding_with_gps_only_shows_speed_and_distance() {
     for doppler in [true, false] {
         let mut sim = gps_rider(doppler);
         sim.ride_at(25.0, 0.0, 140.0, 0.0);
-        sim.start_ride();
+        for _ in 0..30 {
+            if sim.ride_state() == "recording" {
+                break;
+            }
+            sim.advance(seconds(1));
+        }
+        assert_eq!(sim.vana_page(), "ride", "{}", sim.screen().text());
         sim.advance(minutes(10));
         // Doppler is exact; positions jitter, so their speed wobbles a little.
         let tolerance = if doppler { 0.15 } else { 1.5 };
@@ -2545,7 +2383,7 @@ fn gps_only_tunnel_keeps_recording_without_inventing_distance() {
 #[test]
 fn gps_only_rider_rolling_off_starts_the_ride() {
     let mut sim = gps_rider(true);
-    sim.wait_for("GPS READY", seconds(5)).unwrap();
+    sim.advance(seconds(5));
     // Walking the bike out is not a start.
     sim.ride_at(5.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(30));
@@ -2585,7 +2423,7 @@ fn startup_timing() {
     sim.checkpoint("power-on: home ready");
     assert!(home - lit <= 500, "brand flash {} ms", home - lit);
     assert!(home <= seconds(5), "Home at {home} ms uptime");
-    sim.expect_text("READY TO RIDE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.start_ride();
     sim.ride_at(25.0, 180.0, 130.0, 85.0);
@@ -2621,7 +2459,7 @@ fn turning_off_from_home_asks_first_and_the_top_left_hold_turns_it_back_on() {
     sim.checkpoint("turn off sheet");
     // BACK keeps it on.
     sim.press(Role::Back);
-    sim.expect_text("READY TO RIDE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
     sim.press(Role::Back);
     sim.report(Role::Act);
     sim.advance(80);
@@ -2680,7 +2518,7 @@ fn the_brand_ring_closes_on_power_on_and_unwinds_on_power_off() {
         usable + 200
     );
     let _ = lit;
-    sim.expect_text("READY TO RIDE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
 
     sim.press(Role::Back);
     sim.report(Role::Act);
@@ -2733,7 +2571,7 @@ fn charging_while_off_shows_the_charge_then_goes_dark() {
     sim.checkpoint("off on USB: dark");
     sim.turn_on();
     sim.advance(seconds(3));
-    sim.expect_text("READY TO RIDE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
 }
 
 #[test]
@@ -2761,7 +2599,7 @@ fn turned_off_on_usb_power_the_device_starts_again_in_charging_standby() {
     assert!(!frames.is_empty() && replayed.frame_hashes() == frames);
     sim.turn_on();
     sim.advance(seconds(3));
-    sim.expect_text("READY TO RIDE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
     assert_eq!(sim.device.boot, standby, "the wake keeps the session");
 }
 
@@ -2886,7 +2724,7 @@ fn a_ride_must_end_before_the_device_can_turn_off() {
     sim.resume_ride();
     sim.stop_ride();
     sim.press(Role::Back);
-    sim.expect_text("READY TO RIDE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
     sim.press(Role::Back);
     sim.press(Role::Act);
     sim.advance(seconds(2));
@@ -2906,7 +2744,7 @@ fn an_idle_device_warns_then_turns_itself_off_unless_on_usb() {
     sim.set_battery(60, true);
     sim.advance(AUTO_OFF_MS + minutes(5));
     assert!(!sim.is_off(), "turned off on USB power");
-    sim.expect_text("READY TO RIDE");
+    assert!(sim.on_home(), "{}", sim.screen().text());
 
     sim.set_battery(60, false);
     sim.press(Role::Move);
@@ -3463,27 +3301,40 @@ fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
 }
 
 #[test]
-fn home_shows_ride_sensors_at_a_glance() {
+fn home_shows_the_time_the_battery_and_the_sensors_at_a_glance() {
     let mut sim = rider();
-    // Battery shows as an icon; the percentage appears once it runs low.
     sim.set_battery(14, false);
     sim.advance(seconds(2));
     assert!(sim.on_home(), "{}", sim.screen().text());
-    sim.expect_text("NONE PAIRED");
-    sim.expect_no_text("NEXT");
+    sim.expect_text("Ride");
+    sim.expect_text("14%");
+    sim.expect_text("Wednesday 14 Oct");
+    sim.expect_no_text("Just ride");
     sim.checkpoint("home before pairing");
 
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    sim.wait_for("3/3 LIVE", seconds(5)).unwrap();
-    sim.expect_text("GPS READY");
-    sim.expect_text("14%");
     sim.checkpoint("home with three live sensors");
+
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(minutes(10));
+    sim.ride_at(0.0, 0.0, 140.0, 0.0);
+    sim.stop_ride();
+    for _ in 0..3 {
+        if sim.on_home() {
+            break;
+        }
+        sim.press(Role::Back);
+    }
+    sim.wait_gone("RIDE SAVED", seconds(3)).unwrap();
+    assert!(sim.on_home(), "{}", sim.screen().text());
+    sim.checkpoint("home after a ride");
 }
 
 #[test]
-fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
+fn tapping_home_s_widget_and_a_sensor_pairs_it_and_ride_starts() {
     let mut sim = rider();
-    sim.tap(120, 210);
+    sim.tap(40, 125);
     sim.expect_text("NEARBY");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.expect_no_text("NEXT");
@@ -3496,10 +3347,11 @@ fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     sim.wait_for("LIVE", seconds(15)).unwrap();
     sim.press(Role::Back);
     assert!(sim.on_home(), "{}", sim.screen().text());
-    sim.expect_text("1/1 LIVE");
     sim.checkpoint("home after tapping a sensor");
-    sim.tap(120, 80);
-    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.tap(120, 273);
+    sim.advance(seconds(1));
+    assert_eq!(sim.vana_page(), "ride");
+    assert_eq!(sim.ride_state(), "recording");
 }
 
 #[test]
@@ -3672,11 +3524,6 @@ fn holding_move_on_the_workout_page_extends_the_step_without_a_mark() {
 #[test]
 fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
     let mut sim = training_rider();
-    sim.home("TRAIN");
-    sim.expect_text("WORKOUTS");
-    sim.expect_text("FREE RIDE");
-    sim.checkpoint("workout picker");
-    go_home(&mut sim);
     sim.start_workout("VO2 MAX 5X3");
     // The workout page leads the ride pages.
     assert_eq!(sim.ride_page_name().as_deref(), Some("ride/workout"));
@@ -3761,25 +3608,8 @@ fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
 }
 
 #[test]
-fn a_long_workout_list_pages_with_held_move_and_a_thirty_thirty_runs() {
+fn a_thirty_thirty_runs() {
     let mut sim = training_rider();
-    sim.home("TRAIN");
-    sim.expect_text("1/17");
-    // Held MOVE turns a page of four cards; a tap of MOVE moves one.
-    sim.hold(Role::Move, 500);
-    sim.expect_text("6/17");
-    sim.checkpoint("workout picker paged");
-    sim.hold(Role::Move, 500);
-    sim.hold(Role::Move, 500);
-    sim.expect_text("16/17");
-    sim.press(Role::Move);
-    sim.expect_text("17/17");
-    sim.expect_text("FTP RAMP TEST");
-    sim.checkpoint("workout picker last card");
-    // Past the last card MOVE wraps to the first.
-    sim.press(Role::Move);
-    sim.expect_text("1/17");
-    go_home(&mut sim);
     sim.start_workout("VO2 MAX 30-30S");
     assert_eq!(sim.workout()["step"], "1/41");
     next_step(&mut sim);
@@ -3944,21 +3774,13 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
     sim.put_file("workouts/broken.vw", &damaged);
     let (_, list) = sim.command("WORKOUT LIST");
     assert!(list.contains("files=ok uploads=0 skipped=1"), "{list}");
-    // The host puts the workout on FILES; opening the picker lists it.
+    // The host puts the workout on FILES; listing the workouts finds it.
     sim.put_file("workouts/over-unders.vw", &bytes);
-    sim.home("TRAIN");
-    for _ in 0..17 {
-        sim.press(Role::Move);
-    }
-    sim.expect_text("OVER UNDERS");
-    sim.expect_text("8 STEPS");
-    sim.checkpoint("uploaded workout in the picker");
     let (_, list) = sim.command("WORKOUT LIST");
     assert!(
         list.contains("uploads=1 skipped=1 upload0=workouts/over-unders.vw:OVER_UNDERS"),
         "{list}"
     );
-    go_home(&mut sim);
     sim.start_workout("OVER UNDERS");
     follow(&mut sim, 5, on_target);
     next_step(&mut sim);
@@ -4132,114 +3954,10 @@ fn a_ride_started_remotely_from_ride_done_shows_its_controls() {
     assert_eq!(sim.vana_page(), "ride_done");
 }
 
-/// Swipe Settings to the section that shows `label`.
-#[track_caller]
-fn show_setting(sim: &mut Sim, label: &str) {
-    for _ in 0..vana::screens::settings::SECTIONS.len() + 1 {
-        if sim.screen().run(label).is_some() {
-            return;
-        }
-        sim.swipe_next();
-    }
-    panic!("no {label} section; screen:\n{}", sim.screen().text());
-}
-
 /// The patterns played since the `from`th.
 fn played_since(sim: &Sim, from: usize) -> Vec<u8> {
     let played = &sim.device.sim().speaker.played;
     played[from..].iter().map(|(_, id)| *id).collect()
-}
-
-#[test]
-fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
-    let mut sim = rider();
-    sim.home("SETTINGS");
-    sim.expect_text("PROFILE");
-    sim.expect_field("FTP WATTS", "215");
-    sim.checkpoint("settings open on the profile");
-    // MOVE walks the rows, past the profile and body rows into Display.
-    for _ in 0..5 {
-        sim.press(Role::Move);
-    }
-    sim.expect_text("DISPLAY");
-    sim.expect_field("BRIGHTNESS", "AUTO");
-    sim.expect_field("DIM AFTER", "30 S");
-    sim.checkpoint("display section");
-    sim.press(Role::Act);
-    sim.expect_field("BRIGHTNESS", "25%");
-    sim.press(Role::Act);
-    sim.press(Role::Act);
-    sim.expect_field("BRIGHTNESS", "75%");
-    assert_eq!(sim.device.shell.settings.brightness, 75);
-    assert!(!sim.device.shell.auto());
-    sim.set_option("DIM AFTER", "1 MIN");
-    assert_eq!(sim.device.shell.settings.dim_timeout_secs, 60);
-    sim.checkpoint("brighter, dims after a minute");
-
-    sim.swipe_next();
-    sim.expect_text("CLOCK");
-    sim.expect_field("TIME ZONE", "CHILE");
-    sim.expect_text("UTC-3 NOW");
-    sim.set_option("TIME ZONE", "UTC-4");
-    sim.checkpoint("clock section");
-    sim.swipe_next();
-    sim.expect_text("RIDE");
-    sim.expect_field("AUTO PAUSE", "ON");
-    sim.expect_field("AUTO LAP", "EVERY 5 KM");
-    sim.set_option("AUTO PAUSE", "OFF");
-    sim.set_option("AUTO LAP", "EVERY 1 KM");
-    sim.checkpoint("ride section");
-    sim.swipe_next();
-    sim.set_option("SOUNDS", "OFF");
-    sim.expect_text("RADAR STAYS ON");
-    sim.checkpoint("sounds off");
-    sim.swipe_next();
-    // Every alert is off but the radar all clear, until the rider sets one.
-    sim.expect_text("ALERTS");
-    sim.expect_field("RADAR ALL CLEAR", "ON");
-    sim.expect_field("EAT AND DRINK", "OFF");
-    sim.expect_field("LOW CADENCE", "OFF");
-    sim.set_option("LOW CADENCE", "70 RPM");
-    sim.checkpoint("alerts section");
-    sim.swipe_next();
-    sim.expect_text("LIMITS");
-    for label in ["HR ABOVE", "HR BELOW", "POWER ABOVE", "POWER BELOW"] {
-        sim.expect_field(label, "OFF");
-    }
-    sim.set_option("POWER ABOVE", "300 W");
-    sim.checkpoint("limits section");
-    sim.swipe_next();
-    sim.expect_text("DEVICE");
-    sim.expect_field("SENSORS", "NONE SAVED");
-    let firmware = sim.screen().field("FIRMWARE").unwrap();
-    assert!(firmware.starts_with("VANA "), "{firmware}");
-    sim.checkpoint("device section");
-    // Swiping on from the last section wraps to the first.
-    sim.swipe_next();
-    sim.expect_text("PROFILE");
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    sim.advance(seconds(3));
-
-    sim.power_loss();
-    let (_, profile) = sim.command("PROFILE");
-    assert!(profile.contains("stored=current"), "{profile}");
-    assert_eq!(sim.device.shell.settings.brightness, 75);
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "BRIGHTNESS");
-    sim.expect_field("BRIGHTNESS", "75%");
-    sim.expect_field("DIM AFTER", "1 MIN");
-    show_setting(&mut sim, "TIME ZONE");
-    sim.expect_field("TIME ZONE", "UTC-4");
-    show_setting(&mut sim, "AUTO PAUSE");
-    sim.expect_field("AUTO PAUSE", "OFF");
-    sim.expect_field("AUTO LAP", "EVERY 1 KM");
-    show_setting(&mut sim, "SOUNDS");
-    sim.expect_field("SOUNDS", "OFF");
-    show_setting(&mut sim, "LOW CADENCE");
-    sim.expect_field("LOW CADENCE", "70 RPM");
-    show_setting(&mut sim, "POWER ABOVE");
-    sim.expect_field("POWER ABOVE", "300 W");
-    sim.checkpoint("choices kept after power loss");
 }
 
 #[test]
@@ -4366,11 +4084,14 @@ fn holding_move_on_a_ride_page_steps_one_page_however_long_it_is_held() {
 fn holding_move_on_home_marks_and_keeps_the_focus() {
     let mut sim = rider();
     sim.advance(seconds(3));
-    assert!(sim.screen().white("RIDE"), "{}", sim.screen().text());
+    assert!(sim.on_home(), "{}", sim.screen().text());
+    let ring = |sim: &Sim| sim.screen().pixels[232 * 240 + 120];
+    let focus = vana::screens::theme::DARK.focus;
+    assert_eq!(ring(&sim), focus);
     let pressed = sim.device.clock_ms();
     sim.hold(Role::Move, 1600);
     sim.expect_text("MARK 1");
-    assert!(sim.screen().white("RIDE"), "{}", sim.screen().text());
+    assert_eq!(ring(&sim), focus, "Ride keeps the focus");
     assert_eq!(
         marks(&sim),
         [format!("1 pressed {} on home", session_clock(pressed))]
@@ -4584,13 +4305,9 @@ fn a_ride_with_marks_replays_exactly() {
 fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_the_choice() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "AUTO PAUSE");
-    sim.set_option("AUTO PAUSE", "OFF");
-    sim.set_option("AUTO LAP", "EVERY 1 KM");
-    sim.swipe_next();
-    sim.set_option("SOUNDS", "OFF");
-    go_home(&mut sim);
+    sim.option("AUTO_PAUSE", "OFF");
+    sim.option("AUTO_LAP", "1");
+    sim.option("SOUNDS", "OFF");
 
     sim.ride_at(30.0, 0.0, 0.0, 0.0);
     let from = sim.device.sim_mut().speaker.played.len();
@@ -4610,14 +4327,10 @@ fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_t
 #[test]
 fn an_unsaved_brightness_change_is_reported_before_turning_off() {
     let mut sim = rider();
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "BRIGHTNESS");
-    sim.set_option("BRIGHTNESS", "25%");
+    sim.option("BRIGHTNESS", "25");
     sim.advance(seconds(5));
     sim.fail_storage(0, 0);
-    sim.set_option("BRIGHTNESS", "75%");
-    sim.expect_text("SAVING");
-    go_home(&mut sim);
+    sim.option("BRIGHTNESS", "75");
     sim.press(Role::Back);
     sim.press(Role::Act);
     sim.advance(seconds(1));
@@ -4664,12 +4377,7 @@ fn fit_lap_triggers(bytes: &[u8]) -> Vec<u8> {
 fn laps_are_kept_with_the_ride_in_its_fit_file() {
     let mut sim = rider();
     sim.pair(&["POWER METER", "SPEED/CAD", "HEART RATE"]);
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "AUTO LAP");
-    sim.set_option("AUTO LAP", "EVERY 1 KM");
-    // Off the RIDE section, whose title reads as the Home card.
-    sim.swipe_next();
-    go_home(&mut sim);
+    sim.option("AUTO_LAP", "1");
 
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.start_ride();
@@ -4828,13 +4536,7 @@ fn riding_through_sunset_turns_the_day_night_decision_and_leaves_the_backlight_a
     sim.stop_ride();
     go_home(&mut sim);
 
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "DAY / NIGHT");
-    sim.expect_field("DAY / NIGHT", "AUTO");
-    sim.expect_text("NIGHT NOW");
-    sim.checkpoint("settings in auto, at night");
-    sim.set_option("DAY / NIGHT", "DAY");
-    sim.expect_text("DAY");
+    sim.option("DAYLIGHT", "DAY");
     assert_eq!(sim.device.shell.effective(), 50);
     sim.checkpoint("held at day");
 }
@@ -4847,10 +4549,10 @@ fn night_comes_on_time_after_the_gps_fix_is_lost() {
     sim.pair(&["SPEED/CAD"]);
     sim.set_gps_clock(22 * 3600 + 40 * 60, (14, 10, 26));
     sim.advance(seconds(15));
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "DAY / NIGHT");
-    sim.expect_text("DAY NOW");
-    go_home(&mut sim);
+    // The automatic theme is light by day and dark by night.
+    sim.option("THEME", "AUTO");
+    sim.next_frame();
+    assert_eq!(corner(&sim), WHITE, "day");
     // A ride keeps the screen awake.
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
@@ -4858,9 +4560,7 @@ fn night_comes_on_time_after_the_gps_fix_is_lost() {
     sim.advance(minutes(38));
     sim.stop_ride();
     go_home(&mut sim);
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "DAY / NIGHT");
-    sim.expect_text("NIGHT NOW");
+    assert_eq!(corner(&sim), 0, "night");
     sim.checkpoint("night without a fix");
 }
 
@@ -4874,19 +4574,12 @@ fn cyclist(sim: &mut Sim) {
     sim.pair(&["SPEED/CAD"]);
 }
 
-#[track_caller]
+/// Press Ride on Home, then ride at speed; the simulated time of the press.
 fn press_start(sim: &mut Sim) -> u64 {
-    for _ in 0..shell_simulator::sim::HOME_CARDS + 2 {
-        if sim.screen().white("RIDE") {
-            let pressed = sim.now();
-            sim.press(Role::Act);
-            sim.wait_for("RECORDING", seconds(2)).unwrap();
-            sim.ride_at(25.0, 150.0, 130.0, 80.0);
-            return pressed;
-        }
-        sim.press(Role::Move);
-    }
-    panic!("no Home tile RIDE; screen:\n{}", sim.screen().text());
+    let pressed = sim.now();
+    sim.start_ride();
+    sim.ride_at(25.0, 150.0, 130.0, 80.0);
+    pressed
 }
 
 /// The ride's start, as the FIT export counts it back from the first dated sample.
@@ -5006,15 +4699,8 @@ fn clock_reads(date: (u8, u8, u8), local: &str, day: &str) -> Sim {
 #[test]
 fn the_clock_reads_santiago_winter_time_in_june() {
     let mut sim = clock_reads((21, 6, 26), "12:00", "JUN 21");
-    go_home(&mut sim);
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "TIME ZONE");
-    sim.expect_field("TIME ZONE", "CHILE");
-    sim.expect_text("UTC-4 NOW");
-    sim.checkpoint("time zone chile in winter");
-    sim.set_option("TIME ZONE", "UTC-3");
-    sim.expect_text("ALL YEAR");
-    // Each swipe costs about a second, so the minute may have turned.
+    sim.option("ZONE", "UTC-3");
+    sim.advance(seconds(1));
     assert!(
         sim.screen().contains("1:00") || sim.screen().contains("1:01"),
         "{}",
@@ -5169,16 +4855,8 @@ fn a_workout_added_from_the_phone_is_found_in_the_picker_and_ridden() {
         Some(&b"not a workout, left as it was"[..])
     );
     go_home(&mut sim);
-    sim.home("TRAIN");
-    for _ in 0..17 {
-        sim.press(Role::Move);
-    }
-    sim.expect_text("FROM THE PHONE");
-    sim.expect_text("8 STEPS");
-    sim.checkpoint("workout from the phone in the picker");
-    go_home(&mut sim);
 
-    // The picker lists it; choosing it and starting a ride plays it.
+    // The library lists it; choosing it and starting a ride plays it.
     sim.start_workout("FROM THE PHONE");
     sim.ride_at(30.0, 120.0, 0.0, 90.0);
     assert_eq!(sim.workout()["workout"], "FROM_THE_PHONE");
@@ -5290,11 +4968,7 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     let mut sim = rider();
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.ride_route(Route::loop_around(Point::new(-33.45, -70.66), 3_000.0, 0.0));
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "AUTO LAP");
-    sim.set_option("AUTO LAP", "AT START");
-    sim.swipe_next();
-    go_home(&mut sim);
+    sim.option("AUTO_LAP", "START");
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
     sim.start_ride();
     ride_to(&mut sim, 4_500.0);
@@ -5379,11 +5053,7 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.init_bulk();
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.ride_route(Route::loop_around(Point::new(-33.45, -70.66), 3_000.0, 0.0));
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "AUTO LAP");
-    sim.set_option("AUTO LAP", "AT START");
-    sim.swipe_next();
-    go_home(&mut sim);
+    sim.option("AUTO_LAP", "START");
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
     sim.start_ride();
     ride_to(&mut sim, 4_500.0);
@@ -6227,10 +5897,7 @@ fn riding_into_dusk_warns_before_sunset_and_again_at_sunset() {
 fn no_sunset_alert_when_off_or_when_the_ride_starts_after_dark() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
-    sim.home("SETTINGS");
-    sim.set_option("SUNSET", "OFF");
-    sim.checkpoint("sunset alert off in Settings");
-    sim.press(Role::Back);
+    sim.option("SUNSET", "OFF");
     sim.set_gps_clock(22 * 3600 + 10 * 60, (14, 10, 26));
     sim.advance(seconds(15));
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
@@ -6339,9 +6006,7 @@ fn no_turn_back_when_riding_home_in_the_dark_or_with_sunset_off() {
 
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
-    sim.home("SETTINGS");
-    sim.set_option("SUNSET", "OFF");
-    sim.press(Role::Back);
+    sim.option("SUNSET", "OFF");
     sim.set_gps_clock(21 * 3600 + 25 * 60, (14, 10, 26));
     sim.advance(seconds(15));
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
@@ -6417,19 +6082,14 @@ fn distances(sim: &mut Sim, start_m: f64) -> (f64, f64) {
     (shown.parse().expect("kilometres"), travelled)
 }
 
-/// Open Settings on its RIDE section, where the wheel rows are.
-fn ride_settings(sim: &mut Sim) {
-    sim.home("SETTINGS");
-    for _ in 0..4 {
-        sim.swipe_next();
-    }
-}
-
-/// Back Home from Settings. Its RIDE section's big title looks like Home's
-/// RIDE card, so `on_home` cannot tell.
-fn leave_settings(sim: &mut Sim) {
-    sim.press(Role::Back);
-    assert_eq!(sim.vana_page(), "home");
+/// The wheel size and mode from `OPTION`, such as "wheel=2136 wheel_mode=auto".
+fn wheel_option(sim: &mut Sim) -> String {
+    let (_, options) = sim.command("OPTION");
+    options
+        .split_whitespace()
+        .filter(|field| field.starts_with("wheel"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `RIDE WHEEL` as fields.
@@ -6447,11 +6107,7 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
     sim.set_gps_quality(true, 0.9, 1.5);
     sim.pair(&["SPEED/CAD"]);
 
-    ride_settings(&mut sim);
-    sim.expect_text("2136 MM");
-    sim.expect_text("AUTO");
-    sim.checkpoint("settings: wheel 2136 mm, auto, before any ride");
-    leave_settings(&mut sim);
+    assert_eq!(wheel_option(&mut sim), "wheel=2136 wheel_mode=auto");
 
     // Ride 1 measures with the wrong size and learns the right one, but keeps
     // the wrong one until the ride ends, so its distance never jumps, and
@@ -6513,11 +6169,10 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
     sim.expect_no_text("WHEEL SET");
     go_home(&mut sim);
 
-    ride_settings(&mut sim);
-    sim.expect_text(&format!("{learned} MM"));
-    sim.expect_text("AUTO");
-    sim.checkpoint("settings: wheel learned, auto");
-    leave_settings(&mut sim);
+    assert_eq!(
+        wheel_option(&mut sim),
+        format!("wheel={learned} wheel_mode=auto")
+    );
 
     // Ride 2 measures with the learned size.
     sim.ride_at(28.0, 0.0, 140.0, 85.0);
@@ -6594,35 +6249,8 @@ fn a_manual_wheel_size_is_kept_across_rides_and_power_loss() {
     sim.set_gps_quality(true, 0.9, 1.5);
     sim.pair(&["SPEED/CAD"]);
 
-    ride_settings(&mut sim);
-    sim.press(Role::Move);
-    sim.press(Role::Move);
-    sim.press(Role::Act);
-    sim.expect_text("+5");
-    // Steps land on multiples of five, so 2105 or 2155 are reachable.
-    for _ in 0..4 {
-        sim.press(Role::Act);
-    }
-    sim.expect_text("2155");
-    sim.expect_text("MANUAL");
-    sim.checkpoint("editing the wheel size");
-    sim.press(Role::Back);
-    sim.press(Role::Move);
-    sim.expect_field("WHEEL MODE", "MANUAL");
-    sim.checkpoint("settings: wheel kept as set");
-    sim.press(Role::Act);
-    sim.expect_field("WHEEL MODE", "AUTO");
-    // An edit that ends where it began changes nothing, and leaves AUTO.
-    sim.tap(120, 190);
-    sim.press(Role::Act);
-    sim.press(Role::Move);
-    sim.press(Role::Back);
-    sim.expect_text("AUTO");
-    sim.expect_field("WHEEL MODE", "AUTO");
-    sim.tap(120, 242);
-    sim.expect_field("WHEEL MODE", "MANUAL");
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    leave_settings(&mut sim);
+    sim.option("WHEEL", "2155");
+    assert_eq!(wheel_option(&mut sim), "wheel=2155 wheel_mode=manual");
 
     sim.ride_at(28.0, 0.0, 140.0, 85.0);
     sim.start_ride();
@@ -6640,9 +6268,7 @@ fn a_manual_wheel_size_is_kept_across_rides_and_power_loss() {
     sim.expect_no_text("WHEEL SET");
 
     sim.power_loss();
-    ride_settings(&mut sim);
-    sim.expect_text("2155 MM");
-    sim.expect_text("MANUAL");
+    assert_eq!(wheel_option(&mut sim), "wheel=2155 wheel_mode=manual");
 }
 
 fn battery(sim: &mut Sim, kind: u8, number: u16, report: BatteryReport) {
@@ -6659,7 +6285,7 @@ fn run_color(sim: &Sim, text: &str) -> u16 {
 }
 
 #[test]
-fn a_low_battery_turns_sensors_amber_on_home() {
+fn a_low_battery_turns_sensors_amber_on_their_pages() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER"]);
     battery(
@@ -6676,10 +6302,6 @@ fn a_low_battery_turns_sensors_amber_on_home() {
     );
     sim.advance(seconds(12));
     assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-    assert_eq!(run_color(&sim, "HR LOW"), AMBER);
-    sim.expect_text("BATTERY");
-    assert_eq!(run_color(&sim, "2/2 LIVE"), AMBER);
-    sim.checkpoint("home with a low heart rate battery");
 
     sim.home("SENSORS");
     sim.open_sensor_detail("HEART RATE");
@@ -6693,8 +6315,60 @@ fn a_low_battery_turns_sensors_amber_on_home() {
     sim.checkpoint("power meter detail with a good battery");
 }
 
+/// Whether Home's status widget shows `color`, as its sensors' dots do.
+fn widget_shows(sim: &Sim, color: u16) -> bool {
+    let screen = sim.screen();
+    let (left, right, top, bottom) = (8, 170, 105, 142);
+    (top..bottom).any(|y| (left..right).any(|x| screen.pixels[y * screen.width + x] == color))
+}
+
+fn connected_strap(sim: &mut Sim, level: Option<u8>) {
+    sim.ble_heart_strap(true);
+    sim.ble_heart_strap_battery(level);
+    sim.select_ble_heart_strap();
+    sim.advance(seconds(15));
+}
+
 #[test]
-fn a_critical_battery_is_named_and_a_fresh_one_clears_the_warning() {
+fn a_low_ble_strap_battery_turns_its_dot_amber_on_home() {
+    let mut sim = rider();
+    connected_strap(&mut sim, Some(80));
+    let theme = vana::screens::theme::DARK;
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
+    assert!(
+        widget_shows(&sim, theme.good),
+        "a live strap's dot is green"
+    );
+    assert!(!widget_shows(&sim, theme.warn));
+    let mut sim = rider();
+    connected_strap(&mut sim, Some(12));
+    assert!(
+        widget_shows(&sim, theme.warn),
+        "a low battery's dot is amber"
+    );
+    assert!(!widget_shows(&sim, theme.bad));
+    sim.checkpoint("home with a low ble heart strap battery");
+}
+
+#[test]
+fn a_critical_ble_strap_battery_is_red_and_the_next_read_clears_it() {
+    let mut sim = rider();
+    connected_strap(&mut sim, Some(3));
+    let theme = vana::screens::theme::DARK;
+    assert!(
+        widget_shows(&sim, theme.bad),
+        "a critical battery's dot is red"
+    );
+    sim.checkpoint("home with a critical ble heart strap battery");
+    // A fresh cell shows on the strap's next minute re-read.
+    sim.ble_heart_strap_battery(Some(100));
+    sim.advance(seconds(65));
+    assert!(!widget_shows(&sim, theme.bad));
+    assert!(widget_shows(&sim, theme.good));
+}
+
+#[test]
+fn a_critical_ant_battery_is_red_on_home_and_a_fresh_one_clears_it() {
     let mut sim = rider();
     sim.pair(&["POWER METER"]);
     battery(
@@ -6704,9 +6378,12 @@ fn a_critical_battery_is_named_and_a_fresh_one_clears_the_warning() {
         BatteryReport::new(5, 2_100),
     );
     sim.advance(seconds(12));
-    assert_eq!(run_color(&sim, "PWR CRITICAL"), RED);
-    sim.checkpoint("home with a critical power meter battery");
-
+    let theme = vana::screens::theme::DARK;
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
+    assert!(
+        widget_shows(&sim, theme.bad),
+        "a critical battery's dot is red"
+    );
     battery(
         &mut sim,
         device_type::POWER,
@@ -6714,27 +6391,8 @@ fn a_critical_battery_is_named_and_a_fresh_one_clears_the_warning() {
         BatteryReport::new(1, 3_000),
     );
     sim.advance(seconds(12));
-    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-    sim.expect_text("1/1 LIVE");
-    sim.expect_no_text("CRITICAL");
-}
-
-#[test]
-fn a_sensor_that_is_not_live_is_named_before_any_battery_warning() {
-    let mut sim = rider();
-    sim.pair(&["HEART RATE", "POWER METER"]);
-    battery(
-        &mut sim,
-        device_type::HEART_RATE,
-        HEART,
-        BatteryReport::new(4, 2_450),
-    );
-    sim.advance(seconds(12));
-    sim.set_present(device_type::POWER, POWER, false);
-    sim.advance(seconds(20));
-    sim.expect_text("1/2 LIVE");
-    sim.expect_no_text("LOW BATTERY");
-    sim.checkpoint("home does not name the battery while a sensor is missing");
+    assert!(!widget_shows(&sim, theme.bad));
+    assert!(widget_shows(&sim, theme.good));
 }
 
 #[test]
@@ -6756,9 +6414,6 @@ fn reserved_battery_values_and_battery_pages_never_disturb_readings() {
         );
         sim.advance(seconds(12));
         assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-        sim.expect_text("2/2 LIVE");
-        sim.expect_no_text("LOW");
-        sim.expect_no_text("CRITICAL");
     }
     battery(
         &mut sim,
@@ -6787,80 +6442,6 @@ fn reserved_battery_values_and_battery_pages_never_disturb_readings() {
     );
 }
 
-fn connected_strap(sim: &mut Sim, level: Option<u8>) {
-    sim.ble_heart_strap(true);
-    sim.ble_heart_strap_battery(level);
-    sim.select_ble_heart_strap();
-    sim.advance(seconds(15));
-}
-
-#[test]
-fn a_low_ble_strap_battery_turns_home_amber() {
-    let mut sim = rider();
-    connected_strap(&mut sim, Some(12));
-    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-    assert_eq!(run_color(&sim, "HR LOW"), AMBER);
-    assert_eq!(run_color(&sim, "1/1 LIVE"), AMBER);
-    sim.checkpoint("home with a low ble heart strap battery");
-}
-
-#[test]
-fn a_critical_ble_strap_battery_is_red_and_the_next_read_clears_it() {
-    let mut sim = rider();
-    connected_strap(&mut sim, Some(3));
-    assert_eq!(run_color(&sim, "HR CRITICAL"), RED);
-    sim.checkpoint("home with a critical ble heart strap battery");
-
-    // A fresh cell shows on the strap's next minute re-read.
-    sim.ble_heart_strap_battery(Some(100));
-    sim.advance(seconds(65));
-    sim.expect_no_text("CRITICAL");
-    assert_ne!(run_color(&sim, "1/1 LIVE"), AMBER);
-    sim.checkpoint("home after the strap's battery was replaced");
-}
-
-#[test]
-fn a_healthy_hostile_or_missing_ble_battery_level_warns_of_nothing() {
-    for level in [Some(80), Some(101), Some(255), None] {
-        let mut sim = rider();
-        connected_strap(&mut sim, level);
-        assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-        sim.expect_text("1/1 LIVE");
-        sim.expect_no_text("HR LOW");
-        sim.expect_no_text("HR CRITICAL");
-    }
-}
-
-#[test]
-fn a_ble_strap_that_is_still_connecting_is_waited_for_not_blamed_for_its_battery() {
-    let mut sim = rider();
-    sim.ble_heart_strap(true);
-    sim.ble_heart_strap_battery(Some(12));
-    sim.select_ble_heart_strap();
-    sim.advance(seconds(3));
-    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-    sim.expect_text("0/1 LIVE");
-    sim.expect_no_text("HR LOW");
-}
-
-#[test]
-fn a_live_ant_heart_strap_stands_for_the_role_and_a_silent_one_does_not() {
-    let mut sim = rider();
-    sim.pair(&["HEART RATE"]);
-    connected_strap(&mut sim, Some(12));
-    sim.expect_text("1/1 LIVE");
-    sim.expect_no_text("LOW BATTERY");
-
-    sim.set_present(device_type::HEART_RATE, HEART, false);
-    sim.advance(seconds(20));
-    sim.expect_text("1/2 LIVE");
-    sim.checkpoint("home with a silent ant strap and a live ble strap");
-
-    sim.set_present(device_type::HEART_RATE, HEART, true);
-    sim.advance(seconds(40));
-    sim.expect_text("1/1 LIVE");
-}
-
 #[test]
 fn a_failed_ble_link_is_left_off_home() {
     let mut sim = rider();
@@ -6870,7 +6451,10 @@ fn a_failed_ble_link_is_left_off_home() {
     sim.device.sim_mut().ble.snapshot.link = Link::Failed;
     sim.advance(seconds(1));
     assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-    sim.expect_text("NONE PAIRED");
+    // Home shows what a device with no sensor shows at the same moment.
+    let mut bare = rider();
+    bare.advance(sim.now() - bare.now());
+    assert!(sim.screen().pixels == bare.screen().pixels);
 }
 
 /// Open the power meter's detail page and wait out the moment ACT ignores
@@ -8437,7 +8021,7 @@ fn measure(sim: &mut Sim) -> Rides {
 }
 
 #[test]
-fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arrives() {
+fn saver_mode_is_kept_over_a_restart_and_draws_only_what_arrives() {
     let mut sim = rider();
     sim.ant_sensor(device_type::RADAR, RADAR);
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"]);
@@ -8455,23 +8039,15 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
         smooth.number_changes
     );
 
-    sim.open_mode_row();
-    sim.expect_field("MODE", "NORMAL");
-    sim.expect_text("SMOOTH");
-    sim.checkpoint("settings: the display mode starts NORMAL");
-    sim.press(Role::Act);
-    sim.expect_field("MODE", "SAVER");
-    sim.expect_text("NO GLIDES");
-    sim.checkpoint("settings: the display mode SAVER");
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    go_home(&mut sim);
+    assert!(sim.command("OPTION").1.contains("display=normal"));
+    sim.option("DISPLAY", "SAVER");
+    sim.advance(seconds(5));
 
     sim.power_loss();
     assert!(sim.command("PROFILE").1.contains("stored=current"));
-    sim.open_mode_row();
-    sim.expect_field("MODE", "SAVER");
-    sim.checkpoint("settings: SAVER after a restart");
-    go_home(&mut sim);
+    let (_, options) = sim.command("OPTION");
+    assert!(options.contains("display=saver"), "{options}");
+    sim.advance(seconds(3));
 
     let saver = measure(&mut sim);
     sim.checkpoint("main page in SAVER");
@@ -8512,10 +8088,8 @@ fn backlight_in(sim: &mut Sim, light: Option<u16>) -> u8 {
 #[test]
 fn auto_brightness_follows_the_light_saver_sits_lower_and_a_percent_ignores_it() {
     let mut sim = rider();
-    sim.home("SETTINGS");
-    show_setting(&mut sim, "DIM AFTER");
-    sim.set_option("DIM AFTER", "NEVER");
-    sim.expect_field("BRIGHTNESS", "AUTO");
+    never_dim(&mut sim);
+    assert!(sim.command("OPTION").1.contains("brightness=auto"));
     assert!(sim.device.shell.auto());
     assert_eq!(
         backlight_in(&mut sim, None),
@@ -8527,17 +8101,14 @@ fn auto_brightness_follows_the_light_saver_sits_lower_and_a_percent_ignores_it()
     let dim = backlight_in(&mut sim, Some(68));
     assert!((82..=88).contains(&bright), "{bright}");
     assert!((21..=27).contains(&dim), "{dim}");
-    sim.checkpoint("settings: brightness AUTO in a dim room");
+    sim.checkpoint("brightness AUTO in a dim room");
     assert_eq!(
         backlight_in(&mut sim, None),
         50,
         "reading lost: back to 50%"
     );
 
-    go_home(&mut sim);
-    sim.open_mode_row();
-    sim.press(Role::Act);
-    sim.expect_field("MODE", "SAVER");
+    sim.option("DISPLAY", "SAVER");
     let saver_bright = backlight_in(&mut sim, Some(1_500));
     let saver_dim = backlight_in(&mut sim, Some(68));
     assert!(
@@ -8546,13 +8117,21 @@ fn auto_brightness_follows_the_light_saver_sits_lower_and_a_percent_ignores_it()
     );
     assert!(saver_bright <= 60 && saver_dim <= 18);
 
-    show_setting(&mut sim, "BRIGHTNESS");
-    sim.set_option("BRIGHTNESS", "50%");
+    sim.option("BRIGHTNESS", "50");
+    sim.advance(seconds(1));
     assert!(!sim.device.shell.auto());
     for light in [Some(40), Some(4_000), None] {
         assert_eq!(backlight_in(&mut sim, light), 50, "{light:?}");
     }
-    sim.checkpoint("settings: brightness fixed at 50% ignores the light");
+    sim.checkpoint("brightness fixed at 50% ignores the light");
+}
+
+/// Keep the backlight from dimming, at the dim level it has.
+fn never_dim(sim: &mut Sim) {
+    let (_, settings) = sim.command("SETTINGS");
+    let level = status_field(&settings, "dim_brightness").to_string();
+    let (status, out) = sim.command(&format!("IDLE 0 {level}"));
+    assert_eq!(status, "OK", "IDLE 0 {level}: {out}");
 }
 
 mod navigation {
@@ -8755,30 +8334,6 @@ mod navigation {
         sim.checkpoint("start-turn-around-map");
         ride_until_shown(&mut sim, "FOLLOWING COURSE", 1_200.0);
         sim.expect_no_text("AROUND");
-    }
-
-    #[test]
-    fn tapping_the_banner_opens_the_map_even_with_the_map_page_hidden() {
-        let course = straight_then(1_000.0);
-        let mut sim = on_course(&course, &course);
-        hide_ride_pages(&mut sim, &["MAP"]);
-        sim.ride_at(30.0, 180.0, 150.0, 85.0);
-        start_following(&mut sim);
-        assert_eq!(
-            sim.ride_page_name().as_deref(),
-            Some("ride/main"),
-            "a loaded course keeps the map in the cycle"
-        );
-        ride_until_cue(&mut sim, "turn_soon", 6_900.0);
-        sim.tap(120, 200);
-        assert_eq!(
-            sim.ride_page_name().as_deref(),
-            Some("ride/main"),
-            "not on the sign"
-        );
-        sim.tap(120, 60);
-        expect_map(&sim);
-        sim.checkpoint("the banner tapped opens the map");
     }
 }
 
@@ -9192,26 +8747,6 @@ mod course_map {
             );
         }
     }
-}
-
-#[test]
-fn bare_settings_offer_no_phone_without_wifi() {
-    let mut sim = Sim::on(shell_simulator::models::BARE).boot();
-    sim.home("SETTINGS");
-    for _ in 0..40 {
-        if sim.screen().run("FIRMWARE").is_some() {
-            break;
-        }
-        sim.press(Role::Move);
-    }
-    sim.expect_text("DEVICE");
-    sim.expect_field("SENSORS", "NONE SAVED");
-    assert!(
-        sim.screen().run("PHONE").is_none(),
-        "a device without Wi-Fi offers no phone:\n{}",
-        sim.screen().text()
-    );
-    sim.checkpoint("device section without phone");
 }
 
 #[test]

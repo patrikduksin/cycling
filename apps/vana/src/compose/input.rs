@@ -30,6 +30,17 @@ pub enum Action {
     /// carries out on the item it keeps focused.
     List(ListAct),
     Sheet(SheetAct),
+    /// Start recording from Home.
+    Start(Plan),
+}
+
+/// What a ride started from Home plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plan {
+    /// Today's planned workout.
+    Today,
+    /// No workout, though one is planned.
+    Free,
 }
 
 impl Action {
@@ -105,6 +116,7 @@ pub trait Owners {
     fn page(&mut self, act: OnPage);
     fn list(&mut self, act: ListAct);
     fn sheet(&mut self, act: SheetAct);
+    fn start(&mut self, plan: Plan);
 }
 
 /// Hand `action` to the owner that carries it out.
@@ -117,6 +129,7 @@ pub fn apply(action: Action, owners: &mut impl Owners) {
         Action::Page(act) => owners.page(act),
         Action::List(act) => owners.list(act),
         Action::Sheet(act) => owners.sheet(act),
+        Action::Start(plan) => owners.start(plan),
     }
 }
 
@@ -266,8 +279,9 @@ pub fn cues(buttons: &Buttons, keys: Keys) -> Cues {
 }
 
 /// The current stop: the screen's ACT, or a tile kept by its node in the
-/// tree so it survives a re-solve. The default is the first stop, and so
-/// what a screen opens on.
+/// tree so it survives a re-solve. The default is the stop the screen opens
+/// on: the tile that asks for it (`Tile::opens`), else the first. A screen
+/// with such a tile opens on it every time; any other keeps its focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Focus {
     #[default]
@@ -343,7 +357,7 @@ pub fn focused<'s>(buttons: &Buttons, solved: &'s Solved<'_>, focus: Focus) -> O
     }
     match (focus, buttons.act) {
         (Focus::Screen, Some(act)) => Some(Stop::Screen(act)),
-        (Focus::Screen, None) => tile_from(solved, 0).map(Spot::stop),
+        (Focus::Screen, None) => tile_from(solved, solved.opening().unwrap_or(0)).map(Spot::stop),
         (Focus::Tile(node), _) => tile_from(solved, node).map(Spot::stop),
     }
 }
@@ -935,6 +949,10 @@ pub(super) mod tests {
         fn sheet(&mut self, act: SheetAct) {
             self.0.push(("sheet", Action::Sheet(act)));
         }
+
+        fn start(&mut self, plan: Plan) {
+            self.0.push(("ride", Action::Start(plan)));
+        }
     }
 
     #[test]
@@ -964,6 +982,8 @@ pub(super) mod tests {
             ("sheet", Action::Sheet(SheetAct::Level)),
             ("sheet", Action::Sheet(SheetAct::DayNight)),
             ("sheet", Action::Sheet(SheetAct::Sensors)),
+            ("ride", Action::Start(Plan::Today)),
+            ("ride", Action::Start(Plan::Free)),
         ];
         let mut reached = Reached::default();
         for (_, action) in every {

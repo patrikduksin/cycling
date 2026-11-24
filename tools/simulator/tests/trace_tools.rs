@@ -33,6 +33,9 @@ fn power_dropout_after_descent(sim: &mut Sim) {
     ));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.pair(&["POWER METER", "SPEED/CAD"]);
+    // A press's time on Home before the start, where the tests below read
+    // the timeline.
+    sim.advance(1_200);
     sim.start_ride();
     ride_to(sim, 200.0, 32.0, 220.0, 88.0);
     ride_to(sim, 800.0, 20.0, 300.0, 78.0);
@@ -63,6 +66,7 @@ fn laps_and_a_menu(sim: &mut Sim) {
     ));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.pair(&["POWER METER"]);
+    sim.advance(1_200);
     sim.start_ride();
     sim.ride_at(30.0, 210.0, 0.0, 90.0);
     sim.advance(seconds(40));
@@ -1045,7 +1049,7 @@ fn dark_charging_standby_rests_between_passes() {
         );
     }
     sim.turn_on();
-    sim.wait_for("READY TO RIDE", seconds(5)).unwrap();
+    sim.wait_for("Ride", seconds(5)).unwrap();
 }
 
 #[test]

@@ -1726,7 +1726,7 @@ const EVERYWHERE: [i32; 20] = [
 /// What `exact` draws in `rect` against the same tile drawn roomy: every
 /// letter of the roomy drawing (a line may wrap), ink only inside `rect`,
 /// and no two lines on each other's ink.
-fn drawn_whole_inside(
+pub(crate) fn drawn_whole_inside(
     what: &str,
     rect: Rect,
     exact: &Canvas,
@@ -1881,41 +1881,9 @@ impl Data for Page<'_> {
 /// line. It draws all of it, inside its box.
 #[test]
 fn a_page_tile_at_its_smallest_box_shows_its_widest_content_whole() {
-    use crate::screens::home::Home;
-    use crate::screens::sensors::Glance;
-    use crate::sensors::ant::device_type as ant;
-    use crate::workout::model::{Name, WIDEST_NAME};
-    let names = [
-        "WWWWWWWWWWWWWWWWWWWW",
-        "MMMMMMMMMM MMMMMMMMMM",
-        WIDEST_NAME,
-        "",
-    ]
-    .map(Name::new);
-    let sensors = [
-        ant::SPEED_CADENCE,
-        ant::BIKE_LIGHTS,
-        ant::SHIFTING,
-        ant::SPEED_CADENCE,
-    ]
-    .map(|kind| Glance::ble(kind, true, None));
-    let statuses = [
-        names[0].as_str(),
-        names[1].as_str(),
-        "SENSORS UNAVAILABLE",
-        "LIGHT CRITICAL BATTERY",
-        "10 BATTERIES TO CHANGE",
-    ];
-    let mut homes = Vec::new();
-    for (index, status) in statuses.iter().enumerate() {
-        let mut home = Home::new(index % 2 == 0, &sensors[..index % 5]);
-        home.set_status(status.as_bytes(), index % 2 == 1);
-        homes.push(home);
-    }
-    homes.push(Home::new(false, &[]));
     let (mut checked, mut faults) = (0, Vec::new());
     for at in panels() {
-        for component in [registry::MARK, registry::HOME_CARD] {
+        for component in [registry::MARK] {
             let tile = registry::tile(component);
             for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
                 for (form, look) in tile.forms(arg, &at).iter().enumerate() {
@@ -1931,10 +1899,7 @@ fn a_page_tile_at_its_smallest_box_shows_its_widest_content_whole() {
                             node: 0,
                             form: form as u8,
                         };
-                        let pages = homes
-                            .iter()
-                            .map(PageData::Home)
-                            .chain([0, 500, 1000].map(PageData::Brand));
+                        let pages = [0, 500, 1000].into_iter().map(PageData::Brand);
                         let page = pages.clone().nth(world)?;
                         let mut canvas = Canvas::default();
                         if focused {
@@ -1972,5 +1937,5 @@ fn a_page_tile_at_its_smallest_box_shows_its_widest_content_whole() {
         faults.len(),
         faults[..faults.len().min(40)].join("\n")
     );
-    assert!(checked > 200, "{checked} draws");
+    assert!(checked > 10, "{checked} draws");
 }

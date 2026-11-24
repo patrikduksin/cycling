@@ -221,66 +221,6 @@ fn menus() {
     walk.cell("sensors", "scanning");
     walk.guide(|sim| sim.wait_for("ID 31", seconds(20)).map(drop).unwrap());
     walk.cell("sensors", "nearby");
-    walk.guide(|sim| {
-        sim.press(Role::Back);
-        sim.press(Role::Back);
-        assert!(sim.on_home(), "{}", sim.screen().text());
-        sim.home("TRAIN");
-        sim.expect_text("WORKOUTS");
-    });
-    walk.cell("workouts", "top");
-    walk.guide(|sim| {
-        for _ in 0..9 {
-            sim.press(Role::Move);
-        }
-        sim.advance(seconds(1));
-    });
-    walk.cell("workouts", "scrolled");
-}
-
-#[test]
-fn settings() {
-    let mut walk = Walk::paired(world, &[]);
-    walk.guide(|sim| {
-        sim.home("SETTINGS");
-        sim.expect_text("PROFILE");
-    });
-    walk.cell("settings", "profile");
-    walk.guide(|sim| {
-        sim.press(Role::Act);
-        sim.advance(seconds(1));
-        sim.expect_field("FTP WATTS", "215");
-    });
-    walk.cell("settings", "editor");
-    let mut moved = 0;
-    walk.guide(|sim| {
-        sim.press(Role::Back);
-        while !sim.screen().contains("WEIGHT KG") {
-            assert!(
-                moved < 11,
-                "no BODY section; screen:\n{}",
-                sim.screen().text()
-            );
-            sim.press(Role::Move);
-            moved += 1;
-        }
-        sim.advance(seconds(1));
-    });
-    walk.cell("settings", "body");
-    walk.guide(|sim| {
-        for _ in moved..9 {
-            sim.press(Role::Move);
-        }
-        sim.advance(seconds(1));
-        sim.expect_field("MODE", "NORMAL");
-    });
-    walk.cell("settings", "display-normal");
-    walk.guide(|sim| {
-        sim.press(Role::Act);
-        sim.expect_field("MODE", "SAVER");
-        sim.wait_for("SAVED", seconds(5)).unwrap();
-    });
-    walk.cell("settings", "display-saver");
 }
 
 fn riding(world: fn(Model) -> Sim) -> Walk {
@@ -369,22 +309,8 @@ fn ride_done_pictures() {
 #[test]
 fn a_saver_ride() {
     let mut walk = Walk::paired(world, &KINDS);
-    walk.guide(|sim| {
-        sim.home("SETTINGS");
-        for _ in 0..9 {
-            sim.press(Role::Move);
-        }
-        sim.expect_field("MODE", "NORMAL");
-        sim.press(Role::Act);
-        sim.expect_field("MODE", "SAVER");
-        for _ in 0..3 {
-            if sim.on_home() {
-                break;
-            }
-            sim.press(Role::Back);
-        }
-        sim.start_ride();
-    });
+    walk.all(|sim| sim.option("DISPLAY", "SAVER"));
+    walk.guide(|sim| sim.start_ride());
     walk.all(|sim| sim.ride_at(28.0, 230.0, 142.0, 88.0));
     walk.advance(seconds(20));
     walk.all(vehicles);
@@ -408,9 +334,8 @@ fn a_climb_and_its_summary() {
 #[test]
 fn a_workout() {
     let mut walk = Walk::paired(world, &KINDS);
-    walk.guide(|sim| {
-        sim.start_workout("FTP TEST 20 MIN");
-    });
+    walk.all(|sim| sim.choose_workout("FTP TEST 20 MIN"));
+    walk.guide(|sim| sim.start_ride());
     walk.all(|sim| sim.ride_at(30.0, 150.0, 142.0, 90.0));
     walk.advance(seconds(30));
     walk.cell("ride-workout", "warm-up");

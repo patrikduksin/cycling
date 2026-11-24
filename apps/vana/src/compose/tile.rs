@@ -78,6 +78,11 @@ pub trait Tile: Sync + 'static {
     fn action(_: Self::Arg) -> Option<Action> {
         None
     }
+    /// The screen opens with the focus on this tile, though stops come
+    /// before it.
+    fn opens(_: Self::Arg) -> bool {
+        false
+    }
     /// Where the tile's gliding graphic lands for `data`; a glide needs a
     /// frame only while this moves.
     fn glide(_: Self::Arg, _: &Placed, _: &Scaled, _: &dyn Data) -> Option<Landed> {
@@ -101,6 +106,7 @@ pub trait Component: Sync {
     fn prepare(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas);
     fn focused(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas);
     fn action(&self, arg: u8) -> Option<Action>;
+    fn opens(&self, arg: u8) -> bool;
     fn glide(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data) -> Option<Landed>;
     fn heavy(&self) -> bool;
     fn reads(&self, _arg: u8) -> Option<Reads> {
@@ -151,6 +157,10 @@ impl<T: Tile> Component for Erased<T> {
 
     fn action(&self, arg: u8) -> Option<Action> {
         T::action(T::Arg::decode(arg)?)
+    }
+
+    fn opens(&self, arg: u8) -> bool {
+        T::Arg::decode(arg).is_some_and(T::opens)
     }
 
     fn glide(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data) -> Option<Landed> {

@@ -21,8 +21,8 @@ power. None draws in the 5 × 7 bitmap font.
 Kit screens are built from one small set of tiles, the kit
 (`apps/vana/src/compose/kit`), drawn in one of two looks. The Stats
 (`ride/main`), Climb (`ride/climb`) and Workout (`ride/workout`) ride
-pages are three. Other screens follow the rules in the rest of this
-document.
+pages are three; Home and the swipe-down sheet draw in the looks too (see
+below). Other screens follow the rules in the rest of this document.
 
 - **Looks are data.** `screens/theme` holds one `Theme` of colours by role.
   `DARK` (night) is main's palette. `LIGHT` (day) writes every word and
@@ -65,6 +65,31 @@ document.
   inset-grouped list. `kit::grid` lays out rows of cells with rules between
   them that line up. The kit's faces are under Type scale below.
 
+### Home and the swipe-down sheet
+
+Home is a watch face (`compose/builtin/home.rs`, tiles in
+`compose/tiles/home.rs`, ids 107–110). The battery percentage sits top
+right in its level's colour, then the date (`Tuesday 24 Nov`) and the time
+in the 64 px clock face. Under them, one status widget: the satellite with
+a dot for the fix, a rule, and the first three saved sensors in their metric
+colours, each with a dot: green when live, amber while not yet or with a low
+battery, red with a critical one (the sheet's Sensors row does the same). The start
+is at the bottom. With a workout planned for today, its card comes first: a
+zone 4 fill in black ink with a play disc, the name, `Today's workout ·
+1:04` and a strip of its steps, each as wide as it is long, as tall as it is
+hard and in its power zone's colour. "Just ride" sits under it. With nothing
+planned, one big Ride button. Home opens on the card or on Ride every time,
+with a ring 2 px outside it; MOVE steps to "Just ride" and then the widget,
+and ACT or a tap runs what has the focus. The card starts the workout, and
+Ride and "Just ride" start a ride with none, though one stays planned.
+There is no Ready page and no fix to wait for. Rolling off on Home starts a
+free ride. BACK asks to turn off, and a refused turn-off shows as a toast.
+
+The swipe-down sheet (`compose/tiles/sheet.rs`) paints its card in the
+look's own colours over the dimmed screen. It shows the brightness bar with a
+small sun and a big one, the Sensors row with each sensor's live dot and a
+chevron, and the Day/Night tile, which names the look in force.
+
 ## Principles
 
 1. **Black is the layout.** There are no boxes, grid lines or dividers. Space
@@ -100,7 +125,7 @@ rules at a scale step:
 - A screen splits a box into rows or columns: fixed units, the height of a
   face's line or capitals, and shares of what is left. A panel taller or wider
   than its step gives the extra space to the shares, so readings keep their
-  size and gain room around them: Home's RIDE card and the map
+  size and gain room around them: the space over Home's start and the map
   grow, and lists show more cards.
 - Every screen lays out from the panel and draws at the panel's size. Each
   device's build lays the screens out once for its panel, into one static
@@ -284,7 +309,7 @@ boundary keeps one colour.
 | Pill (toasts, chips) | Radius = half its height |
 | Gauge segment | 5 px tall, 3 px gaps, radius 2 |
 | Dot | 6 px page dots; an 8 px tone dot in toasts |
-| Icons | Anti-aliased, in one colour, blended over what lies behind like text. A sensor's icon takes its metric's colour where it names a saved sensor (`HEART`, `POWER`, `SPEED` for speed and speed/cadence, `CADENCE`) and `WHITE` for any other; Home draws them `WHITE` with a status dot at the top-right, and NEARBY draws the sensors it lists in `SECONDARY`. The SVGs in `apps/vana/icons` are the source; see Icons below. |
+| Icons | Anti-aliased, in one colour, blended over what lies behind like text. A sensor's icon takes its metric's colour where it names a saved sensor (`HEART`, `POWER`, `SPEED` for speed and speed/cadence, `CADENCE`) and `WHITE` for any other; Home's widget and the sheet draw a live one in its metric colour and one not yet live in `SECONDARY`, each with a status dot at the top-right, and NEARBY draws the sensors it lists in `SECONDARY`. The SVGs in `apps/vana/icons` are the source; see Icons below. |
 | Ring | An arc of a ring with round ends, running clockwise from 12 o'clock. VANA's one shape for progress, charge and time left: the brand mark, the turn-off countdown, the charge and the power symbol. A ring that shows a share stands on a 25% track of its own colour. |
 
 Shapes are anti-aliased coverage, blended over what lies behind them and
@@ -787,7 +812,7 @@ holding TopLeft to reboot are in [UX flows](ux-flows.md#buttons).
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home (RIDE starts the ride), the row on Sensors, or the ride on Rides; a cue acts as its button; on Workouts, the workout's ride starts; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left extends the step by a minute (500 m for a distance step) |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: runs the start or opens Sensors from the widget on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left extends the step by a minute (500 m for a distance step) |
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
 | Long press | Still for 1 s, then lifted | On the map, stops following the course (COURSE OFF; [UX flows](ux-flows.md#map)) |

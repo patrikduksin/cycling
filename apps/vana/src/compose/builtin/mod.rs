@@ -212,6 +212,7 @@ impl ScreenId {
                 | Self::RidePaused
                 | Self::RideEnd
                 | Self::RideDone
+                | Self::Home
         )
     }
 
@@ -318,6 +319,8 @@ pub struct Choices {
     pub main_slots: Slots,
     /// Settings edits a number: its tree is the editor's.
     pub editing: bool,
+    /// A workout is planned for today: Home shows its card.
+    pub today: bool,
 }
 
 /// A shipped screen: its tree for the rider's choices, and what its
@@ -659,6 +662,7 @@ impl Laids {
             .shown
             .as_mut()
             .filter(|laid| laid.buttons().act.is_none())
+            .filter(|laid| laid.solved().opening().is_none())
         {
             laid.focus = self.kept[id as usize];
         }

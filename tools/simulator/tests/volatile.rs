@@ -62,7 +62,6 @@ fn a_restart_or_a_turn_off_waits_for_the_phone() {
     sim.advance(seconds(5));
     assert!(!sim.is_off());
     assert_eq!(ride_ids(&mut sim).len(), 1, "the ride is still in memory");
-    sim.expect_text("NOT SAVED");
     sim.checkpoint("home after a refused restart");
 }
 

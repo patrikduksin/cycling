@@ -167,6 +167,16 @@ impl Solved<'_> {
         tile.action(arg)
     }
 
+    /// The node of the tile the screen opens on, if one says so.
+    pub fn opening(&self) -> Option<u8> {
+        let opens = |placed: &&Placed| {
+            let node = self.tree.map(|tree| tree.nodes()[usize::from(placed.node)]);
+            node.and_then(component)
+                .is_some_and(|(tile, arg)| tile.opens(arg))
+        };
+        self.focus_order().find(opens).map(|placed| placed.node)
+    }
+
     pub fn focus_order(&self) -> impl Iterator<Item = &Placed> {
         let focus = self.focus;
         self.leaves

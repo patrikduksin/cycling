@@ -198,6 +198,7 @@ enum Painted<'v> {
     None,
     Climb(&'v ClimbFrame),
     Workout(&'v ride::WorkoutChart),
+    Home(&'v super::home::Strip),
     Map(Option<&'v ride::FilledMap<'v>>),
     Settings,
     Workouts,
@@ -225,7 +226,7 @@ impl Extra<'_> {
                 lines: _,
                 pressed: _,
             } => Painted::Settings,
-            Self::Home(_) => Painted::None,
+            Self::Home(home) => Painted::Home(&home.strip),
             Self::Workouts(_) => Painted::Workouts,
             Self::Sensors(_) => Painted::None,
             Self::Done(done) => Painted::Done(done),
@@ -312,6 +313,9 @@ impl<'v> Scene<'v> {
                     done.paint(&mut row.plain(), theme);
                 }
                 self.paint_canvas(row);
+                if let (Painted::Home(strip), Some(theme)) = (self.painted, self.theme) {
+                    strip.paint(theme, &mut row.plain());
+                }
             }
             Kind::Ride(page) => ride::paint(self, page, row),
             Kind::Summary { elevation, .. } => {
@@ -426,8 +430,13 @@ impl<'v> Scene<'v> {
         let mut color = match self.kind {
             Kind::PageUnderBar => match self.theme {
                 Some(theme) => {
+                    let under = match self.painted {
+                        Painted::Home(strip) => strip.pixel(theme, x, y),
+                        _ => None,
+                    };
                     let bg = super::chrome::Shown(theme.bg);
-                    self.canvas().pixel(Look::PLAIN, x, y, bg)
+                    let color = self.canvas().pixel(Look::PLAIN, x, y, bg);
+                    under.map_or(color, super::chrome::Shown)
                 }
                 None => self.canvas().pixel(look, x, y, black),
             },
@@ -907,6 +916,7 @@ impl<'a> View<'a> {
         let choices = Choices {
             main_slots: slots,
             editing,
+            today: self.home().is_some_and(|home| home.today.is_some()),
         };
         let built_in = crate::compose::Screens::EMPTY;
         let mut laids = Laids::new(self.device, choices, ride::main_flags_of(self), &built_in);
@@ -1008,6 +1018,14 @@ impl<'a> View<'a> {
         self.extra
             .settings_lines()
             .map_or(&[], |lines| lines.as_slice())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn home_mut(&mut self) -> &mut Home {
+        match &mut self.extra {
+            Extra::Home(home) => home,
+            _ => panic!("Home's facts are set first"),
+        }
     }
 
     /// What Home's cards show, once the runtime set it.
@@ -1114,6 +1132,7 @@ impl<'a> View<'a> {
         match self.page {
             Page::Boot
             | Page::Format
+            | Page::Home
             | Page::EndRide
             | Page::DiscardRide
             | Page::Done
@@ -1147,9 +1166,10 @@ impl<'a> View<'a> {
     }
 
     fn scene(&self) -> Scene<'_> {
-        let over = self.pulled().map(|(_, _, bottom)| super::sheet::Over {
+        let over = self.pulled().map(|(_, facts, bottom)| super::sheet::Over {
             bottom,
             cues: &self.cues,
+            theme: crate::compose::data::Data::theme(facts),
         });
         let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
         let kind = match self.page {
@@ -1736,24 +1756,57 @@ mod tests {
     }
 
     #[test]
-    fn home_highlights_the_selected_tile() {
-        let mut view = View::new(Page::Home, 0, None);
-        view.compose_focus(1);
-        view.set_home(Home::new(false, &[]));
-        view.prepare();
-        let laid = view
+    fn home_opens_on_its_start_and_rings_what_has_the_focus() {
+        use crate::compose::builtin::ScreenId;
+        for today in [false, true] {
+            let mut view = home_view(today, false);
+            view.compose_main();
+            view.prepare();
+            let laid = view.laids.and_then(|laids| laids.get(ScreenId::Home));
+            let solved = laid.unwrap().solved();
+            let start = solved
+                .focus_order()
+                .find(|p| Some(p.node) == solved.opening());
+            let start = start.unwrap().rect.rect();
+            let ring = (start.center_x(), start.top - 4);
+            assert_eq!(view.pixel(ring.0, ring.1), super::super::theme::DARK.focus);
+            let widget = solved.focus_order().next().unwrap().rect.rect();
+            let above = (widget.center_x(), widget.top - 4);
+            assert_eq!(
+                view.pixel(above.0, above.1),
+                0,
+                "{today}: the widget has none"
+            );
+        }
+    }
+
+    const DAY_7_10_PM: u64 = 20_781 * 86_400 + 19 * 3_600 + 10 * 60;
+
+    fn home_view(today: bool, light: bool) -> View<'static> {
+        use crate::compose::builtin::ScreenId;
+        use crate::compose::registry::TODAY;
+        use crate::screens::home::{Strip, Today};
+        use crate::workout::library::{Outline, SWEET_SPOT};
+        let mut view = View::new(Page::Home, 0, Some(Local(1_000_000)));
+        view.light = light;
+        view.set_home(Home {
+            local: Some(Local(DAY_7_10_PM)),
+            today: today.then(|| Today {
+                name: SWEET_SPOT.name,
+                planned_secs: SWEET_SPOT.planned_secs(),
+            }),
+            ..Home::default()
+        });
+        view.compose_main();
+        let card = view
             .laids
-            .and_then(|laids| laids.get(crate::compose::builtin::ScreenId::Home));
-        let solved = laid.unwrap().solved();
-        let mut cards = solved.focus_order().map(|placed| placed.rect);
-        let (ride, sensors) = (cards.next().unwrap(), cards.next().unwrap());
-        let inside = |rect: crate::compose::Rect16| {
-            (usize::from(rect.right) - 20, usize::from(rect.bottom) - 8)
-        };
-        let (x, y) = inside(sensors);
-        assert_eq!(view.pixel(x, y), RAISED, "Sensors is raised");
-        let (x, y) = inside(ride);
-        assert_ne!(view.pixel(x, y), RAISED, "Ride is not");
+            .and_then(|laids| laids.get(ScreenId::Home)?.box_of(TODAY));
+        if let Some(card) = card {
+            let rect = crate::compose::tiles::home::strip(card, &view.device.scaled);
+            let shape = Outline::of(&SWEET_SPOT).shape;
+            view.home_mut().strip = Strip::lay(shape.pieces(), rect);
+        }
+        view
     }
 
     /// Every row the view paints equals the per-pixel reference.
@@ -1799,12 +1852,15 @@ mod tests {
                 battery: None,
             },
         ];
-        for cursor in 0..4 {
-            let mut view = View::new(Page::Home, cursor, Some(Local(1_000_000)));
-            view.compose_focus(cursor);
+        for (cursor, (today, light)) in [(false, false), (true, false), (true, true), (false, true)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut view = home_view(today, light);
+            view.home_mut().sensors = glance[..cursor.min(2)].iter().copied().collect();
+            view.compose_focus(cursor % 2);
             view.battery = Some(Battery::level(14));
-            view.gps = Gps::Fixed;
-            view.set_home(Home::new(cursor == 1, &glance[..cursor.min(2)]));
+            view.gps = [Gps::Fixed, Gps::Searching][cursor % 2];
             view.toast = (cursor == 2).then(|| Toast::new("RIDE SAVED", Tone::Good));
             view.prepare();
             assert_paints_reference(&view, "home");

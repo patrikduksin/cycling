@@ -1,4 +1,3 @@
-use device_api::input::Role;
 use firmware_shell::rendering::record::{self, Kind};
 use shell_simulator::bench::SCENES;
 use shell_simulator::sim::{Sim, seconds};
@@ -16,23 +15,15 @@ fn reach(name: &str) -> Sim {
 }
 
 #[test]
-fn reads_home_settings_and_a_ride_page_in_the_light_look() {
-    let mut sim = reach("settings light");
-    assert_eq!(
-        sim.screen().text(),
-        "7:00\nGPS\nDISPLAY\nBRIGHTNESS\nAUTO\nDIM AFTER\n30 S\nDAY / NIGHT\nAUTO\nDAY NOW\nTHEME\nLIGHT\nSAVING"
-    );
-    sim.press(Role::Back);
-    assert_eq!(
-        sim.screen().text(),
-        "7:00\nGPS\nRIDE\nGPS READY\nREADY TO RIDE\nSENSORS\n3/3 LIVE\nHR\nPWR\nSPD/C\nTRAIN\nSETTINGS"
-    );
-    sim.start_ride();
+fn reads_home_and_a_ride_page_in_the_light_look() {
+    let mut sim = reach("home light");
+    assert_eq!(sim.screen().text(), "Wednesday 14 Oct\n7:00\nRide");
     sim.ride_at(28.0, 230.0, 142.0, 88.0);
+    sim.start_ride();
     sim.advance(seconds(20));
     assert_eq!(
         sim.screen().text(),
-        "0:00:20\nPWR 3S W\nZ5\nHEART BPM\nZ1\n230\n142\nSPD KM/H\nCAD RPM\n28.0\n88\nGRADE\nCLIMB M\n2.4\n3\n%\nDIST KM\nNP W\n0.2\n--"
+        "0:00:20\nPWR 3S W\nZ5\nHEART BPM\nZ1\n230\n142\nSPD KM/H\nCAD RPM\n28.0\n88\nGRADE\nCLIMB M\n2.4\n3\n%\nDIST KM\nNP W\n0.1\n--"
     );
 }
 
@@ -117,7 +108,7 @@ fn every_screen_paints_its_colours_through_the_light_look() {
     for scene in SCENES.iter().filter(|scene| !scene.name.contains("light")) {
         let name = scene.name;
         let mut sim = (scene.reach)();
-        if kit_screen(&mut sim) || sim.vana_page() == "sensors" {
+        if kit_screen(&mut sim) || matches!(sim.vana_page(), "sensors" | "home") {
             continue;
         }
         let Some(shown) = paint(&mut sim, true) else {

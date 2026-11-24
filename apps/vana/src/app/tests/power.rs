@@ -181,7 +181,7 @@ fn back_on_home_asks_then_act_turns_off_after_the_last_frame() {
     runtime.input_received(press(Role::Back), 1_500, 1_500, &mut radio);
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_500);
-    assert_eq!(runtime.home_status(1_500).0, "READY TO RIDE");
+    assert!(runtime.toast_at(1_500).is_none(), "nothing to tell");
 
     runtime.input_received(press(Role::Back), 2_500, 2_500, &mut radio);
     runtime.input_received(press(Role::Act), 3_000, 3_000, &mut radio);
@@ -240,7 +240,8 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
     pass(&mut runtime, &mut screen, &radio, &mut refusing, next);
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     pass(&mut runtime, &mut screen, &radio, &mut refusing, 1_600);
-    assert_eq!(runtime.home_status(1_600), ("CANNOT TURN OFF", true));
+    let told = runtime.toast_at(1_600).map(|toast| toast.text().to_vec());
+    assert_eq!(told.as_deref(), Some(&b"CANNOT TURN OFF"[..]));
 
     // An accepted request the device later abandons also comes back.
     let mut switch = Switch::new(true);
@@ -693,7 +694,8 @@ fn a_profile_edit_that_cannot_be_saved_is_reported_before_turning_off() {
         Some(crate::app::power::Notice::Unsaved)
     );
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_700);
-    assert_eq!(runtime.home_status(1_700), ("CHANGES NOT SAVED", true));
+    let told = runtime.toast_at(1_700).map(|toast| toast.text().to_vec());
+    assert_eq!(told.as_deref(), Some(&b"CHANGES NOT SAVED"[..]));
     // Told once, turning off again goes ahead.
     runtime.input_received(press(Role::Back), 3_000, 3_000, &mut radio);
     runtime.input_received(press(Role::Act), 3_400, 3_400, &mut radio);

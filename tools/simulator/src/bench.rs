@@ -122,7 +122,7 @@ pub(crate) mod scenes {
         pub reach: fn() -> Sim,
     }
 
-    pub static SCENES: [Scene; 24] = [
+    pub static SCENES: [Scene; 20] = [
         Scene {
             name: "home",
             reach: home,
@@ -142,10 +142,6 @@ pub(crate) mod scenes {
         Scene {
             name: "sensors list",
             reach: sensors,
-        },
-        Scene {
-            name: "workouts",
-            reach: workouts,
         },
         Scene {
             name: "ride stats",
@@ -192,10 +188,6 @@ pub(crate) mod scenes {
             reach: end_ride,
         },
         Scene {
-            name: "settings",
-            reach: settings,
-        },
-        Scene {
             name: "sensor detail",
             reach: sensor_detail,
         },
@@ -204,16 +196,8 @@ pub(crate) mod scenes {
             reach: boot,
         },
         Scene {
-            name: "settings editing",
-            reach: settings_editing,
-        },
-        Scene {
             name: "main with workout band",
             reach: main_with_band,
-        },
-        Scene {
-            name: "settings light",
-            reach: light,
         },
         Scene {
             name: "home light",
@@ -274,12 +258,7 @@ pub(crate) mod scenes {
 
     pub(crate) fn ride_main_radar_saver() -> Sim {
         let mut sim = rider(true);
-        sim.open_mode_row();
-        sim.expect_field("MODE", "NORMAL");
-        sim.press(Role::Act);
-        sim.expect_field("MODE", "SAVER");
-        sim.press(Role::Back);
-        sim.expect_text("READY TO RIDE");
+        sim.option("DISPLAY", "SAVER");
         ride_main_from(sim)
     }
 
@@ -348,13 +327,6 @@ pub(crate) mod scenes {
         sim.home("SENSORS");
         sim.wait_for("LIVE", seconds(20)).unwrap();
         sim.expect_text("SENSORS");
-        sim
-    }
-
-    fn workouts() -> Sim {
-        let mut sim = rider(false);
-        sim.home("TRAIN");
-        sim.expect_text("WORKOUTS");
         sim
     }
 
@@ -474,7 +446,7 @@ pub(crate) mod scenes {
         sim.format_files();
         sim.install_terrain(b"CHILE-TERRAIN-V1", SANTIAGO);
         // The map's zoom in these scenes depends on when the ride starts.
-        sim.advance(seconds(9));
+        sim.advance(seconds(11));
         sim.connect_phone();
         let course = gpx_every_ten_metres(
             origin,
@@ -530,13 +502,6 @@ pub(crate) mod scenes {
         sim
     }
 
-    pub(crate) fn settings() -> Sim {
-        let mut sim = rider(false);
-        sim.home("SETTINGS");
-        sim.expect_text("PROFILE");
-        sim
-    }
-
     fn sensor_detail() -> Sim {
         let mut sim = rider(false);
         sim.home("SENSORS");
@@ -559,35 +524,17 @@ pub(crate) mod scenes {
         sim
     }
 
-    fn settings_editing() -> Sim {
-        let mut sim = settings();
-        sim.press(Role::Act);
-        sim
-    }
-
     fn main_with_band() -> Sim {
         let mut sim = workout_page();
         sim.ride_page("ride/main");
         sim
     }
 
-    fn light() -> Sim {
-        let mut sim = rider(false);
-        sim.home("SETTINGS");
-        sim.swipe_next();
-        sim.swipe_next();
-        for _ in 0..3 {
-            sim.press(Role::Move);
-        }
-        sim.expect_field("THEME", "DARK");
-        sim.press(Role::Act);
-        sim
-    }
-
     fn home_light() -> Sim {
-        let mut sim = light();
-        sim.press(Role::Back);
-        sim.expect_text("READY TO RIDE");
+        let mut sim = rider(false);
+        sim.option("THEME", "LIGHT");
+        sim.advance(seconds(1));
+        assert!(sim.on_home(), "{}", sim.screen().text());
         sim
     }
 }

@@ -445,7 +445,7 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
     let mut radio = Radio::quiet();
     run(&mut runtime, &mut radio, 0, 15_000);
     runtime.navigation.go(To::Page(Page::Home));
-    runtime.focus_stop(1);
+    runtime.focus_stop(0);
     runtime.input_received(press(Role::Act), 15_000, 15_000, &mut radio);
     runtime.input_received(press(Role::Move), 15_400, 15_400, &mut radio);
     runtime.input_received(press(Role::Act), 15_800, 15_800, &mut radio);
@@ -477,7 +477,7 @@ fn save_problems_stay_visible_while_discovery_runs() {
     run(&mut runtime, &mut radio, 0, 1_000);
     // Opening Sensors starts a search whose progress replaces page messages.
     runtime.navigation.go(To::Page(Page::Home));
-    runtime.focus_stop(1);
+    runtime.focus_stop(0);
     runtime.input_received(press(Role::Act), 1_000, 1_000, &mut radio);
     for (from, to) in [(1_000, 1_500), (1_500, 4_000), (4_000, 20_000)] {
         run(&mut runtime, &mut radio, from, to);
@@ -499,7 +499,7 @@ fn save_problems_stay_visible_while_discovery_runs() {
     let mut radio = Radio::new();
     run(&mut runtime, &mut radio, 0, 1_000);
     runtime.navigation.go(To::Page(Page::Home));
-    runtime.focus_stop(1);
+    runtime.focus_stop(0);
     runtime.input_received(press(Role::Act), 1_000, 1_000, &mut radio);
     run(&mut runtime, &mut radio, 1_000, 1_200);
     runtime.preferences.save_failed(1_200);

@@ -158,7 +158,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     runtime.suspend_display();
     assert!(!runtime.input_active());
     runtime.input_received(press(Role::Move), 9000, 9000, &mut radio);
-    assert_eq!(runtime.focus_index(), 1, "input is ignored while suspended");
+    assert_eq!(runtime.focus_index(), 0, "input is ignored while suspended");
     assert!(!screen.present(&mut runtime, &radio, 9000));
     assert!(!screen.present(&mut runtime, &radio, 20_000));
 }
@@ -182,6 +182,67 @@ fn a_new_startup_status_draws_at_once_where_it_shows() {
     );
     runtime.set_startup_status(device_api::sensors::Startup::Probing);
     assert!(!screen.present(&mut runtime, &radio, 4402));
+}
+
+#[test]
+fn act_on_home_starts_the_ride_at_once() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.navigation.go(To::Page(Page::Home));
+    let mut screen = Screen::new();
+    assert!(screen.present(&mut runtime, &radio, 1000));
+    runtime.input_received(press(Role::Act), 2000, 2000, &mut radio);
+    assert!(runtime.navigation.page() == Page::Ride);
+    tick(&mut runtime, &mut journal, &mut radio, 2100);
+    assert!(runtime.ride.active().riding());
+}
+
+fn start_from_home_planned(stop: usize) -> Runtime {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.training.selected = Some(crate::workout::library::Id::BuiltIn(0));
+    runtime.navigation.go(To::Page(Page::Home));
+    runtime.focus_stop(stop);
+    runtime.input_received(press(Role::Act), 2000, 2000, &mut radio);
+    assert!(runtime.navigation.page() == Page::Ride);
+    tick(&mut runtime, &mut journal, &mut radio, 2100);
+    assert!(runtime.ride.active().riding());
+    runtime
+}
+
+#[test]
+fn home_opens_on_today_s_workout_whose_card_starts_it() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.training.selected = Some(crate::workout::library::Id::BuiltIn(0));
+    runtime.navigation.go(To::Page(Page::Home));
+    runtime.compose_shown();
+    assert_eq!(runtime.focus_index(), 1, "the card, under the widget");
+    let runtime = start_from_home_planned(1);
+    assert!(runtime.training.player.is_some(), "the workout plays");
+    assert!(runtime.workout_pages());
+}
+
+#[test]
+fn just_ride_rides_free_and_keeps_today_s_workout_planned() {
+    let mut runtime = start_from_home_planned(2);
+    assert!(runtime.training.player.is_none());
+    assert!(!runtime.workout_pages(), "no workout page in the deck");
+    runtime.leave_workout();
+    assert!(
+        runtime.chosen_name().is_some(),
+        "still planned once it ends"
+    );
+}
+
+#[test]
+fn a_ridden_workout_is_no_longer_planned_once_its_ride_ends() {
+    let mut runtime = start_from_home_planned(1);
+    runtime.leave_workout();
+    assert!(runtime.chosen_name().is_none());
 }
 
 #[test]

@@ -1,8 +1,9 @@
 use super::canvas::Canvas;
-use super::chrome::{BLACK, CARD, PRESSED, Rect, Row, blend, rounded};
+use super::chrome::{Rect, Row, Shown, blend, rounded};
 use super::cue::Cue;
 use super::scaled::Scaled;
 use super::sensors::Glance;
+use super::theme::{self, Theme};
 use crate::compose::builtin::Laid;
 use crate::compose::data::{Data, Effort, ListKind, Metric};
 use crate::compose::registry::SPACE;
@@ -32,9 +33,18 @@ impl Data for Facts {
     fn sheet(&self) -> Option<&Facts> {
         Some(self)
     }
+
+    fn theme(&self) -> &'static Theme {
+        if self.light {
+            &theme::LIGHT
+        } else {
+            &theme::DARK
+        }
+    }
 }
 
-const FOOT_UNITS: usize = 18;
+const FOOT_UNITS: usize = 25;
+const UNDER_HANDLE_UNITS: usize = 10;
 const RADIUS_UNITS: usize = 22;
 const HANDLE_UNITS: (usize, usize) = (36, 5);
 const SHOWN_UNDER: u8 = 8;
@@ -43,6 +53,7 @@ const SHOWN_UNDER: u8 = 8;
 pub struct Over<'v> {
     pub bottom: usize,
     pub cues: &'v [Cue],
+    pub theme: &'static Theme,
 }
 
 pub fn bottom(laid: &Laid, at: &Scaled) -> usize {
@@ -55,7 +66,7 @@ pub fn bottom(laid: &Laid, at: &Scaled) -> usize {
 pub const ROOM: (usize, usize) = (13, 3);
 
 pub fn prepare(laid: &Laid, facts: &Facts, bottom: usize, canvas: &mut Canvas) {
-    canvas.hide(0..bottom);
+    canvas.hide_within(0..bottom);
     canvas.start_cover(ROOM);
     laid.prepare(facts, canvas);
 }
@@ -64,31 +75,33 @@ impl Over<'_> {
     pub fn paint(&self, row: &mut Row, canvas: &Canvas, device: &super::Device) {
         let (y, at) = (row.y(), &device.scaled);
         let width = at.panel.width;
-        let black = row.ink(BLACK);
-        row.each_over(0..width, |_, under| Some(blend(under, black, SHOWN_UNDER)));
+        let plain = &mut row.plain();
+        plain.each_over(0..width, |_, under| {
+            Some(blend(under, Shown(0), SHOWN_UNDER))
+        });
         if y < self.bottom {
             let card = self.card(at);
-            let fill = row.ink(CARD);
+            let fill = Shown(self.theme.card);
             let solid = y + at.unit(RADIUS_UNITS) < self.bottom;
             if solid {
-                row.span_shown(0..width, fill);
+                plain.span_shown(0..width, fill);
             } else {
                 let radius = at.unit(RADIUS_UNITS);
-                row.each_over(0..width, |x, under| {
+                plain.each_over(0..width, |x, under| {
                     let coverage = rounded(card, radius, x, y);
                     (coverage > 0).then(|| blend(fill, under, coverage))
                 });
             }
             let handle = self.handle(at);
             if (handle.top..handle.bottom).contains(&y) {
-                let ink = row.ink(PRESSED);
+                let ink = Shown(self.theme.rule);
                 let radius = handle.height() / 2;
-                row.each_over(handle.left..handle.right, |x, under| {
+                plain.each_over(handle.left..handle.right, |x, under| {
                     let coverage = rounded(handle, radius, x, y);
                     (coverage > 0).then(|| blend(ink, under, coverage))
                 });
             }
-            canvas.paint_cover(row);
+            canvas.paint_cover(plain);
         }
         for cue in self.cues {
             cue.paint(row, device);
@@ -106,7 +119,7 @@ impl Over<'_> {
         device: &super::Device,
     ) -> super::chrome::Shown {
         let at = &device.scaled;
-        let mut color = blend(under, look.ink(BLACK), SHOWN_UNDER);
+        let mut color = blend(under, Shown(0), SHOWN_UNDER);
         if y < self.bottom {
             let card = self.card(at);
             let radius = at.unit(RADIUS_UNITS);
@@ -117,14 +130,14 @@ impl Over<'_> {
                 rounded(card, radius, x, y)
             };
             if coverage > 0 {
-                color = blend(look.ink(CARD), color, coverage);
+                color = blend(Shown(self.theme.card), color, coverage);
             }
             let handle = self.handle(at);
             let coverage = rounded(handle, handle.height() / 2, x, y);
             if coverage > 0 {
-                color = blend(look.ink(PRESSED), color, coverage);
+                color = blend(Shown(self.theme.rule), color, coverage);
             }
-            color = canvas.cover_pixel(look, x, y, color);
+            color = canvas.cover_pixel(super::chrome::Look::PLAIN, x, y, color);
         }
         for cue in self.cues {
             color = cue.pixel(look, x, y, color, device);
@@ -142,7 +155,7 @@ impl Over<'_> {
     fn handle(&self, at: &Scaled) -> Rect {
         let (width, height) = (at.unit(HANDLE_UNITS.0), at.unit(HANDLE_UNITS.1));
         let left = (at.panel.width - width) / 2;
-        let top = self.bottom - at.unit(FOOT_UNITS) / 2 - height / 2;
+        let top = self.bottom - at.unit(UNDER_HANDLE_UNITS) - height;
         Rect {
             left,
             top,
@@ -198,8 +211,8 @@ mod tests {
                     }
                 }
                 let canvas = view.canvas();
-                assert!(canvas.shows("SENSORS"), "{what}");
-                assert!(canvas.shows(if light { "DAY" } else { "NIGHT" }), "{what}");
+                assert!(canvas.shows("Sensors"), "{what}");
+                assert!(canvas.shows(if light { "Day" } else { "Night" }), "{what}");
                 let cues: std::vec::Vec<_> = view.prepare().cues().to_vec();
                 assert!(cues.is_empty(), "{what}: the screen's cues go under");
             }
@@ -222,7 +235,7 @@ mod tests {
                 right: device.scaled.panel.width,
                 bottom,
             };
-            canvas.assert_laid_out_at(&device.scaled, card, &["SENSORS"], "the sheet");
+            canvas.assert_laid_out_at(&device.scaled, card, &["Sensors"], "the sheet");
             assert!(
                 bottom < device.scaled.panel.height * 2 / 3,
                 "{bottom}: the screen shows under it"

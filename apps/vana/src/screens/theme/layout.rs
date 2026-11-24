@@ -44,5 +44,6 @@ pub const LAYOUT: Layout = Layout {
         heading: FaceRole::Heading,
         label: FaceRole::Label,
         note: FaceRole::Note,
+        clock: FaceRole::Clock,
     },
 };

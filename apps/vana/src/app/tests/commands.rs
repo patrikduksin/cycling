@@ -180,13 +180,13 @@ fn ride_status_reports_the_page_and_home_selection() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
-    runtime.focus_stop(2);
+    runtime.focus_stop(1);
     let mut out = std::string::String::new();
     assert_eq!(
         runtime.command("RIDE STATUS", &mut journal, &mut MustNotWrite, 0, &mut out),
         "OK"
     );
-    assert!(out.contains(" page=home home_cursor=2 pending=0"), "{out}");
+    assert!(out.contains(" page=home home_cursor=1 pending=0"), "{out}");
     let mut screen = super::presentation::Screen::new();
     runtime.power(&mut screen.shell, &mut super::power::Switch::new(true), 0);
     // A power sheet covers Home: a harness must not press through it.

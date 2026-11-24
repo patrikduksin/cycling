@@ -1,8 +1,10 @@
-use super::{BAR_UNITS, Builtin, Choices, Nodes};
+use super::{Builtin, Choices, Nodes};
 use crate::compose::input::{Action, Button, Buttons, Go};
 use crate::compose::node::{Node, Size};
-use crate::compose::registry::{HOME_CARD, SPACE};
-use crate::compose::tiles::home::Card;
+use crate::compose::registry::{FACE, SPACE, START, TODAY, WIDGET};
+use crate::compose::tiles::home::{
+    Begin, FACE_UNITS, JUST_RIDE_UNITS, RIDE_UNITS, TODAY_UNITS, WIDGET_UNITS,
+};
 
 pub const BUILTIN: &Builtin = &Builtin {
     tree,
@@ -17,37 +19,48 @@ pub const BUILTIN: &Builtin = &Builtin {
     },
 };
 
-const SIDE_UNITS: u8 = 10;
-const GAP_UNITS: u8 = 8;
+const WIDGET_TOP: u8 = 12;
+const WIDGET_LEFT: u8 = 12;
+const BETWEEN: u8 = 7;
+const SIDE: u8 = 8;
+const FOOT: u8 = 10;
 
-const fn space(units: u8) -> Node {
-    Node::leaf(SPACE, 0, Size::units(units))
+const fn space(size: Size) -> Node {
+    Node::leaf(SPACE, 0, size)
 }
 
-const fn card(card: Card, size: Size) -> Node {
-    Node::leaf(HOME_CARD, card as u8, size)
-}
-
-fn tree(_: &Choices) -> Nodes {
-    let (grow, content) = (Size::grow(1), Size::CONTENT);
+fn tree(choices: &Choices) -> Nodes {
+    let units = Size::units;
+    let start: &[Node] = if choices.today {
+        &[
+            Node::col(5, Size::grow(1)),
+            space(Size::grow(1)),
+            Node::leaf(TODAY, 0, units(TODAY_UNITS)),
+            space(units(BETWEEN)),
+            Node::leaf(START, Begin::JustRide as u8, units(JUST_RIDE_UNITS)),
+            space(units(FOOT)),
+        ]
+    } else {
+        &[
+            Node::col(3, Size::grow(1)),
+            space(Size::grow(1)),
+            Node::leaf(START, Begin::Ride as u8, units(RIDE_UNITS)),
+            space(units(FOOT)),
+        ]
+    };
     [
-        Node::col(2, grow),
-        space(BAR_UNITS),
-        Node::row(3, grow),
-        space(SIDE_UNITS),
-        Node::col(7, grow),
-        space(GAP_UNITS),
-        card(Card::Ride, grow),
-        space(GAP_UNITS),
-        card(Card::Sensors, content),
-        space(GAP_UNITS),
-        Node::row(3, content),
-        card(Card::Train, content),
-        space(GAP_UNITS),
-        card(Card::Settings, grow),
-        space(GAP_UNITS),
-        space(SIDE_UNITS),
+        Node::col(4, Size::grow(1)),
+        Node::leaf(FACE, 0, units(FACE_UNITS)),
+        space(units(WIDGET_TOP)),
+        Node::row(3, units(WIDGET_UNITS)),
+        space(units(WIDGET_LEFT)),
+        Node::leaf(WIDGET, 0, Size::CONTENT),
+        space(Size::grow(1)),
+        Node::row(3, Size::grow(1)),
+        space(units(SIDE)),
     ]
     .into_iter()
+    .chain(start.iter().copied())
+    .chain([space(units(SIDE))])
     .collect()
 }

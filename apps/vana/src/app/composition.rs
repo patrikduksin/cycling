@@ -5,7 +5,7 @@
 use super::Runtime;
 use super::navigation::To;
 use crate::compose::builtin::{Asks, Choices, Laid, Laids, ScreenId};
-use crate::compose::input::{self, Action, Focus, Go, ListAct, OnPage, Owners, SheetAct};
+use crate::compose::input::{self, Action, Focus, Go, ListAct, OnPage, Owners, Plan, SheetAct};
 use crate::compose::node::What;
 use crate::compose::{Flags, Screens};
 use crate::ride::course::nav::Sign;
@@ -75,6 +75,7 @@ impl Runtime {
         let choices = Choices {
             main_slots: self.preferences.options.main_slots,
             editing: self.editing_number(),
+            today: self.today().is_some(),
         };
         let shown = self.screen_id();
         let changed = super::overrides::shown(&self.overrides);
@@ -97,6 +98,7 @@ impl Runtime {
         let choices = Choices {
             main_slots: self.preferences.options.main_slots,
             editing: self.editing_number(),
+            today: self.today().is_some(),
         };
         let flags = self.composition.main().flags();
         let shown = self.screen_id();
@@ -437,5 +439,12 @@ impl<A: Ant> Owners for Carried<'_, A> {
 
     fn sheet(&mut self, act: SheetAct) {
         self.runtime.sheet_act(act, self.ant, self.now);
+    }
+
+    fn start(&mut self, plan: Plan) {
+        let runtime = &mut *self.runtime;
+        runtime.timing.press(self.received);
+        runtime.training.free = plan == Plan::Free;
+        runtime.ride_press(Role::Act, self.held, self.received, self.now);
     }
 }

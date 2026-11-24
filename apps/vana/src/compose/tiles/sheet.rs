@@ -3,22 +3,43 @@ use crate::compose::input::{Action, SheetAct};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
-use crate::screens::chrome::{Align, BLACK, RAISED, SECONDARY, WHITE};
-use crate::screens::icons::{Sensor, Size, StaticIcon};
+use crate::screens::chrome::{Align, Rect};
+use crate::screens::icons::{Icon, Sensor, Size, StaticIcon, Symbol};
 use crate::screens::scaled::Scaled;
 use crate::screens::sheet::SENSORS;
-use firmware_shell::rendering::font::FaceRole;
+use crate::screens::theme::LAYOUT;
 
-const RADIUS_UNITS: usize = 14;
-const PAD_UNITS: usize = 12;
+const BAR_RADIUS: usize = 14;
+const TILE_RADIUS: usize = 18;
+const PAD: usize = 10;
+const SUN_INSET: usize = 12;
+const ICON_GAP: usize = 8;
+const WORD_GAP: usize = 2;
+const ICON_INK: usize = 16;
+const WORD_ROOM: usize = 30;
+const DOT: usize = 6;
+const STACK_GAP: usize = 5;
 
-fn disc(out: &mut Canvas, (cx, cy): (usize, usize), radius: usize, color: u16) {
-    out.shape(Shape::Disc {
-        cx: 4 * cx as i32,
-        cy: 4 * cy as i32,
-        radius: 4 * radius as i32,
+fn icon_at(out: &mut Canvas, icon: &'static Icon, (left, top): (usize, usize), color: u16) {
+    let ink = icon.ink(0, 0);
+    out.shape(Shape::Icon {
+        icon: StaticIcon(icon),
+        left: left - ink.left,
+        top: top - ink.top,
         color,
     });
+}
+
+fn icon_centred(
+    out: &mut Canvas,
+    icon: &'static Icon,
+    (left, middle): (usize, usize),
+    color: u16,
+) -> Rect {
+    let ink = icon.ink(0, 0);
+    let top = middle - ink.height() / 2;
+    icon_at(out, icon, (left, top), color);
+    icon.ink(left - ink.left, top - ink.top)
 }
 
 pub struct Level;
@@ -40,28 +61,22 @@ impl Tile for Level {
         let Some(facts) = data.sheet() else {
             return;
         };
+        let theme = data.theme();
         let rect = placed.rect.rect();
         let split = rect.left + rect.width() * usize::from(facts.level.min(100)) / 100;
         out.shape(Shape::Split {
             rect,
-            radius: at.unit(RADIUS_UNITS),
+            radius: at.unit(BAR_RADIUS),
             split,
-            colors: [WHITE, RAISED],
+            colors: [theme.text, theme.raised],
         });
-        let middle = rect.top + rect.height() / 2;
-        let pad = at.unit(PAD_UNITS);
-        disc(
-            out,
-            (rect.left + pad + at.unit(5), middle),
-            at.unit(4),
-            BLACK,
-        );
-        disc(
-            out,
-            (rect.right - pad - at.unit(7), middle),
-            at.unit(6),
-            SECONDARY,
-        );
+        let middle = (rect.top + rect.bottom) / 2;
+        let pad = at.unit(SUN_INSET);
+        let small = at.art.symbol(Symbol::SunSmall);
+        icon_centred(out, small, (rect.left + pad, middle), theme.bg);
+        let large = at.art.symbol(Symbol::SunLarge);
+        let width = large.ink(0, 0).width();
+        icon_centred(out, large, (rect.right - pad - width, middle), theme.sub);
     }
 
     fn action((): ()) -> Option<Action> {
@@ -76,11 +91,14 @@ impl Tile for Sensors {
     const NAME: &'static str = "sheet sensors";
 
     fn forms((): (), at: &Scaled) -> Forms {
+        let word = at.unit(WORD_ROOM);
+        let chevron = at.art.symbol(Symbol::ChevronRight).ink(0, 0).width();
+        let icons = SENSORS * at.unit(ICON_INK + ICON_GAP);
         forms(&[Form {
-            width: at.unit(130) as u16,
+            width: (2 * at.unit(PAD) + icons + at.unit(WORD_GAP) + word + chevron) as u16,
             height: at.unit(40) as u16,
-            shapes: 1 + 2 * SENSORS as u8,
-            runs: 2,
+            shapes: 2 + 2 * SENSORS as u8,
+            runs: 1,
         }])
     }
 
@@ -88,46 +106,47 @@ impl Tile for Sensors {
         let Some(facts) = data.sheet() else {
             return;
         };
+        let theme = data.theme();
         let rect = placed.rect.rect();
         out.shape(Shape::Panel {
             rect,
-            radius: at.unit(RADIUS_UNITS),
-            color: RAISED,
+            radius: at.unit(TILE_RADIUS),
+            color: theme.raised,
         });
-        let (pad, pitch) = (at.unit(PAD_UNITS), at.unit(28));
-        let caption = at.face(FaceRole::Caption);
-        let (gap, icons) = (at.unit(4), at.art.sensor(Sensor::Heart, Size::Small).size);
-        let block = usize::from(icons) + gap + caption.fit_height();
-        let top = rect.top + rect.height().saturating_sub(block) / 2;
-        let mut x = rect.left + pad;
+        let middle = (rect.top + rect.bottom) / 2;
+        let mut x = rect.left + at.unit(PAD);
         for glance in &facts.sensors {
-            let sensor = Sensor::of(glance.kind);
-            let icon = at.art.sensor(sensor, Size::Small);
-            out.shape(Shape::Icon {
-                icon: StaticIcon(icon),
-                left: x,
-                top,
-                color: sensor.tint(),
+            let icon = at.art.sensor(Sensor::of(glance.kind), Size::Small);
+            let (ink, dot) = super::home::sensor_colors(theme, glance);
+            let drawn = icon_centred(out, icon, (x, middle), ink);
+            out.shape(Shape::Disc {
+                cx: (4 * drawn.right) as i32,
+                cy: (4 * drawn.top) as i32,
+                radius: (2 * at.unit(DOT)) as i32,
+                color: dot,
             });
-            let side = usize::from(icon.size);
-            disc(out, (x + side, top + at.unit(2)), at.unit(3), glance.color);
-            x += pitch;
+            x = drawn.right + at.unit(ICON_GAP);
         }
-        let chevron = rect.right - pad;
-        let width = chevron.saturating_sub(rect.left + 2 * pad);
-        let base = top + block;
+        let chevron = at.art.symbol(Symbol::ChevronRight);
+        let right = rect.right - at.unit(PAD) - chevron.ink(0, 0).width();
+        icon_centred(out, chevron, (right, middle), theme.sub);
+        let faces = [at.face(LAYOUT.face.label), at.face(LAYOUT.face.note)];
+        let left = x + if facts.sensors.is_empty() {
+            0
+        } else {
+            at.unit(WORD_GAP)
+        };
+        let base = middle + usize::from(faces[0].cap) / 2;
+        let width = right.saturating_sub(left);
         out.fit(
-            &[caption],
-            b"SENSORS",
+            &faces,
+            b"Sensors",
             width,
-            rect.left + pad,
+            left,
             base,
             Align::Left,
-            WHITE,
+            theme.text,
         );
-        let body = at.face(FaceRole::Body);
-        let middle = rect.top + (rect.height() + body.fit_height()) / 2;
-        out.fit(&[body], b">", pad, chevron, middle, Align::Right, SECONDARY);
     }
 
     fn action((): ()) -> Option<Action> {
@@ -145,7 +164,7 @@ impl Tile for DayNight {
         forms(&[Form {
             width: at.unit(40) as u16,
             height: at.unit(40) as u16,
-            shapes: 3,
+            shapes: 2,
             runs: 1,
         }])
     }
@@ -154,32 +173,34 @@ impl Tile for DayNight {
         let Some(facts) = data.sheet() else {
             return;
         };
+        let theme = data.theme();
         let rect = placed.rect.rect();
         out.shape(Shape::Panel {
             rect,
-            radius: at.unit(RADIUS_UNITS),
-            color: RAISED,
+            radius: at.unit(TILE_RADIUS),
+            color: theme.raised,
         });
-        let caption = at.face(FaceRole::Caption);
-        let gap = at.unit(5);
-        let (radius, centre) = (at.unit(7), rect.center_x());
-        let block = 2 * radius + gap + caption.fit_height();
+        let (symbol, word): (_, &[u8]) = if facts.light {
+            (Symbol::Sun, b"Day")
+        } else {
+            (Symbol::Moon, b"Night")
+        };
+        let icon = at.art.symbol(symbol);
+        let ink = icon.ink(0, 0);
+        let note = at.face(LAYOUT.face.note);
+        let block = ink.height() + at.unit(STACK_GAP) + usize::from(note.cap);
         let top = rect.top + rect.height().saturating_sub(block) / 2;
-        let cy = top + radius;
-        disc(out, (centre, cy), radius, WHITE);
-        if !facts.light {
-            disc(out, (centre + radius / 2, cy - radius / 2), radius, RAISED);
-        }
-        let word: &[u8] = if facts.light { b"DAY" } else { b"NIGHT" };
+        let centre = rect.center_x();
+        icon_at(out, icon, (centre - ink.width() / 2, top), theme.text);
         let base = top + block;
         out.fit(
-            &[caption],
+            &[note],
             word,
             rect.width(),
             centre,
             base,
             Align::Center,
-            SECONDARY,
+            theme.sub,
         );
     }
 

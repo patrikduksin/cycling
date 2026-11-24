@@ -15,7 +15,7 @@ use core::fmt::Write;
 
 pub struct TopLine;
 
-const fn gps_color(theme: &Theme, gps: Gps) -> u16 {
+pub(crate) const fn gps_color(theme: &Theme, gps: Gps) -> u16 {
     match gps {
         Gps::Fixed => theme.good,
         Gps::Searching => theme.warn,
@@ -23,7 +23,7 @@ const fn gps_color(theme: &Theme, gps: Gps) -> u16 {
     }
 }
 
-const fn battery_color(theme: &Theme, battery: Battery) -> u16 {
+pub(crate) const fn battery_color(theme: &Theme, battery: Battery) -> u16 {
     if battery.charging {
         theme.good
     } else if battery.percent < LOW_BATTERY {

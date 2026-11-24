@@ -451,8 +451,8 @@ mod tests {
     fn a_mouse_click_on_the_screen_is_a_tap() {
         let mut live = Live::new();
         boot(&mut live);
-        // The SENSORS tile, in window coordinates.
-        let (x, y) = ((MARGIN + 120 * SCALE) as f32, (MARGIN + 220 * SCALE) as f32);
+        // Home's status widget, in window coordinates.
+        let (x, y) = ((MARGIN + 40 * SCALE) as f32, (MARGIN + 125 * SCALE) as f32);
         live.pointer(x, y, true);
         run(&mut live, 100);
         live.pointer(x, y, false);
@@ -477,7 +477,7 @@ mod tests {
             let mut live = Live::new();
             boot(&mut live);
             live.speed = speed;
-            let (x, y) = window(120, 220);
+            let (x, y) = window(40, 125);
             let start = live.sim.device.now;
             live.pointer(x, y, true);
             run(&mut live, 100);
@@ -532,7 +532,7 @@ mod tests {
         live.key_up('q');
         assert!(!live.sim.is_off(), "holding Q did not turn it on");
         boot(&mut live);
-        assert!(live.sim.screen().contains("READY TO RIDE"));
+        assert!(live.sim.on_home(), "{}", live.sim.screen().text());
     }
 
     #[test]
@@ -566,11 +566,7 @@ mod tests {
                 !screen.contains("TURN OFF"),
                 "{speed}x: the hold opened the sheet"
             );
-            assert!(
-                screen.contains("READY TO RIDE"),
-                "{speed}x:\n{}",
-                screen.text()
-            );
+            assert!(live.sim.on_home(), "{speed}x:\n{}", screen.text());
         }
     }
 

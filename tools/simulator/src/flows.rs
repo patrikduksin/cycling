@@ -9,6 +9,8 @@ pub fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
 }
 
+const WIDGET_RING: (usize, usize) = (40, 109);
+
 impl Sim {
     /// The host reads its last outcome (`RIDE STATUS`) before VANA accepts another ride action.
     pub fn command_after_reading_outcome(&mut self, text: &str) -> (&'static str, String) {
@@ -32,15 +34,16 @@ impl Sim {
         }
     }
 
-    /// Choose a Home card, such as RIDE, SENSORS or TRAIN; the focused
-    /// one has a white title. One extra press covers a dimmed screen, which a
-    /// press only wakes.
+    /// Leave Home for a page. SENSORS is Home's status widget, and RIDE
+    /// starts a ride.
     #[track_caller]
     pub fn home(&mut self, label: &str) {
-        for _ in 0..crate::sim::HOME_CARDS + 2 {
-            if label == "RIDE" && self.vana_page() == "ride" {
-                return;
-            }
+        match label {
+            "SENSORS" => return self.home_sensors(),
+            "RIDE" => return self.press_home_start(),
+            _ => {}
+        }
+        for _ in 0..crate::sim::HOME_STOPS + 2 {
             if self.screen().white(label) {
                 self.press(Role::Act);
                 return;
@@ -146,18 +149,54 @@ impl Sim {
         );
     }
 
-    /// Home shows its big RIDE card.
     pub fn on_home(&self) -> bool {
-        self.screen()
-            .run("RIDE")
-            .is_some_and(|run| run.smooth && run.scale >= 3)
+        self.device.lit() && self.vana_page() == "home"
+    }
+
+    fn widget_focused(&self) -> bool {
+        use vana::screens::theme::{DARK, LIGHT};
+        let screen = self.screen();
+        let at = vana::screens::scaled::Scaled::fitting(screen.width, screen.height);
+        let unit = |n: usize| at.map_or(n, |at| at.unit(n));
+        let (x, y) = (unit(WIDGET_RING.0), unit(WIDGET_RING.1));
+        let pixel = screen.pixels[y * screen.width + x];
+        pixel == DARK.focus || pixel == LIGHT.focus
+    }
+
+    #[track_caller]
+    pub fn home_sensors(&mut self) {
+        for _ in 0..crate::sim::HOME_STOPS + 2 {
+            if self.on_home() && self.widget_focused() {
+                self.press(Role::Act);
+                return;
+            }
+            self.press(Role::Move);
+        }
+        panic!(
+            "Home's widget never takes the focus; screen:\n{}",
+            self.screen().text()
+        );
+    }
+
+    /// Press Home's start, the stop Home opens on. A second press covers a
+    /// dimmed screen, which a press only wakes. Nothing to press when a
+    /// rider rolling off on Home started the ride already.
+    pub fn press_home_start(&mut self) {
+        if self.vana_page() == "ride" {
+            return;
+        }
+        assert!(self.on_home(), "{}", self.screen().text());
+        self.press(Role::Act);
+        if self.on_home() {
+            self.press(Role::Act);
+        }
     }
 
     pub fn start_ride(&mut self) {
         if self.vana_page() == "ride" {
             return;
         }
-        self.home("RIDE");
+        self.press_home_start();
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }
 
@@ -184,100 +223,30 @@ impl Sim {
         );
     }
 
-    #[track_caller]
-    pub fn open_mode_row(&mut self) {
-        self.home("SETTINGS");
-        self.swipe_next();
-        self.swipe_next();
-        for _ in 0..4 {
-            self.press(Role::Move);
-        }
-        self.expect_text("DISPLAY");
-    }
-
     pub fn resume_ride(&mut self) {
         self.press(Role::Act);
         self.wait_for("RESUMED", seconds(3)).unwrap();
     }
 
-    /// From Home, open Settings and set the training profile with buttons:
-    /// BottomLeft moves to a field, BottomRight edits it, BottomLeft/Right
-    /// step it by five and TopLeft finishes. Ends on Settings.
+    /// Set an option from the terminal, as `OPTION AUTO_LAP START` does.
     #[track_caller]
-    pub fn edit_profile(&mut self, ftp_watts: u16, lthr_bpm: u16) {
-        self.home("SETTINGS");
-        for (index, target) in [ftp_watts, lthr_bpm].into_iter().enumerate() {
-            if index > 0 {
-                self.press(Role::Move);
-            }
-            self.press(Role::Act);
-            self.step_profile_field(index, target, |sim, raise| {
-                sim.press(if raise { Role::Act } else { Role::Move })
-            });
-            self.press(Role::Back);
-        }
+    pub fn option(&mut self, name: &str, value: &str) {
+        let (status, out) = self.command(&format!("OPTION {name} {value}"));
+        assert_eq!(status, "OK", "OPTION {name} {value}: {out}");
     }
 
-    /// From Home, open Settings and set the training profile by touch: tap a
-    /// field, then the minus or plus pad. TopLeft finishes. Ends on Settings.
+    /// Set a profile field from the terminal, as `PROFILE FTP 250` does.
     #[track_caller]
-    pub fn edit_profile_by_touch(&mut self, ftp_watts: u16, lthr_bpm: u16) {
-        self.home("SETTINGS");
-        for (index, target) in [ftp_watts, lthr_bpm].into_iter().enumerate() {
-            self.tap(120, 86 + 78 * index as u16);
-            self.step_profile_field(index, target, |sim, raise| {
-                sim.tap(if raise { 176 } else { 64 }, 237)
-            });
-            self.press(Role::Back);
-        }
+    pub fn profile(&mut self, field: &str, value: &str) {
+        let (status, out) = self.command(&format!("PROFILE {field} {value}"));
+        assert_eq!(status, "OK", "PROFILE {field} {value}: {out}");
     }
 
-    /// On Settings, swipe to the section with the `label` row, then tap the
-    /// row until it reads `value`. Ends on that section.
+    /// Set the training profile from the terminal.
     #[track_caller]
-    pub fn set_option(&mut self, label: &str, value: &str) {
-        for _ in 0..16 {
-            if self.screen().run(label).is_some() {
-                break;
-            }
-            self.swipe_next();
-        }
-        const TAPS: usize = 12;
-        for tap in 0..=TAPS {
-            let screen = self.screen();
-            if screen.field(label).as_deref() == Some(value) {
-                self.note(NoteKind::Check, format!("{label} shows {value}"));
-                return;
-            }
-            if tap == TAPS {
-                break;
-            }
-            let run = screen
-                .run(label)
-                .unwrap_or_else(|| panic!("no {label} row; screen:\n{}", screen.text()));
-            self.tap(run.x as u16 + 4, run.y as u16 + 4);
-        }
-        panic!(
-            "{label} never read {value}; screen:\n{}",
-            self.screen().text()
-        );
-    }
-
-    #[track_caller]
-    fn step_profile_field(&mut self, index: usize, target: u16, step: impl Fn(&mut Self, bool)) {
-        let label = ["FTP WATTS", "LTHR BPM"][index];
-        for _ in 0..200 {
-            let screen = self.screen();
-            let value: u16 = screen
-                .field(label)
-                .and_then(|value| value.parse().ok())
-                .unwrap_or_else(|| panic!("no {label}; screen:\n{}", screen.text()));
-            if value == target {
-                break;
-            }
-            step(self, value < target);
-        }
-        self.expect_field(label, &target.to_string());
+    pub fn set_profile(&mut self, ftp_watts: u16, lthr_bpm: u16) {
+        self.profile("FTP", &ftp_watts.to_string());
+        self.profile("LTHR", &lthr_bpm.to_string());
     }
 
     /// The recorder state from `RIDE STATUS`, such as "recording"; the
@@ -289,19 +258,31 @@ impl Sim {
             .to_string()
     }
 
+    /// Choose the workout `name` from the terminal; the next ride plays it.
     #[track_caller]
-    pub fn start_workout(&mut self, name: &str) {
-        self.home("TRAIN");
-        self.expect_text("WORKOUTS");
-        for _ in 0..24 {
-            if self.screen().white(name) {
-                self.press(Role::Act);
-                self.wait_for("RECORDING", seconds(2)).unwrap();
+    pub fn choose_workout(&mut self, name: &str) {
+        let (status, list) = self.command("WORKOUT LIST");
+        assert_eq!(status, "OK", "WORKOUT LIST: {list}");
+        let rows: usize = status_field(&list, "rows")
+            .and_then(|rows| rows.parse().ok())
+            .unwrap_or_else(|| panic!("WORKOUT LIST: {list}"));
+        let wanted = format!("workout={}", name.replace(' ', "_"));
+        for row in 1..rows {
+            let (status, out) = self.command(&format!("WORKOUT SELECT {row}"));
+            assert_eq!(status, "OK", "WORKOUT SELECT {row}: {out}");
+            let (_, chosen) = self.command("WORKOUT STATUS");
+            if chosen.split_whitespace().any(|field| field == wanted) {
                 return;
             }
-            self.press(Role::Move);
         }
-        panic!("no workout {name:?}; screen:\n{}", self.screen().text());
+        panic!("no workout {name:?}: {list}");
+    }
+
+    /// From Home, choose the workout `name` and start its ride.
+    #[track_caller]
+    pub fn start_workout(&mut self, name: &str) {
+        self.choose_workout(name);
+        self.start_ride();
     }
 
     /// `WORKOUT STATUS` as fields, such as `step` = "3/12".

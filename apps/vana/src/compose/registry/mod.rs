@@ -8,6 +8,7 @@ mod kit;
 mod map_summary;
 mod primitive;
 mod ride;
+mod road;
 mod script;
 mod scroll;
 mod sensors;
@@ -15,7 +16,7 @@ mod statics;
 
 #[allow(unused_imports)]
 pub use {
-    climb_workout::*, kit::*, map_summary::*, primitive::*, ride::*, script::*, scroll::*,
+    climb_workout::*, kit::*, map_summary::*, primitive::*, ride::*, road::*, script::*, scroll::*,
     sensors::*, statics::*,
 };
 
@@ -40,7 +41,8 @@ const FAMILIES: &[Family] = &[
         &[&super::tile::Erased::<super::input::tests::Tap>::NEW],
     ),
     family(16, 32, ride::TILES),
-    family(32, 40, climb_workout::TILES),
+    family(road::ROAD_FIELD, 36, road::TILES),
+    family(climb_workout::WORKOUT_LINE, 40, climb_workout::TILES),
     family(40, 48, map_summary::TILES),
     family(48, 56, statics::TILES),
     family(statics::LINE, 64, statics::QUESTIONS),

@@ -7,7 +7,7 @@
 //! it calls `Runtime::look_ahead` once per main-loop pass with the owned MMC
 //! region. The pack lives in its `TERRAIN` volume (`docs/terrain.md`); each
 //! call does one bounded step. Without a `Terrain` or a ready pack the climb
-//! page keeps its map-free view and says "NO MAP".
+//! page keeps its map-free view.
 use super::Runtime;
 use crate::ride::climb_ahead::{self, Forecast, Pinned};
 use device_api::bulk::ReadWrite;

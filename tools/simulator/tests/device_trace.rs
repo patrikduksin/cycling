@@ -54,7 +54,10 @@ fn recorded(dir: &Path) -> PathBuf {
     sim.pair(&["POWER METER"]);
     sim.start_ride();
     sim.ride_at(14.0, 240.0, 0.0, 80.0);
-    while !sim.screen().contains("CLIMBING") {
+    while !["CLIMB DIST KM", "DIST TO TOP KM"]
+        .iter()
+        .any(|words| sim.screen().contains(words))
+    {
         assert!(sim.world().distance_m < 300.0, "{}", sim.screen().text());
         sim.advance(seconds(1));
     }

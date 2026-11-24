@@ -378,15 +378,29 @@ impl Pinned {
     /// Steepness at `odometer_mm`: the grade over 100 m each side, as the
     /// ride's profile has it.
     pub fn steepness(&self, odometer_mm: u64) -> Steepness {
-        const LOCAL: usize = 5;
         let index = self.index(odometer_mm).min(self.len.saturating_sub(1));
+        self.grade_tenths(index)
+            .map_or(Steepness::Easy, Steepness::of)
+    }
+
+    /// The steepest grade from the foot to the top, as `steepness` reads
+    /// it, in tenths of a percent.
+    pub fn steepest_tenths(&self) -> Option<i32> {
+        let last = self.len.saturating_sub(1);
+        let (foot, top) = (self.index(self.foot_mm), self.index(self.top_mm));
+        (foot.min(last)..=top.min(last))
+            .filter_map(|index| self.grade_tenths(index))
+            .max()
+    }
+
+    fn grade_tenths(&self, index: usize) -> Option<i32> {
+        const LOCAL: usize = 5;
         let from = index.saturating_sub(LOCAL);
         let to = (index + LOCAL).min(self.len.saturating_sub(1));
-        if to <= from {
-            return Steepness::Easy;
-        }
-        let rise = i32::from(self.samples[to]) - i32::from(self.samples[from]);
-        Steepness::of(rise * 5 / (to - from) as i32)
+        (to > from).then(|| {
+            let rise = i32::from(self.samples[to]) - i32::from(self.samples[from]);
+            rise * 5 / (to - from) as i32
+        })
     }
 
     /// The whole climb, foot to top; `start_mm` is the foot's odometer.

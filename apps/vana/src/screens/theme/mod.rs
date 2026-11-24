@@ -158,6 +158,12 @@ pub struct Space {
     pub ring: u8,
     /// A zone bar's height.
     pub bar: u8,
+    /// A chart's outline, and the ring around its marker.
+    pub stroke: u8,
+    /// The rider's marker on a chart, across.
+    pub marker: u8,
+    /// The fewest rows a chart keeps.
+    pub chart: u8,
 }
 
 /// Corner radii in scaled units.
@@ -177,6 +183,12 @@ pub struct Type {
     pub digits: FaceRole,
     /// The % beside `digits`, and a field's look when `digits` does not fit.
     pub digits_small: FaceRole,
+    /// A field's number where a chart shares the page.
+    pub digits_mid: FaceRole,
+    /// The % beside `digits_mid`.
+    pub percent_mid: FaceRole,
+    /// A chart's summary numbers.
+    pub summary: FaceRole,
     /// The top line's time.
     pub line: FaceRole,
     /// A phone-style screen's title.

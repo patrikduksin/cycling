@@ -137,26 +137,21 @@ convenience, and BACK takes one by hand.
 ### Climb
 
 The CLIMB page has one layout on every road, which [UI](ui.md#charts) draws
-under Elevation profile: the grade in its steepness colour with no caption,
-POWER 3S and HEART beside it, then two readings and a profile with a white
-disc for the rider. What the readings and the profile show depends on the
-road:
+under Elevation profile: the top line, then GRADE filled with its steepness
+colour beside PWR 3S W, then HEART BPM beside CAD RPM, then two fields about
+the climb, then a summary of three columns over the profile. What the climb
+fields, the summary and the profile show depends on the road:
 
-- **CLIMB IN 0.3 KM**: a climb from the map starts within 500 m. LENGTH KM,
-  with AVG grade and GAIN M stacked beside it. The profile runs from the rider
-  past the top, with the road before the foot and after the top dimmed.
-- **CLIMBING** on a climb the map knows: TO TOP KM and UP TO GO M. The profile
-  is the whole climb from its foot past its top, and it stays put while the
-  rider's disc moves along it. What is behind is dimmed. A bar under it, FOOT
-  to TOP, fills with the share climbed, `60% UP`.
-- **CLIMBING** without a map: the barometer's climb. SO FAR KM and GAIN M over
-  the last 4 km, with the road before the climb dimmed. The top is unknown, so
-  there is no bar.
-- **NO CLIMB**: ALTITUDE M and ASCENT M over the whole ride's elevation, with
-  the rider at its end.
-
-The category (CAT 4 to HC) sits right of the title in the climb's steepness
-colour, and NO MAP sits there when there is no terrain pack.
+- **On the flat**: ALTITUDE M and ASCENT M. The summary and the profile are
+  the last 2 km: LAST, AVG and MAX grade. All of it is behind the rider, so
+  all of it is dimmed.
+- **Climbing** without a map: the barometer's climb. CLIMB DIST KM and CLIMB
+  ELEV M so far. The summary and the profile are the climb from its foot:
+  CLIMB, its average and steepest grade, all dimmed.
+- **On a course**: a climb from the map, ahead within 500 m or under way.
+  DIST TO TOP KM and ELEV TO TOP M. The summary describes the whole climb.
+  The profile runs from the foot, or from the rider short of it, to the top.
+  What is behind the rider is dimmed.
 
 The page comes up by itself when a climb is under way or within 500 m, as
 long as CLIMB is on. Once the road is clear the ride screen goes back to the

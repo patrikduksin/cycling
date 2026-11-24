@@ -194,18 +194,6 @@ impl Category {
             .filter(|&&from| gain_dm >= from)
             .count()]
     }
-
-    /// Its short name: `CAT 4` to `CAT 1`, `HC`, or `CLIMB`.
-    pub fn name(self) -> &'static [u8] {
-        match self {
-            Self::Uncategorised => b"CLIMB",
-            Self::Four => b"CAT 4",
-            Self::Three => b"CAT 3",
-            Self::Two => b"CAT 2",
-            Self::One => b"CAT 1",
-            Self::Hors => b"HC",
-        }
-    }
 }
 
 /// What a recorded step changed about climbing.
@@ -844,7 +832,6 @@ mod tests {
         ] {
             assert_eq!(Category::of(gain_dm), category, "{gain_dm}");
         }
-        assert_eq!(Category::Hors.name(), b"HC");
     }
 
     #[test]

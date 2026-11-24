@@ -15,6 +15,8 @@ pub mod bar;
 pub mod facts;
 pub mod field;
 pub mod item;
+pub mod profile;
+pub mod road_field;
 pub mod rule;
 pub mod symbol;
 pub mod text;

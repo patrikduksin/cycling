@@ -257,7 +257,13 @@ fn the_climb_page_draws_on_both_test_panels() {
         assert!(lit(&twin.sim) > 2_000, "{} climb", model.name);
         shows(
             &twin.sim,
-            &["CLIMBING", "POWER 3S", "HEART", "SO FAR KM", "GAIN M"],
+            &[
+                "GRADE",
+                "PWR 3S W",
+                "HEART BPM",
+                "CLIMB DIST KM",
+                "CLIMB ELEV M",
+            ],
         );
     }
 }

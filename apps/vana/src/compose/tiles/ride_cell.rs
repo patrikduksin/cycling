@@ -27,13 +27,13 @@ pub struct Celled {
 }
 
 const _: () = assert!(
-    Metric::ALL.len() <= 32,
-    "a cell keeps five bits for its metric"
+    Metric::ALL.len() <= 64,
+    "a cell keeps six bits for its metric"
 );
 
 impl Celled {
     pub const fn byte(self) -> u8 {
-        self.metric.id() | (self.large as u8) << 5 | (self.centre as u8) << 6
+        self.metric.id() | (self.large as u8) << 6 | (self.centre as u8) << 7
     }
 
     fn looks(self) -> &'static [FaceRole] {
@@ -43,13 +43,10 @@ impl Celled {
 
 impl Arg for Celled {
     fn decode(raw: u8) -> Option<Self> {
-        if raw >> 7 != 0 {
-            return None;
-        }
         Some(Self {
-            metric: Metric::from_id(raw & 0x1f)?,
-            large: raw >> 5 & 1 == 1,
-            centre: raw >> 6 & 1 == 1,
+            metric: Metric::from_id(raw & 0x3f)?,
+            large: raw >> 6 & 1 == 1,
+            centre: raw >> 7 & 1 == 1,
         })
     }
 

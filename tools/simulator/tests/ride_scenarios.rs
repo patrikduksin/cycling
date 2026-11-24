@@ -1881,7 +1881,7 @@ fn ride_until_page(sim: &mut Sim, page: &str, before_m: f64) -> f64 {
     at
 }
 
-/// The climb page's grade: its largest percentage, which needs no caption.
+/// The climb page's grade: its largest percentage.
 #[track_caller]
 fn expect_grade(sim: &mut Sim, expected: f64, tolerance: f64) {
     sim.need(Need::Barometer);
@@ -1909,7 +1909,7 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     ride_page(&mut sim, "4/5");
     ride_to(&mut sim, 800.0);
-    sim.expect_text("NO CLIMB");
+    sim.expect_text("ALTITUDE M");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
     sim.expect_field("ASCENT M", "0");
     expect_grade(&mut sim, 0.0, 0.5);
@@ -1920,8 +1920,8 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     ride_to(&mut sim, 1000.0);
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
     ride_to(&mut sim, 1200.0);
-    sim.expect_text("NO CLIMB");
-    let confirmed = ride_until_shown(&mut sim, "CLIMBING", 1600.0);
+    sim.expect_text("ALTITUDE M");
+    let confirmed = ride_until_shown(&mut sim, "CLIMB DIST KM", 1600.0);
     assert!(
         (1300.0..1450.0).contains(&confirmed),
         "climb confirmed at {confirmed:.0} m"
@@ -1929,25 +1929,25 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
 
     ride_to(&mut sim, 1750.0);
     expect_grade(&mut sim, 6.0, 0.5);
-    expect_near(&mut sim, "GAIN M", 45.0, 4.0);
-    expect_near(&mut sim, "SO FAR KM", 0.75, 0.05);
+    expect_near(&mut sim, "CLIMB ELEV M", 45.0, 4.0);
+    expect_near(&mut sim, "CLIMB DIST KM", 0.75, 0.1);
     sim.expect_text("260");
     sim.checkpoint("climb page mid-climb");
 
     ride_to(&mut sim, 2510.0);
-    sim.expect_text("CLIMBING");
-    expect_near(&mut sim, "GAIN M", 90.0, 4.0);
-    expect_near(&mut sim, "SO FAR KM", 1.5, 0.05);
+    sim.expect_text("CLIMB DIST KM");
+    expect_near(&mut sim, "CLIMB ELEV M", 90.0, 4.0);
+    expect_near(&mut sim, "CLIMB DIST KM", 1.5, 0.1);
     sim.checkpoint("climb page at the top");
 
     // Over the top at 40 km/h the climb ends within about 200 m.
     sim.ride_at(40.0, 60.0, 0.0, 0.0);
-    let ended = ride_until_shown(&mut sim, "NO CLIMB", 2800.0);
+    let ended = ride_until_shown(&mut sim, "ALTITUDE M", 2800.0);
     assert!(ended > 2500.0, "climb ended at {ended:.0} m");
     ride_to(&mut sim, 4300.0);
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     sim.advance(seconds(20));
-    sim.expect_text("NO CLIMB");
+    sim.expect_text("ALTITUDE M");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
     expect_near(&mut sim, "ASCENT M", 90.0, 4.0);
     sim.checkpoint("climb page after the descent");
@@ -1976,7 +1976,7 @@ fn in_saver_the_climb_page_comes_up_already_climbing() {
         );
         sim.advance(50);
     }
-    sim.expect_text("CLIMBING");
+    sim.expect_text("CLIMB DIST KM");
     sim.checkpoint("saver: climb page brought up by the climb");
 }
 
@@ -1991,7 +1991,7 @@ fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
     let shown = ride_until_page(&mut sim, "4/5", 1600.0);
     assert!((1300.0..1450.0).contains(&shown), "at {shown:.0} m");
-    sim.expect_text("CLIMBING");
+    sim.expect_text("CLIMB DIST KM");
     sim.checkpoint("climb page brought up by the climb");
 
     ride_to(&mut sim, 2500.0);
@@ -2142,7 +2142,7 @@ fn a_climb_does_not_bring_up_a_climb_page_turned_off() {
             sim.world().distance_m
         );
     }
-    sim.expect_no_text("CLIMBING");
+    sim.expect_no_text("CLIMB DIST KM");
     sim.checkpoint("main page kept through the climb");
 }
 
@@ -2154,7 +2154,7 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     ride_to(&mut sim, 1000.0);
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    ride_until_shown(&mut sim, "CLIMBING", 1600.0);
+    ride_until_shown(&mut sim, "CLIMB DIST KM", 1600.0);
     ride_to(&mut sim, 1600.0);
 
     // 400 m of climbing without pressure readings: the climb page stays.
@@ -2162,13 +2162,13 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     while sim.world().distance_m < 2000.0 {
         sim.advance(seconds(1));
         assert_eq!(sim.screen().page().as_deref(), Some("4/5"));
-        sim.expect_text("CLIMBING");
+        sim.expect_text("CLIMB DIST KM");
     }
     sim.checkpoint("climbing through a barometer gap");
     sim.set_barometer(true);
     ride_to(&mut sim, 2400.0);
-    sim.expect_text("CLIMBING");
-    expect_near(&mut sim, "GAIN M", 84.0, 5.0);
+    sim.expect_text("CLIMB DIST KM");
+    expect_near(&mut sim, "CLIMB ELEV M", 84.0, 5.0);
     sim.checkpoint("climbing after the barometer returns");
 }
 

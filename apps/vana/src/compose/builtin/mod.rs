@@ -259,7 +259,7 @@ impl ScreenId {
     /// The screens drawn from the kit, which paint in the theme's colours
     /// rather than through the light transform.
     pub const fn themed(self) -> bool {
-        matches!(self, Self::RideMain)
+        matches!(self, Self::RideMain | Self::RideClimb)
     }
 
     /// The pages whose built-in must set MOVE to `Go::Next`.

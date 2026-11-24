@@ -41,6 +41,10 @@ impl Data for View<'_> {
                 .stress_score(self.profile.ftp_watts)
                 .map(|score| int(u64::from(score))),
             Metric::Paused => Some(int(u64::from(self.paused_secs))),
+            Metric::Altitude => totals.altitude_dm().map(|dm| (dm + 5).div_euclid(10)),
+            Metric::ClimbDistance | Metric::ClimbGain | Metric::ToTop | Metric::UpToGo => {
+                super::ride::climb::reading(self, metric)
+            }
             Metric::LapTime
             | Metric::LapDistance
             | Metric::LapPower

@@ -205,8 +205,8 @@ pub fn form(page: RidePage, sign: Sign) -> Option<SignForm> {
         (_, Sign::None) => None,
         (RidePage::Map, _) => Some(SignForm::Badge),
         (RidePage::Main, Sign::Chip { .. }) => Some(SignForm::Chip),
-        (RidePage::Stats | RidePage::Climb, Sign::Chip { .. }) => None,
-        (RidePage::Main | RidePage::Stats | RidePage::Climb, _) => Some(SignForm::Banner),
+        (RidePage::Climb, Sign::Chip { .. }) => None,
+        (RidePage::Main | RidePage::Climb, _) => Some(SignForm::Banner),
         (RidePage::Lap | RidePage::Workout, _) => None,
     }
 }

@@ -16,6 +16,43 @@ paused screen, End ride, the ride summary, Settings, Connect phone, the brand
 reveal, the power sheets and the charge shown while the device is off on USB
 power. None draws in the 5 × 7 bitmap font.
 
+## The kit and its two looks
+
+Kit screens are built from one small set of tiles, the kit
+(`apps/vana/src/compose/kit`), drawn in one of two looks. The Stats ride
+page (`ride/main`) is one. Other screens follow the rules in the rest of
+this document.
+
+- **Looks are data.** `screens/theme` holds one `Theme` of colours by role.
+  `DARK` (night) is main's palette. `LIGHT` (day) writes every word and
+  number black on white, and only bars, charts and zone or steepness fills
+  carry colour. `LAYOUT` holds the gaps, radii and faces that both looks
+  share, so a screen solves to the same boxes in both. The look in force
+  follows `Runtime::light()`.
+- **Tiles never name a value.** A kit tile reads its colours from
+  `data.theme()` in `prepare`, by role or by `Tone`. It reads every gap,
+  radius and face from `LAYOUT`.
+- **Kit pages paint unmapped.** A screen that `ScreenId::themed` names
+  fills the theme's background and paints its tiles without the light
+  transform of `look.rs`. The radar strip, the course sign, toasts and cues
+  still paint through the transform until they are rebuilt.
+- **A tile's setting byte names a spec.** Each kit tile has a spec table:
+  an enum with one fixed id per entry, whose `spec()` says what the entry
+  draws. A tree reads as data, for example `field(Field::Pwr)`. Each screen
+  family owns a block of ids in each table, and two entries with one id do
+  not compile.
+- **Tiles in the kit.** `field` is a ride-grid cell: a capital title that
+  carries the unit, with an optional symbol and zone tag, over 40 px
+  tabular digits, filled by zone or steepness with black ink, and a `%` at
+  two-thirds size on the baseline. `top line` shows the recording dot and
+  time, and the satellite and battery coloured by state. `rule` is a 1 px
+  line in the rule colour. `text` is one line of words or a metric, in
+  sentence case where the face has lowercase. `symbol` is one icon in a
+  tone. `item` is an Apple-Watch-style rounded button with a focus ring and
+  an action. `bar` shows zone segments or a level. `facts` is an
+  inset-grouped list. `kit::grid` lays out rows of cells with rules between
+  them that line up. The kit's faces are under Type scale below.
+
 ## Principles
 
 1. **Black is the layout.** There are no boxes, grid lines or dividers. Space
@@ -89,6 +126,15 @@ draw and holding only the characters it shows: `SIGN_50`, `SIGN_32`,
 `SIGN_27`, `SIGN_20`, `SIGN_18`, `SIGN_14` and `SIGN_13` (Nunito 900) for the
 sign, `TOTAL_60`, `TOTAL_30` (700) and `TOTAL_11` (900) for the totals, and
 `FOOT_20` (700) for the distance in the map's footer. See Course sign below.
+
+The kit has its own faces. `NOTE` (700, 13 px), `LABEL` (800, 15 px) and
+`HEADING` (800, 21 px) hold printable ASCII, lowercase included, for
+sentence-case subtitles and list labels, list values and button labels, and
+a phone-style screen's title. `TAG` (800, 11 px, capitals) is for ride-page
+field titles, zone tags and the top line's battery. `DIGITS_40`, `DIGITS_26`
+and `DIGITS_15` (700) hold the value characters for ride-grid digits, the %
+beside them and mid-size values, and the top line's elapsed time. A face
+without lowercase draws a lowercase letter as its capital.
 
 `VALUE`, `LARGE` and `HERO` hold only ` +-./0123456789:%`. Units are a
 `CAPTION` in `SECONDARY`, bottom-aligned with the number and 6 px to its

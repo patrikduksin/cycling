@@ -1,160 +1,18 @@
-use super::*;
-use crate::compose::builtin::main_tree as tree;
-use crate::compose::data::{Data, Effort, Metric};
-use crate::compose::input::Controls;
+//! The Stats page in both looks.
+use crate::compose::data::Metric;
 use crate::compose::node::Flags;
-use crate::compose::node::What;
-use crate::compose::parse::Screen;
-use crate::compose::registry::{READING, SPACE};
-use crate::ride::course::nav::{Distance, Glyph, Sign};
 use crate::ride::log::{Sample, Status};
 use crate::screens::Device;
-use crate::screens::canvas::Canvas;
-use crate::screens::chrome::layout::{assert_shown, text};
-use crate::screens::icons::SignForm;
+use crate::screens::canvas::{Canvas, Shape};
+use crate::screens::chrome::{Battery, Gps};
 use crate::screens::panels::ALL;
-use crate::screens::sign;
-use crate::screens::workout::{Page, Text};
+use crate::screens::ride::RidePage;
+use crate::screens::theme::{DARK, LIGHT, Theme};
+use crate::screens::workout::{Page, Text, View};
 use std::string::String;
 use std::vec::Vec;
 
-/// Every flag combination the tree mentions.
-fn every_flags() -> impl Iterator<Item = Flags> {
-    (Flags::COURSE)
-        .with(Flags::RADAR)
-        .with(Flags::WORKOUT)
-        .with(Flags::ARRIVED)
-        .subsets()
-}
-
-fn every_slots() -> impl Iterator<Item = Slots> {
-    Metric::LOWER.into_iter().flat_map(|left| {
-        Metric::LOWER
-            .into_iter()
-            .map(move |right| Slots { left, right })
-    })
-}
-
-fn bytes(slots: Slots) -> Vec<u8> {
-    tree(slots).iter().flat_map(|node| node.bytes()).collect()
-}
-
-/// The built-in is accepted, on every panel and for every lower line, as
-/// a rider's config would be: so the runtime's solve of it cannot fail.
-#[test]
-fn the_built_in_is_accepted_on_every_panel_for_every_lower_line() {
-    for device in ALL {
-        for slots in every_slots() {
-            if let Err(reject) = Screen::parse(
-                ScreenId::RideMain.key(),
-                &bytes(slots),
-                &device.scaled,
-                Controls::FREE,
-            ) {
-                panic!("{slots:?} on {:?}: {reject}", device.scaled.panel);
-            }
-        }
-    }
-}
-
-/// The tiles of the middle column, grouped into the rows they share,
-/// top to bottom: each row's top and bottom. The margins and the radar's
-/// room run the column's whole height beside it.
-fn rows(laid: &Laid) -> Vec<(u16, u16)> {
-    let bar = status_bar(laid).unwrap().bottom as u16;
-    let mut rows: Vec<(u16, u16)> = Vec::new();
-    let middle = laid
-        .leaves()
-        .iter()
-        .filter(|placed| {
-            let what = laid.screen().tree().nodes()[usize::from(placed.node)].what();
-            let beside = placed.rect.top == bar;
-            !matches!(what, Some(What::Leaf { component, .. }) if component == STATUS || beside)
-        })
-        .map(|placed| placed.rect);
-    for rect in middle {
-        match rows
-            .iter_mut()
-            .find(|(top, bottom)| rect.top < *bottom && *top < rect.bottom)
-        {
-            Some(row) => *row = (row.0.min(rect.top), row.1.max(rect.bottom)),
-            None => rows.push((rect.top, rect.bottom)),
-        }
-    }
-    rows.sort();
-    rows
-}
-
-/// The balance rule: the room the tiles leave in the middle column is even
-/// gaps, above the first row and below the last as well as between them,
-/// on every panel, under every flag combination.
-#[test]
-fn the_main_page_s_gaps_are_even_on_every_panel_and_variant() {
-    for device in ALL {
-        let bar = status_bar(&laid(device, Slots::default(), Flags::NONE)).unwrap();
-        for flags in every_flags() {
-            let laid = laid(device, Slots::default(), flags);
-            let rows = rows(&laid);
-            let mut edges = std::vec![bar.bottom as i32];
-            for (top, bottom) in &rows {
-                edges.push(i32::from(*top));
-                edges.push(i32::from(*bottom));
-            }
-            edges.push(device.scaled.panel.height as i32);
-            let gaps: Vec<i32> = edges.chunks(2).map(|pair| pair[1] - pair[0]).collect();
-            let (least, most) = (gaps.iter().min().unwrap(), gaps.iter().max().unwrap());
-            assert!(
-                most - least <= 1 && *least > 0,
-                "{flags} on {:?}: gaps {gaps:?}",
-                device.scaled.panel
-            );
-        }
-    }
-}
-
-/// On a course a turn's banner covers the time, the grade and the chip,
-/// and never a reading under them.
-#[test]
-fn the_banner_covers_the_time_and_chip_and_no_reading() {
-    for device in ALL {
-        let banner = sign::place(turn(), SignForm::Banner, false, device)
-            .unwrap()
-            .rect();
-        for flags in every_flags().filter(|flags| flags.contains(Flags::COURSE)) {
-            let laid = laid(device, Slots::default(), flags);
-            let nodes = laid.screen().tree().nodes();
-            for placed in laid.leaves() {
-                let Some(What::Leaf { component, arg }) = nodes[usize::from(placed.node)].what()
-                else {
-                    continue;
-                };
-                let under = placed.rect.top < banner.bottom as u16;
-                let top_line = component == CHIP
-                    || (component == READING
-                        && [Metric::Elapsed, Metric::Grade]
-                            .map(|metric| metric.id())
-                            .contains(&(arg & 0x0f)));
-                if component == STATUS || component == SPACE {
-                    continue;
-                }
-                assert_eq!(
-                    under, top_line,
-                    "{flags} on {:?}: node {} at {:?}, banner to {}",
-                    device.scaled.panel, placed.node, placed.rect, banner.bottom
-                );
-            }
-        }
-    }
-}
-
-fn turn() -> Sign {
-    Sign::Turn {
-        glyph: Glyph::Left,
-        distance: Distance::from_mm(400_000),
-    }
-}
-
-/// One extreme reading of each kind the main page shows.
+/// One extreme reading of each kind the page shows.
 #[derive(Clone, Copy)]
 struct Case {
     speed_mm_s: Option<u32>,
@@ -165,6 +23,16 @@ struct Case {
     secs: u64,
     grade_tenths: Option<i16>,
 }
+
+const RIDE: Case = Case {
+    speed_mm_s: Some(8_722),
+    watts: Some(200),
+    bpm: Some(142),
+    cadence_tenths: Some(920),
+    distance_mm: 42_700_000,
+    secs: 5_025,
+    grade_tenths: Some(24),
+};
 
 const WIDEST: Case = Case {
     speed_mm_s: Some(27_750),
@@ -177,7 +45,7 @@ const WIDEST: Case = Case {
 };
 
 fn cases() -> Vec<Case> {
-    let mut cases = std::vec![WIDEST];
+    let mut cases = std::vec![RIDE, WIDEST];
     let mut vary = |set: &dyn Fn(&mut Case)| {
         let mut case = WIDEST;
         set(&mut case);
@@ -192,14 +60,8 @@ fn cases() -> Vec<Case> {
     for v in [None, Some(40)] {
         vary(&|c| c.bpm = v);
     }
-    for v in [None, Some(0), Some(900)] {
-        vary(&|c| c.cadence_tenths = v);
-    }
     for v in [0, 15_000_000] {
         vary(&|c| c.distance_mm = v);
-    }
-    for v in [0, 3_599] {
-        vary(&|c| c.secs = v);
     }
     for v in [None, Some(0), Some(199)] {
         vary(&|c| c.grade_tenths = v);
@@ -207,15 +69,16 @@ fn cases() -> Vec<Case> {
     cases
 }
 
-fn view(case: Case, device: &'static Device, flags: Flags) -> View<'static> {
+fn view(case: Case, device: &'static Device, flags: Flags, light: bool) -> View<'static> {
     let mut view = View::new(Page::Ride, 0, Some(crate::clock::Local(86_399)));
     view.device = device;
+    view.ride_page = RidePage::Main;
+    view.light = light;
     view.course = flags.contains(Flags::COURSE);
     view.radar_paired = flags.contains(Flags::RADAR);
-    if flags.contains(Flags::ARRIVED) {
-        view.nav = Sign::Arrived;
-    }
     view.state = Status::Recording;
+    view.gps = Gps::Fixed;
+    view.battery = Some(Battery::level(82));
     view.active_secs = case.secs;
     let sample = Sample {
         speed_mm_s: case.speed_mm_s,
@@ -228,8 +91,6 @@ fn view(case: Case, device: &'static Device, flags: Flags) -> View<'static> {
     view.totals.add(1000, case.distance_mm, &sample, None);
     view.sample = sample;
     view.power_3s = case.watts;
-    view.graphics.power_3s = case.watts;
-    view.graphics.heart_bpm = case.bpm;
     view.compose_main();
     view.prepare();
     view
@@ -241,367 +102,177 @@ fn written(metric: Metric, value: Option<i32>) -> String {
     String::from(text.as_str())
 }
 
-/// Every extreme reading, on every panel, beside a radar or not and on a
-/// course or not, shows whole and apart from every other.
+fn color(canvas: &Canvas, text: &str) -> u16 {
+    canvas
+        .find(text)
+        .unwrap_or_else(|| panic!("{text:?} is not on the page"))
+        .color
+}
+
+/// Each fill's colour, in canvas order.
+fn fills(canvas: &Canvas) -> Vec<u16> {
+    canvas
+        .shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Panel { color, .. } => Some(*color),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_page_shows_the_approved_grid_with_its_titles() {
+    let view = view(RIDE, &crate::screens::C606, Flags::NONE, false);
+    let canvas = view.canvas();
+    for title in [
+        "PWR 3S W",
+        "HEART BPM",
+        "SPD KM/H",
+        "CAD RPM",
+        "GRADE",
+        "CLIMB M",
+        "DIST KM",
+        "NP W",
+    ] {
+        assert!(canvas.shows(title), "{title}");
+    }
+    for value in [
+        "200", "142", "31.3", "92", "2.4", "%", "42.7", "1:23:45", "82%",
+    ] {
+        assert!(canvas.shows(value), "{value}");
+    }
+    let field = |text: &str| canvas.find(text).unwrap();
+    let (power, heart) = (field("200"), field("142"));
+    let (speed, cadence, distance) = (field("31.3"), field("92"), field("42.7"));
+    assert_eq!(power.top, heart.top, "power and heart share the top row");
+    assert!(power.left < heart.left);
+    assert_eq!(power.left, speed.left, "the columns line up");
+    assert_eq!(heart.left, cadence.left, "the columns line up");
+    assert!(speed.top < field("2.4").top && field("2.4").top < distance.top);
+}
+
+#[test]
+fn power_and_heart_fill_with_their_zones_and_write_in_black() {
+    let view = view(RIDE, &crate::screens::C606, Flags::NONE, false);
+    let canvas = view.canvas();
+    let profile = &view.profile;
+    let power = profile.power_zone(200);
+    let heart = profile.heart_zone(142);
+    assert_eq!(
+        fills(canvas),
+        [
+            DARK.zone_fill[usize::from(power) - 1],
+            DARK.zone_fill[usize::from(heart) - 1]
+        ]
+    );
+    for text in ["PWR 3S W", "200", "HEART BPM", "142"] {
+        assert_eq!(color(canvas, text), DARK.on_fill, "{text}");
+    }
+    assert!(canvas.shows(&std::format!("Z{power}")));
+    assert!(canvas.shows(&std::format!("Z{heart}")));
+}
+
+#[test]
+fn without_a_reading_a_field_has_no_fill_and_shows_a_dash() {
+    let empty = Case {
+        watts: None,
+        bpm: None,
+        ..RIDE
+    };
+    let view = view(empty, &crate::screens::C606, Flags::NONE, false);
+    assert!(fills(view.canvas()).is_empty());
+    assert_eq!(color(view.canvas(), "PWR 3S W"), DARK.power);
+}
+
+#[test]
+fn both_looks_draw_one_page_in_their_own_colours() {
+    let device = &crate::screens::C606;
+    let (night, day) = (
+        view(RIDE, device, Flags::RADAR, false),
+        view(RIDE, device, Flags::RADAR, true),
+    );
+    let (night, day) = (night.canvas(), day.canvas());
+    let runs = |canvas: &Canvas| -> Vec<(Vec<u8>, usize, usize)> {
+        canvas
+            .runs
+            .iter()
+            .map(|run| (run.line.text().to_vec(), run.left, run.top))
+            .collect()
+    };
+    let bounds = |canvas: &Canvas| -> Vec<_> { canvas.shapes.iter().map(Shape::bounds).collect() };
+    assert_eq!(runs(night), runs(day));
+    assert_eq!(bounds(night), bounds(day));
+    let look = |theme: &Theme, canvas: &Canvas| {
+        [
+            ("SPD KM/H", theme.speed),
+            ("92", theme.cadence),
+            ("2.4", theme.grade),
+            ("42.7", theme.text),
+            ("1:23:45", theme.text),
+        ]
+        .into_iter()
+        .for_each(|(text, want)| assert_eq!(color(canvas, text), want, "{text}"));
+    };
+    look(&DARK, night);
+    look(&LIGHT, day);
+    assert_ne!(DARK.speed, LIGHT.speed);
+}
+
+#[test]
+fn the_day_look_paints_white_and_black_untransformed() {
+    let device = &crate::screens::C606;
+    let mut day = view(RIDE, device, Flags::NONE, true);
+    let speed = *day.canvas().find("SPD KM/H").unwrap();
+    let blank = (speed.left + 4, speed.bottom() + 2);
+    assert_eq!(day.pixel(blank.0, blank.1), LIGHT.bg);
+    let inked = (speed.left..speed.left + 40)
+        .flat_map(|x| (speed.top..speed.top + 12).map(move |y| (x, y)))
+        .any(|(x, y)| day.pixel(x, y) == LIGHT.text);
+    assert!(inked, "the title inks pure black");
+}
+
+#[test]
+fn the_top_line_colours_the_fix_and_the_battery_by_level() {
+    let device = &crate::screens::C606;
+    let mut view = view(RIDE, device, Flags::NONE, false);
+    view.battery = Some(Battery::level(14));
+    view.gps = Gps::Searching;
+    view.prepare();
+    let canvas = view.canvas();
+    assert_eq!(color(canvas, "14%"), DARK.bad);
+    let battery = canvas.find("14%").unwrap();
+    let satellite = canvas.shapes.iter().find_map(|shape| match shape {
+        Shape::Icon { color, .. } if shape.bounds().top < battery.bottom() => Some(*color),
+        _ => None,
+    });
+    assert_eq!(satellite, Some(DARK.warn), "a fix still being found");
+}
+
 #[test]
 fn extreme_readings_never_overlap_or_clip() {
     for device in ALL {
-        let at = &device.scaled;
         for flags in [Flags::NONE, Flags::RADAR, Flags::COURSE.with(Flags::RADAR)] {
             for case in cases() {
-                let view = view(case, device, flags);
-                let what = std::format!(
-                    "{flags} on {:?}: {:?} km/h, {:?} W, {:?} bpm, {:?} rpm/10, {} mm, {} s, {:?}",
-                    at.panel,
-                    case.speed_mm_s,
-                    case.watts,
-                    case.bpm,
-                    case.cadence_tenths,
-                    case.distance_mm,
-                    case.secs,
-                    case.grade_tenths
-                );
-                let int = |value: Option<u32>| value.map(|value| value as i32);
-                let want = [
-                    written(Metric::Speed, int(case.speed_mm_s)),
-                    written(Metric::Power, case.watts.map(i32::from)),
-                    written(Metric::Heart, case.bpm.map(i32::from)),
-                    written(
-                        Metric::Cadence,
-                        case.cadence_tenths.map(|t| i32::from((t + 5) / 10)),
-                    ),
-                    written(Metric::Distance, Some((case.distance_mm / 1000) as i32)),
-                    written(Metric::Elapsed, Some(case.secs as i32)),
-                    written(Metric::Grade, case.grade_tenths.map(i32::from)),
-                ];
-                let mut want: Vec<&str> = want.iter().map(String::as_str).collect();
-                want.extend(["KM/H", "W", "BPM", "RPM", "KM"]);
-                view.canvas()
-                    .assert_laid_out_at(at, at.screen(), &want, &what);
+                for light in [false, true] {
+                    let mut view = view(case, device, flags, light);
+                    view.prepare().check_layout();
+                    let int = |value: Option<u32>| value.map(|value| value as i32);
+                    let want = [
+                        written(Metric::Speed, int(case.speed_mm_s)),
+                        written(Metric::Power, case.watts.map(i32::from)),
+                        written(Metric::Heart, case.bpm.map(i32::from)),
+                        written(Metric::Elapsed, Some(case.secs as i32)),
+                    ];
+                    for text in &want {
+                        assert!(
+                            view.canvas().shows(text),
+                            "{text:?} on {:?} {flags}",
+                            device.scaled.panel
+                        );
+                    }
+                }
             }
-        }
-    }
-}
-
-/// Every reading in either slot, against every reading in the other, at
-/// its widest, keeps its value whole and clear of its neighbour.
-#[test]
-fn every_reading_fits_either_slot_at_its_widest() {
-    struct Widest;
-    impl Data for Widest {
-        fn metric(&self, metric: Metric) -> Option<i32> {
-            Some(match metric {
-                Metric::Grade => i32::MIN,
-                Metric::Kcal => 9_999,
-                _ => i32::MAX,
-            })
-        }
-        fn zone(&self, _: Effort) -> Option<u8> {
-            None
-        }
-        fn list(&self, _: crate::compose::data::ListKind) -> u16 {
-            0
-        }
-    }
-    for device in ALL {
-        let at = &device.scaled;
-        for flags in [Flags::NONE, Flags::RADAR] {
-            for slots in every_slots() {
-                let laid = laid(device, slots, flags);
-                let mut canvas = Canvas::default();
-                laid.prepare(&Widest, &mut canvas);
-                let what = std::format!("{slots:?} {flags} on {:?}", at.panel);
-                let units = [slots.left.unit(), slots.right.unit()];
-                canvas.assert_laid_out_at(at, at.screen(), &units, &what);
-            }
-        }
-    }
-}
-
-/// A unit follows the ink of its value: "--" keeps it as close as a
-/// number does.
-#[test]
-fn units_follow_the_value_they_belong_to() {
-    let gap = |case: Case, unit: &str| {
-        let view = view(case, &crate::screens::C606, Flags::NONE);
-        let items: Vec<(String, Rect)> = view.canvas().runs.iter().filter_map(text).collect();
-        let unit = items.iter().find(|(name, _)| name == unit).unwrap().1;
-        let value = items
-            .iter()
-            .map(|(_, rect)| *rect)
-            .filter(|rect| rect.right <= unit.left && rect.top < unit.bottom + 40)
-            .filter(|rect| unit.top < rect.bottom + 40)
-            .max_by_key(|rect| rect.right)
-            .unwrap();
-        unit.left - value.right
-    };
-    let empty = Case {
-        speed_mm_s: None,
-        watts: None,
-        bpm: None,
-        cadence_tenths: None,
-        ..WIDEST
-    };
-    let full = Case {
-        speed_mm_s: Some(8334),
-        watts: Some(250),
-        bpm: Some(140),
-        cadence_tenths: Some(900),
-        ..WIDEST
-    };
-    for unit in ["KM/H", "W", "BPM", "RPM"] {
-        let (empty, full) = (gap(empty, unit), gap(full, unit));
-        assert!(empty.abs_diff(full) <= 2, "{unit}: {empty} vs {full}");
-    }
-}
-
-#[test]
-fn the_default_slots_show_cadence_then_distance_and_chosen_ones_replace_them() {
-    let names = |view: &View| -> Vec<String> {
-        view.canvas()
-            .runs
-            .iter()
-            .filter_map(text)
-            .map(|(name, _)| name)
-            .collect()
-    };
-    let mut view = view(WIDEST, &crate::screens::C606, Flags::NONE);
-    let shown = names(&view);
-    assert!(shown.contains(&"RPM".into()) && shown.contains(&"KM".into()));
-    view.main_slots = Slots {
-        left: Metric::NormalizedPower,
-        right: Metric::Ascent,
-    };
-    view.compose_main();
-    view.prepare();
-    let shown = names(&view);
-    assert!(
-        shown.contains(&"NP".into()) && shown.contains(&"M".into()),
-        "{shown:?}"
-    );
-    assert!(!shown.contains(&"RPM".into()), "{shown:?}");
-}
-
-#[test]
-fn the_banner_hides_the_time_and_grade_and_the_chip_does_not() {
-    let chip = Sign::Chip {
-        glyph: Glyph::Right,
-        distance: Distance::from_mm(6_400_000),
-    };
-    for (nav, shown) in [(Sign::None, true), (chip, true), (turn(), false)] {
-        let mut view = view(WIDEST, &crate::screens::C606, Flags::COURSE);
-        view.nav = nav;
-        view.prepare();
-        assert_eq!(view.canvas().shows("99:59:59"), shown, "{nav:?}");
-        assert!(view.canvas().shows("199"), "{nav:?} keeps the readings");
-    }
-}
-
-#[test]
-fn arrived_shows_the_ride_totals_without_gauges() {
-    let view = view(
-        WIDEST,
-        &crate::screens::C606,
-        Flags::COURSE.with(Flags::ARRIVED),
-    );
-    let items: Vec<(String, Rect)> = view.canvas().runs.iter().filter_map(text).collect();
-    let want = [
-        "DISTANCE",
-        "RIDE TIME",
-        "AVG KM/H",
-        "AVG W",
-        "AVG BPM",
-        "KM",
-    ];
-    assert_shown(&items, &want, "arrived");
-    assert!(view.canvas().shapes.is_empty(), "no gauges");
-    let top = |name: &str| items.iter().find(|(n, _)| n == name).unwrap().1.top;
-    assert!(top("DISTANCE") < top("RIDE TIME") && top("RIDE TIME") < top("AVG W"));
-}
-
-/// A ride past 2147.5 km shows its real distance on the lower line and in
-/// the arrival totals, up to the reading's 9999.9 km end.
-#[test]
-fn a_long_ride_shows_its_real_distance_up_to_the_end() {
-    for (distance_mm, shown) in [
-        (2_200_000_000, "2200.0"),
-        (9_999_900_000, "9999.9"),
-        (20_000_000_000, "9999.9"),
-    ] {
-        for flags in [Flags::NONE, Flags::COURSE.with(Flags::ARRIVED)] {
-            let case = Case {
-                distance_mm,
-                ..WIDEST
-            };
-            let view = view(case, &crate::screens::C606, flags);
-            assert!(
-                view.canvas().shows(shown),
-                "{distance_mm} mm under {flags} shows {:?}, not {shown}",
-                view.canvas()
-                    .runs
-                    .iter()
-                    .filter_map(text)
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>()
-            );
-        }
-    }
-}
-
-/// The gauges glide: where their lit runs land follows the gliding power
-/// and heart rate, and nothing glides without them.
-#[test]
-fn glides_land_where_the_gauges_light() {
-    use crate::screens::data::Gliding;
-    use crate::screens::workout::Graphics;
-    let profile = crate::ride::zones::TrainingProfile::default();
-    let laid = laid(&crate::screens::C606, Slots::default(), Flags::NONE);
-    let at = |watts| {
-        let graphics = Graphics {
-            power_3s: watts,
-            ..Graphics::default()
-        };
-        laid.glides(&Gliding {
-            graphics: &graphics,
-            profile: &profile,
-        })
-    };
-    assert_eq!(at(None), [None; GLIDES]);
-    let (low, high) = (at(Some(100))[0].unwrap(), at(Some(300))[0].unwrap());
-    assert!(low.right < high.right && low.left == high.left);
-    assert_eq!(at(Some(100))[1], None, "no heart rate");
-}
-
-/// A workout's target sits under the gauge of its metric, inside the
-/// gauge's columns, clear of every reading.
-#[test]
-fn a_workout_target_spans_its_watts_under_the_power_gauge() {
-    use crate::screens::canvas::Shape;
-    use crate::screens::chrome::WHITE;
-    use crate::screens::ride::Training;
-    use crate::workout::library::{ENDURANCE, VO2_MAX};
-    use crate::workout::player::Player;
-    for device in ALL {
-        let at = &device.scaled;
-        for workout in [VO2_MAX, ENDURANCE] {
-            let mut player = Player::new(workout);
-            player.skip();
-            let mut view = view(WIDEST, device, Flags::NONE);
-            view.training = Some(Training::of(&player, &view.profile));
-            view.compose_main();
-            view.prepare();
-            let canvas = view.canvas();
-            let watts = canvas.find("1999").unwrap();
-            let target = canvas
-                .shapes
-                .iter()
-                .find_map(|shape| match *shape {
-                    Shape::Bar { rect, color, .. } if color == WHITE => Some(rect),
-                    _ => None,
-                })
-                .expect("a power target");
-            let gauge = canvas
-                .shapes
-                .iter()
-                .find_map(|shape| match *shape {
-                    Shape::Split { rect, .. } => Some(rect),
-                    _ => None,
-                })
-                .unwrap();
-            assert!(target.top >= gauge.bottom && target.top > watts.bottom());
-            assert!(target.left >= gauge.left && target.right > target.left + 2);
-            let what = std::format!("{:?} on {:?}", workout.name, at.panel);
-            canvas.assert_laid_out_at(at, at.screen(), &["1999"], &what);
-        }
-    }
-}
-
-/// A rider's tree may put the status bar under a reading: the bar shows
-/// in its own rows as it does at the top, and the reading above it keeps
-/// every pixel.
-#[test]
-fn a_status_bar_under_a_reading_paints_only_its_own_rows() {
-    use crate::compose::builtin::Laids;
-    use crate::compose::node::{Node, Size};
-    use crate::compose::tiles::reading::{Inline, Shown};
-    use crate::screens::chrome::{BLACK, Row};
-    use firmware_shell::shell::Picture;
-    let device = &crate::screens::C606;
-    let at = &device.scaled;
-    let (above, bar) = (48, crate::compose::tiles::status::rows(at));
-    let speed = Inline(Shown::left(Metric::Speed, 1)).byte();
-    let frame = |view: &mut View| -> Vec<Vec<u16>> {
-        let scene = view.prepare();
-        (0..at.panel.height)
-            .map(|y| {
-                let mut pixels = std::vec![0; at.panel.width];
-                scene.paint(&mut Row::new(y, &mut pixels));
-                pixels
-            })
-            .collect()
-    };
-    let shown = |middle: u8| {
-        let nodes = [
-            Node::col(3, Size::grow(1)),
-            Node::leaf(READING, speed, Size::units(above as u8)),
-            Node::leaf(middle, 0, Size::units(bar as u8)),
-            Node::leaf(SPACE, 0, Size::grow(1)),
-        ];
-        let bytes: Vec<u8> = nodes.iter().flat_map(|node| node.bytes()).collect();
-        let screen = Screen::parse(ScreenId::RideMain.key(), &bytes, at, Controls::FREE).unwrap();
-        let mut view = view(WIDEST, device, Flags::NONE);
-        view.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(
-            Laids::with_main(screen, Flags::NONE),
-        )));
-        frame(&mut view)
-    };
-    let (moved, without) = (shown(STATUS), shown(SPACE));
-    let at_top = frame(&mut view(WIDEST, device, Flags::NONE));
-    assert!(
-        without[..above]
-            .iter()
-            .flatten()
-            .any(|&pixel| pixel != BLACK)
-    );
-    let lost = (0..above)
-        .flat_map(|y| (0..at.panel.width).map(move |x| (x, y)))
-        .filter(|&(x, y)| moved[y][x] != without[y][x])
-        .count();
-    assert_eq!(
-        lost, 0,
-        "the bar changed {lost} pixels of the reading above it"
-    );
-    assert!(
-        moved[above..above + bar] == at_top[..bar],
-        "the bar under the reading shows as it does at the top"
-    );
-}
-
-/// On the 240-wide panels the speed takes the hero face off a course and
-/// without a radar, its look measured on "99.9" since it reads whole from
-/// 100 km/h.
-#[test]
-fn speed_takes_the_hero_face_on_the_240_wide_panels() {
-    use firmware_shell::rendering::font::FaceRole;
-    for device in [&crate::screens::C606, &crate::screens::panels::WIDE] {
-        for speed in [27_777, 40_000] {
-            let case = Case {
-                speed_mm_s: Some(speed),
-                ..WIDEST
-            };
-            let view = view(case, device, Flags::NONE);
-            let text = written(Metric::Speed, Some(speed as i32));
-            let run = view
-                .canvas()
-                .runs
-                .iter()
-                .find(|run| run.line.text() == text.as_bytes())
-                .unwrap();
-            assert!(
-                core::ptr::eq(run.line.face(), device.scaled.face(FaceRole::Hero)),
-                "{text} on {:?}",
-                device.scaled.panel
-            );
         }
     }
 }

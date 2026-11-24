@@ -40,20 +40,10 @@ fn signs() -> [Sign; 10] {
     ]
 }
 
-const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
-
-/// The chip's box on the main page of `device`, on a course.
-fn main_chip(radar: bool, device: &Device) -> Rect {
-    let flags = crate::screens::ride::main_flags(true, radar, false, false);
-    let main = crate::screens::ride::main_laid(device, Default::default(), flags);
-    crate::screens::ride::main_chip(&main).unwrap()
-}
+const FORMS: [SignForm; 2] = [SignForm::Banner, SignForm::Badge];
 
 fn placed(sign: Sign, form: SignForm, radar: bool, device: &Device) -> Option<Placed> {
-    match form {
-        SignForm::Chip => place_chip(sign, main_chip(radar, device), device),
-        _ => place(sign, form, radar, device),
-    }
+    place(sign, form, radar, device)
 }
 
 fn on_c606(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
@@ -69,7 +59,6 @@ fn fitted_signs_are_as_wide_as_their_mockups() {
     assert_eq!(width(turn(Glyph::Right, 250), SignForm::Badge), 137);
     assert_eq!(width(turn(Glyph::Right, 40), SignForm::Badge), 118);
     assert_eq!(width(off(140), SignForm::Badge), 152);
-    assert_eq!(width(chip(Glyph::Right, 6_400), SignForm::Chip), 97);
 }
 
 #[test]
@@ -88,12 +77,6 @@ fn each_form_sits_where_its_mockup_draws_it() {
     );
     let badge = rect(turn(Glyph::Right, 250), SignForm::Badge, false);
     assert_eq!((badge.left, badge.top, badge.bottom), (8, 30, 90));
-    let chip = rect(chip(Glyph::Right, 6_400), SignForm::Chip, false);
-    assert_eq!(
-        (chip.left, chip.top, chip.bottom),
-        (10, 71, 99),
-        "where the tree puts it"
-    );
 }
 
 #[test]
@@ -181,10 +164,7 @@ fn contains(outer: Rect, inner: Rect) -> bool {
 }
 
 #[test]
-fn the_chip_only_shows_the_next_turn_at_rest() {
-    assert!(on_c606(turn(Glyph::Right, 120), SignForm::Chip, false).is_none());
-    assert!(on_c606(off(140), SignForm::Chip, false).is_none());
-    assert!(on_c606(Sign::Arrived, SignForm::Chip, false).is_none());
+fn no_sign_shows_nothing() {
     assert!(on_c606(Sign::None, SignForm::Banner, false).is_none());
 }
 
@@ -193,7 +173,7 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
     let at_rest = chip(Glyph::Right, 900);
     let banner = turn(Glyph::Right, 120);
     assert_eq!(form(RidePage::Main, at_rest), Some(SignForm::Chip));
-    for page in [RidePage::Main, RidePage::Stats, RidePage::Climb] {
+    for page in [RidePage::Main, RidePage::Climb] {
         assert_eq!(form(page, banner), Some(SignForm::Banner), "{page:?}");
         assert_eq!(form(page, off(80)), Some(SignForm::Banner), "{page:?}");
         assert_eq!(
@@ -203,7 +183,7 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
         );
         assert_eq!(form(page, Sign::None), None, "{page:?}");
     }
-    for page in [RidePage::Stats, RidePage::Climb, RidePage::Lap] {
+    for page in [RidePage::Climb, RidePage::Lap] {
         assert_eq!(form(page, at_rest), None, "{page:?}");
     }
     assert_eq!(form(RidePage::Lap, banner), None);
@@ -245,14 +225,13 @@ fn painted_signs_match_the_per_pixel_reference() {
 
 #[test]
 fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
-    for page in [RidePage::Main, RidePage::Stats, RidePage::Climb] {
+    for page in [RidePage::Main, RidePage::Climb] {
         assert_eq!(
             form(page, Sign::TurnAround),
             Some(SignForm::Banner),
             "{page:?}"
         );
     }
-    assert!(on_c606(Sign::TurnAround, SignForm::Chip, false).is_none());
     for form in [SignForm::Banner, SignForm::Badge] {
         for radar in [false, true] {
             let placed = on_c606(Sign::TurnAround, form, radar).unwrap();
@@ -282,12 +261,7 @@ fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
 fn every_ride_page_keeps_its_layout_under_a_sign_on_every_panel() {
     for device in ALL {
         for radar in [false, true] {
-            for page in [
-                RidePage::Main,
-                RidePage::Stats,
-                RidePage::Climb,
-                RidePage::Map,
-            ] {
+            for page in [RidePage::Main, RidePage::Climb, RidePage::Map] {
                 for sign in signs() {
                     let mut view = View::new(Page::Ride, 0, None);
                     view.device = device;

@@ -30,7 +30,6 @@ pub enum Row {
     WheelMode,
     MainLeft,
     MainRight,
-    PageStats,
     PageLap,
     PageClimb,
     PageMap,
@@ -98,10 +97,7 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
         &[Row::AutoPause, Row::AutoLap, Row::Wheel, Row::WheelMode],
     ),
     ("MAIN PAGE", &[Row::MainLeft, Row::MainRight]),
-    (
-        "RIDE PAGES",
-        &[Row::PageStats, Row::PageLap, Row::PageClimb, Row::PageMap],
-    ),
+    ("RIDE PAGES", &[Row::PageLap, Row::PageClimb, Row::PageMap]),
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",
@@ -239,7 +235,6 @@ impl Row {
             Self::WheelMode => "WHEEL MODE",
             Self::MainLeft => "LOWER LEFT",
             Self::MainRight => "LOWER RIGHT",
-            Self::PageStats => "STATS",
             Self::PageLap => "LAP",
             Self::PageClimb => "CLIMB",
             Self::PageMap => "MAP",
@@ -262,7 +257,6 @@ impl Row {
     /// The ride page a `RIDE PAGES` row switches.
     pub const fn ride_page(self) -> Option<RidePage> {
         match self {
-            Self::PageStats => Some(RidePage::Stats),
             Self::PageLap => Some(RidePage::Lap),
             Self::PageClimb => Some(RidePage::Climb),
             Self::PageMap => Some(RidePage::Map),
@@ -294,7 +288,6 @@ impl Row {
             | Self::WheelMode
             | Self::MainLeft
             | Self::MainRight
-            | Self::PageStats
             | Self::PageLap
             | Self::PageClimb
             | Self::PageMap

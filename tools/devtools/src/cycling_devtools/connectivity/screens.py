@@ -5,7 +5,7 @@
 
 Over USB it opens a phone session on the home network (`PHONE START HOME`) and reads
 the session's address and token. Over HTTP it reads `/api/screens` and the catalogue,
-swaps the lower line's cadence for power using the catalogue's ids, dry-runs the tree
+swaps the grid's cadence field for power using the catalogue's ids, dry-runs the tree
 (`POST /api/screens/check`), saves it against the revision it read, and checks that a
 second save against that revision is refused with 409. It restarts the device
 (`RESTART`), opens a new session and reads the page back. At the end it puts the
@@ -69,17 +69,16 @@ def tile(catalogue, name, label):
 
 
 def edited(screens, catalogue):
-    """The main page's nodes with its cadence reading showing power."""
+    """The main page's nodes with its cadence field showing power."""
     nodes = bytearray.fromhex(main_page(screens)['nodes'])
     leaf, hero = catalogue['kinds']['leaf'], catalogue['kinds']['hero']
-    # A reading's arg names its metric in the low four bits; the rest is its look and side.
-    reading, cadence = tile(catalogue, 'reading', 'CADENCE')
-    _, power = tile(catalogue, 'reading', 'POWER')
+    field, cadence = tile(catalogue, 'field', 'CAD RPM')
+    _, power = tile(catalogue, 'field', 'PWR 3S W')
     for at in range(0, len(nodes), 4):
-        if nodes[at] & ~hero & 0xFF == leaf + reading and nodes[at + 1] & 0x0F == cadence & 0x0F:
-            nodes[at + 1] = nodes[at + 1] & 0xF0 | power & 0x0F
+        if nodes[at] & ~hero & 0xFF == leaf + field and nodes[at + 1] == cadence:
+            nodes[at + 1] = power
             return bytes(nodes)
-    raise AssertionError('the main page shows no cadence reading to swap')
+    raise AssertionError('the main page shows no cadence field to swap')
 
 
 def check(report, name, condition, detail):

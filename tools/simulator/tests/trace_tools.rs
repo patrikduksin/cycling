@@ -369,8 +369,8 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     assert_eq!(
         last_two,
         [
-            "ride/stats  (after button 1 code 1; shows dist)",
-            "ride/lap  (after button 1 code 1; shows none)"
+            "ride/lap  (after button 1 code 1; shows none)",
+            "ride/climb  (after button 1 code 1; shows power,hr,grade)"
         ],
         "{pages:?}"
     );
@@ -457,7 +457,7 @@ fn a_page_a_harness_press_brought_up_names_the_press() {
         .unwrap()
         .to_string();
     assert!(
-        page.ends_with("ride/stats  (after synthetic button 1 code 1; shows dist)"),
+        page.ends_with("ride/lap  (after synthetic button 1 code 1; shows none)"),
         "{page}"
     );
 }
@@ -536,13 +536,13 @@ fn power_shows_dashes_while_the_meter_is_out() {
     assert_eq!(field(&shown, "speed"), Some("30.0"));
     assert_eq!(field(&shown, "power"), Some("--"));
     assert_eq!(
-        sim.screen().field("W").as_deref(),
+        sim.screen().field("PWR 3S W").as_deref(),
         Some("--"),
         "power on screen"
     );
     assert_eq!(field(&shown, "hr"), Some("--"));
     assert_eq!(
-        sim.screen().field("BPM").as_deref(),
+        sim.screen().field("HEART BPM").as_deref(),
         Some("--"),
         "hr on screen"
     );

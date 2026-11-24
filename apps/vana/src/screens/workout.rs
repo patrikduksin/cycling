@@ -227,6 +227,9 @@ pub struct Scene<'v> {
     device: &'static Device,
     kind: Kind<'v>,
     look: Look,
+    /// The look a kit page paints in, unmapped; legacy pages and the
+    /// overlays paint through `look`.
+    theme: Option<&'static super::theme::Theme>,
     pub(super) bar: Option<&'v StatusBar>,
     /// The rows the main page's tree gives its status bar.
     main_bar: Range<usize>,
@@ -327,7 +330,10 @@ struct WholePage<'v> {
 impl firmware_shell::shell::Picture for Scene<'_> {
     fn paint(&self, row: &mut Row) {
         let row = &mut row.looked(self.look);
-        row.fill(BLACK);
+        match self.theme {
+            Some(theme) => row.plain().fill(theme.bg),
+            None => row.fill(BLACK),
+        }
         self.paint_content(row);
         if let Some(sign) = &self.sign {
             sign.paint(&mut row.plain());
@@ -381,21 +387,21 @@ impl<'v> Scene<'v> {
             return;
         }
         match self.kind {
-            Kind::PageUnderBar => self.canvas().paint(row),
+            Kind::PageUnderBar => self.paint_canvas(row),
             Kind::Ride(page) => ride::paint(self, page, row),
             Kind::Phone => {
-                self.canvas().paint(row);
+                self.paint_canvas(row);
                 super::phone::paint(self, row);
             }
             Kind::Summary { elevation, .. } => {
                 if let Some(chart) = self.elevation_chart().filter(|_| elevation) {
                     ride::elevation::paint(chart, row);
                 }
-                self.canvas().paint(row);
+                self.paint_canvas(row);
             }
             Kind::List { layout, scroll } => {
                 if let Some(at) = layout.canvas_row(y, scroll) {
-                    self.canvas().paint(&mut row.at(at));
+                    self.paint_canvas(&mut row.at(at));
                 }
             }
         }
@@ -413,6 +419,11 @@ impl<'v> Scene<'v> {
     #[cfg(test)]
     pub(super) fn look(&self) -> Look {
         self.look
+    }
+
+    #[cfg(test)]
+    pub(super) fn theme(&self) -> Option<&'static super::theme::Theme> {
+        self.theme
     }
 
     fn bar_rows(&self) -> Range<usize> {
@@ -437,6 +448,14 @@ impl<'v> Scene<'v> {
 
     pub(super) fn canvas(&self) -> &'v Canvas {
         self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
+    }
+
+    /// The tiles' canvas, a kit page's in its own colours.
+    pub(super) fn paint_canvas(&self, row: &mut Row) {
+        match self.theme {
+            Some(_) => self.canvas().paint(&mut row.plain()),
+            None => self.canvas().paint(row),
+        }
     }
 
     pub(super) fn climb(&self) -> &'v ClimbFrame {
@@ -602,6 +621,9 @@ impl Scene<'_> {
 #[cfg(any(test, feature = "invariants"))]
 impl Scene<'_> {
     fn canvas_breaks(&self, page: RidePage) -> std::vec::Vec<std::string::String> {
+        if self.theme.is_some() {
+            return self.breaks_within(std::vec![("page", self.device.scaled.screen())], 0);
+        }
         let mut regions = std::vec::Vec::new();
         regions.push((
             "status bar",
@@ -1319,10 +1341,12 @@ impl<'a> View<'a> {
                 .then(|| ride::radar(&self.graphics.radar, &device.scaled)),
             _ => None,
         };
+        let themed = self.screen_id().themed() && matches!(kind, Kind::Ride(_));
         Scene {
             device,
             kind,
             look: super::look::look(self.light),
+            theme: themed.then(|| crate::compose::data::Data::theme(self)),
             bar: (!sheet && !self.full_screen()).then_some(&self.bar),
             main_bar: self
                 .main()
@@ -1527,10 +1551,8 @@ impl<const N: usize> core::fmt::Write for Text<N> {
         if self.len + value.len() > N {
             return Err(core::fmt::Error);
         }
-        for byte in value.bytes() {
-            self.bytes[self.len] = byte.to_ascii_uppercase();
-            self.len += 1;
-        }
+        self.bytes[self.len..][..value.len()].copy_from_slice(value.as_bytes());
+        self.len += value.len();
         Ok(())
     }
 }
@@ -1549,10 +1571,7 @@ mod tests {
     use super::*;
     use crate::ride::laps::Laps;
 
-    use crate::screens::chrome::{
-        AMBER, CADENCE, GRADE, GREEN, HEART, POWER, RAISED, RED, Rect, SPEED, STATUS_BAR, TOAST,
-        Tone, WHITE, zone_color,
-    };
+    use crate::screens::chrome::{AMBER, GREEN, RAISED, Rect, STATUS_BAR, TOAST, Tone, WHITE};
 
     #[test]
     #[cfg(debug_assertions)]
@@ -1593,15 +1612,6 @@ mod tests {
         let _ = View::new(Page::Ride, 0, None).map();
     }
 
-    /// The colour of the prepared label that reads `text`.
-    fn label_color(view: &View, text: &[u8]) -> Option<u16> {
-        view.canvas()
-            .runs
-            .iter()
-            .find(|run| run.line.text() == text)
-            .map(|run| run.color)
-    }
-
     /// Whether any pixel in the rows and columns has `color`.
     fn painted(
         view: &mut View,
@@ -1627,54 +1637,6 @@ mod tests {
         assert_eq!(clock(Some(0)), b"12:00");
         assert_eq!(clock(Some(5 * 86400 + 59 * 60 + 59)), b"12:59");
         assert_eq!(clock(None), b"--:--");
-    }
-
-    #[test]
-    fn ride_page_shows_prepared_metrics_in_their_colours() {
-        let mut view = View::new(Page::Ride, 0, None);
-        view.radar_paired = true;
-        view.sample = Sample {
-            speed_mm_s: Some(8333),
-            power_watts: Some(250),
-            cadence_tenths: Some(904),
-            gradient_tenths: Some(-35),
-            ..Sample::default()
-        };
-        view.power_3s = Some(250);
-        view.graphics.power_3s = Some(250);
-        view.totals.add(1000, 12_345, &view.sample, None);
-        view.active_secs = 3725;
-        view.state = Status::Recording;
-        view.compose_main();
-        view.prepare();
-        assert!(painted(&mut view, 0..STATUS_BAR.bottom, 0..60, RED), "REC");
-        assert_eq!(label_color(&view, b"1:02:05"), Some(WHITE));
-        assert_eq!(label_color(&view, b"-3.5%"), Some(GRADE));
-        assert_eq!(label_color(&view, b"29.9"), Some(SPEED));
-        assert_eq!(
-            label_color(&view, b"KM/H"),
-            Some(crate::screens::chrome::SECONDARY)
-        );
-        assert_eq!(label_color(&view, b"250"), Some(POWER));
-        assert_eq!(label_color(&view, b"Z5"), Some(zone_color(5)));
-        assert_eq!(label_color(&view, b"--"), Some(HEART));
-        assert_eq!(label_color(&view, b"Z-"), Some(zone_color(0)));
-        assert_eq!(label_color(&view, b"90"), Some(CADENCE));
-        assert_eq!(label_color(&view, b"0.01"), Some(WHITE));
-        for color in [WHITE, SPEED, POWER, GRADE, CADENCE] {
-            assert!(painted(&mut view, 24..280, 28..240, color), "{color:#x}");
-        }
-        // The power gauge lights five of seven zones; Z5 is amber.
-        let watts = view.canvas().find("250").unwrap();
-        let power = watts.bottom()..watts.bottom() + 30;
-        assert!(painted(&mut view, power.clone(), 120..200, AMBER));
-        // No button labels: a toast may cover the lower line for a moment.
-        assert!(view.prepare().cues().is_empty());
-        // The same watts sit in a lower zone for a stronger rider.
-        view.profile = crate::ride::zones::TrainingProfile::new(300, 185).unwrap();
-        view.prepare();
-        assert_eq!(label_color(&view, b"Z3"), Some(zone_color(3)));
-        assert!(!painted(&mut view, power, 120..200, AMBER));
     }
 
     #[test]
@@ -1771,7 +1733,7 @@ mod tests {
                 .filter(|&y| sent.contains(y))
                 .collect::<std::vec::Vec<_>>()
         };
-        for page in [RidePage::Main, RidePage::Stats, RidePage::Climb] {
+        for page in [RidePage::Main, RidePage::Climb] {
             let rows = sent(&view(page, 120, 60), &view(page, 110, 60));
             assert!(!rows.is_empty(), "{page:?}");
             assert!(
@@ -1783,7 +1745,13 @@ mod tests {
             &view(RidePage::Main, 120, 60),
             &view(RidePage::Main, 120, 61),
         );
-        assert_eq!(ticked, std::vec::Vec::<usize>::new());
+        assert!(
+            !ticked.is_empty()
+                && ticked
+                    .iter()
+                    .all(|&y| y < usize::from(crate::screens::theme::LAYOUT.space.top_line)),
+            "only the top line's time sends above the banner: {ticked:?}"
+        );
     }
 
     fn rows(view: &View) -> std::vec::Vec<[u16; WIDTH]> {
@@ -1819,7 +1787,7 @@ mod tests {
             view.prepare();
             view
         };
-        for page in [RidePage::Stats, RidePage::Climb] {
+        for page in [RidePage::Main, RidePage::Climb] {
             for radar_paired in [false, true] {
                 let what = std::format!("{page:?} radar {radar_paired}");
                 let bare = view(page, Sign::None, radar_paired);
@@ -1828,7 +1796,14 @@ mod tests {
                     .unwrap()
                     .rect();
                 let canvas = bare.canvas();
-                let shapes = canvas.shapes.iter().map(|shape| shape.bounds());
+                // Stats hides only words the banner crosses; its rules and
+                // fills show on past the banner's edge.
+                let kit = page == RidePage::Main;
+                let shapes = canvas
+                    .shapes
+                    .iter()
+                    .filter(|_| !kit)
+                    .map(|shape| shape.bounds());
                 let runs = canvas.runs.iter().map(|run| Rect {
                     left: run.left.saturating_sub(SPILL),
                     top: run.top,
@@ -1839,7 +1814,7 @@ mod tests {
                     .chain(runs)
                     .filter(|rect| rect.top < banner.bottom && banner.bottom < rect.bottom)
                     .collect::<std::vec::Vec<_>>();
-                if page == RidePage::Stats {
+                if page == RidePage::Climb {
                     assert!(
                         !straddling.is_empty(),
                         "{what}: a reading straddles the banner's edge"
@@ -1884,7 +1859,7 @@ mod tests {
         };
         let page = |light| {
             let mut view = View::new(Page::Ride, 0, None);
-            view.ride_page = RidePage::Stats;
+            view.ride_page = RidePage::Main;
             view.course = true;
             view.nav = turn;
             view.light = light;
@@ -1893,7 +1868,7 @@ mod tests {
             rows(&view)
         };
         let (dark, light) = (page(false), page(true));
-        let rect = sign::on_page(RidePage::Stats, turn, false, &crate::screens::C606, None)
+        let rect = sign::on_page(RidePage::Main, turn, false, &crate::screens::C606, None)
             .unwrap()
             .rect();
         let banner = rect.top..rect.bottom;
@@ -2154,7 +2129,7 @@ mod tests {
                     RidePage::Workout => view.show_workout(ride::WorkoutChart::default()),
                     RidePage::Climb => view.show_climb(ClimbLent::NONE),
                     RidePage::Map => view.show_map(None),
-                    RidePage::Main | RidePage::Stats => {}
+                    RidePage::Main => {}
                 }
                 view.compose_main();
                 view.prepare();
@@ -2342,10 +2317,10 @@ mod tests {
     }
 
     #[test]
-    fn text_is_uppercase_and_bounded() {
+    fn text_keeps_its_case_and_is_bounded() {
         let mut line = Text::<4>::new();
-        assert!(line.push_str("ok").is_ok());
+        assert!(line.push_str("Ok").is_ok());
         assert!(line.push_str("abc").is_err());
-        assert_eq!(line.as_bytes(), b"OK");
+        assert_eq!(line.as_bytes(), b"Ok");
     }
 }

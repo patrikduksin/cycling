@@ -33,7 +33,7 @@ fn reads_home_settings_and_a_ride_page_in_the_light_look() {
     sim.advance(seconds(20));
     assert_eq!(
         sim.screen().text(),
-        "7:00\nREC\nGPS\n0:00:19\n2.4%\n28.0\nKM/H\n230\nZ5\nW\n142\nZ1\nBPM\n88\n0.14\nRPM\nKM"
+        "0:00:19\nPWR 3S W\nZ5\nHEART BPM\nZ1\n230\n142\nSPD KM/H\nCAD RPM\n28.0\n88\nGRADE\nCLIMB M\n2.4\n3\n%\nDIST KM\nNP W\n0.1\n--"
     );
 }
 
@@ -107,6 +107,11 @@ fn every_screen_paints_its_colours_through_the_light_look() {
     for scene in SCENES.iter().filter(|scene| !scene.name.contains("light")) {
         let name = scene.name;
         let mut sim = (scene.reach)();
+        // The Stats page draws from the kit in its theme's own colours,
+        // not the dark colours mapped through the look.
+        if sim.ride_page_name().as_deref() == Some("ride/main") {
+            continue;
+        }
         let Some(shown) = paint(&mut sim, true) else {
             unpainted.push(name);
             continue;
@@ -176,6 +181,7 @@ fn every_screen_paints_its_colours_through_the_light_look() {
             .frame()
             .read()
             .into_iter()
+            .filter(|run| !sign.is_some_and(|sign| inside(sign, run.x, run.y)))
             .map(|run| (run.text, run.x, run.y, run.color))
             .collect();
         assert_eq!(read, expected, "{name}");

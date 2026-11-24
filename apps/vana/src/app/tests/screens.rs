@@ -91,12 +91,9 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The main page's built-in for the rider's lower line, as stored.
-fn builtin_main(runtime: &Runtime) -> Vec<u8> {
-    main_tree(runtime.preferences.options.main_slots)
-        .iter()
-        .flat_map(|node| node.bytes())
-        .collect()
+/// The main page's built-in, as stored.
+fn builtin_main() -> Vec<u8> {
+    main_tree().iter().flat_map(|node| node.bytes()).collect()
 }
 
 fn shown_main(runtime: &Runtime) -> Option<Vec<u8>> {
@@ -120,7 +117,7 @@ fn a_phone_changes_ride_main_and_a_restart_shows_it() {
         body,
         std::format!(
             r#"{{"version":{VERSION},"revision":0,"reset":false,"screens":[{{"name":"ride/main","key":{MAIN},"override":false,"nodes":"{}"}}]}}"#,
-            hex(&builtin_main(&device.runtime))
+            hex(&builtin_main())
         )
     );
 

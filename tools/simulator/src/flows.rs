@@ -380,9 +380,43 @@ impl Sim {
             .text
     }
 
-    /// BottomLeft until the status bar's page dots read `indicator`, such as "2/3".
+    /// The page the trace last saw drawn, such as "ride/map".
+    pub fn ride_page_name(&self) -> Option<String> {
+        self.seen().page.map(|(_, page)| page)
+    }
+
+    /// BottomLeft until the trace sees the ride page `name`, such as "ride/map".
     #[track_caller]
-    pub fn ride_page(&mut self, indicator: &str) {
+    pub fn ride_page(&mut self, name: &str) {
+        for _ in 0..8 {
+            if self.ride_page_name().as_deref() == Some(name) {
+                return;
+            }
+            self.press(Role::Move);
+        }
+        panic!(
+            "no ride page {name}, on {:?}; screen:\n{}",
+            self.ride_page_name(),
+            self.screen().text()
+        );
+    }
+
+    /// Run until the panel shows its next frame, two seconds at most. A
+    /// page the ride brings up by itself is in the trace a few passes
+    /// before its first frame is on the panel.
+    pub fn next_frame(&mut self) {
+        let shown = self.device.display.0.borrow().submissions;
+        for _ in 0..200 {
+            self.advance(10);
+            if self.device.display.0.borrow().submissions != shown {
+                return;
+            }
+        }
+    }
+
+    /// BottomLeft until the summary's page dots read `indicator`, such as "2/4".
+    #[track_caller]
+    pub fn summary_page(&mut self, indicator: &str) {
         for _ in 0..8 {
             if self.screen().page().as_deref() == Some(indicator) {
                 return;
@@ -390,7 +424,7 @@ impl Sim {
             self.press(Role::Move);
         }
         panic!(
-            "no ride page {indicator}; screen:\n{}",
+            "no summary page {indicator}; screen:\n{}",
             self.screen().text()
         );
     }

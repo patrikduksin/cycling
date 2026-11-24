@@ -13,8 +13,9 @@ use super::work;
 use core::ops::Range;
 
 pub use faces::{
-    BODY, CAPTION, FACES, FOOT_20, HERO, LARGE, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27,
-    SIGN_32, SIGN_50, TITLE, TOTAL_11, TOTAL_30, TOTAL_60, VALUE,
+    BODY, CAPTION, DIGITS_15, DIGITS_26, DIGITS_40, FACES, FOOT_20, HEADING, HERO, LABEL, LARGE,
+    NOTE, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27, SIGN_32, SIGN_50, TAG, TITLE, TOTAL_11,
+    TOTAL_30, TOTAL_60, VALUE,
 };
 
 /// What a face is for, the same at every scale step: `Faces` holds one face
@@ -38,10 +39,17 @@ pub enum FaceRole {
     Total30,
     Total11,
     Foot20,
+    Tag,
+    Note,
+    Label,
+    Heading,
+    Digits40,
+    Digits26,
+    Digits15,
 }
 
 /// Every role's face at one scale step.
-pub struct Faces(pub [&'static Face; 17]);
+pub struct Faces(pub [&'static Face; 24]);
 
 /// Each step has one set: sets are the same only when they are one static,
 /// and a set adds nothing to a hash that its step does not.
@@ -100,8 +108,8 @@ impl Glyph {
     };
 }
 
-/// One weight at one size, covering ASCII from space to underscore or only
-/// the characters its screens draw.
+/// One weight at one size, covering ASCII from space to underscore, to tilde
+/// for a face with lowercase, or only the characters its screens draw.
 pub struct Face {
     /// Line height from the top of the tallest glyph to the lowest descent.
     pub height: u8,
@@ -109,17 +117,31 @@ pub struct Face {
     pub cap: u8,
     /// Rows above the cap line, for glyphs that rise over it.
     pub top: u8,
-    pub glyphs: &'static [Glyph; 64],
+    /// Glyphs from space to the face's last character.
+    pub glyphs: &'static [Glyph],
     pub bits: &'static [u8],
 }
 
 impl Face {
-    pub const fn glyph(&self, character: u8) -> &Glyph {
-        let upper = character.to_ascii_uppercase();
-        if upper < 0x20 || upper > 0x5f {
-            return &self.glyphs[0];
+    /// The character drawn for `character`: itself, or a lowercase letter's
+    /// capital in a face without lowercase.
+    pub const fn drawn(&self, character: u8) -> u8 {
+        let index = (character as usize).wrapping_sub(0x20);
+        if character.is_ascii_lowercase() && index >= self.glyphs.len() {
+            character.to_ascii_uppercase()
+        } else {
+            character
         }
-        &self.glyphs[(upper - 0x20) as usize]
+    }
+
+    /// The glyph drawn for `character`, or a space outside the face's table.
+    pub const fn glyph(&self, character: u8) -> &Glyph {
+        let index = (self.drawn(character) as usize).wrapping_sub(0x20);
+        if index < self.glyphs.len() {
+            &self.glyphs[index]
+        } else {
+            &self.glyphs[0]
+        }
     }
 
     /// The advance of `text`, in pixels.
@@ -217,7 +239,7 @@ impl<const N: usize> Line<N> {
         let mut pen = 0;
         let mut i = 0;
         while i < text.len() && i < N {
-            line.chars[i] = text[i].to_ascii_uppercase();
+            line.chars[i] = face.drawn(text[i]);
             line.starts[i] = pen;
             pen += face.glyph(text[i]).advance as u16;
             i += 1;
@@ -608,6 +630,25 @@ mod tests {
     }
 
     #[test]
+    fn sentence_case_faces_draw_lowercase_and_caps_faces_its_capitals() {
+        for face in [&NOTE, &LABEL, &HEADING] {
+            assert_eq!(face.glyphs.len(), 0x7f - 0x20);
+            assert!((b' '..=b'~').all(|c| c == b' ' || face.glyph(c).w > 0));
+            assert_ne!(face.glyph(b'a').h, face.glyph(b'A').h);
+            assert_eq!(Line::<8>::new(face, b"Ride").text(), b"Ride");
+        }
+        for face in [&TAG, &CAPTION, &DIGITS_40] {
+            assert_eq!(face.glyphs.len(), 0x60 - 0x20);
+            assert_eq!(face.width(b"ride"), face.width(b"RIDE"));
+            assert_eq!(face.glyph(b'~').advance, face.glyph(b' ').advance);
+            assert_eq!(Line::<8>::new(face, b"Ride").text(), b"RIDE");
+        }
+        for face in [&DIGITS_40, &DIGITS_26, &DIGITS_15] {
+            assert!(b"0123456789:.-%".iter().all(|&c| face.glyph(c).w > 0));
+        }
+    }
+
+    #[test]
     fn each_sign_and_totals_face_draws_its_texts() {
         let draws: [(&Face, &[u8]); 11] = [
             (&SIGN_50, b"0123456789."),
@@ -769,8 +810,8 @@ mod tests {
     #[test]
     fn spilling_glyphs_paint_like_the_per_pixel_label() {
         const BACKGROUND: u16 = 0x2945;
-        let characters = || 0x20u8..0x60;
         for face in FACES {
+            let characters = || 0x20u8..0x20 + face.glyphs.len() as u8;
             let spills = characters().filter(|&c| {
                 let glyph = face.glyph(c);
                 i32::from(glyph.x) + i32::from(glyph.w) > i32::from(glyph.advance)

@@ -96,13 +96,13 @@ fn a_paused_ride_draws_twice_a_second_on_every_page() {
     sim.show_ride_pages();
     let mut pages = 0;
     while !sim.screen().contains("RIDE TIME") {
-        let page = sim.screen().page().unwrap_or_default();
+        let page = sim.ride_page_name().unwrap_or_default();
         expect_pace(&mut sim, &format!("paused, ride page {page}"), ANIMATED);
         sim.press(Role::Move);
         pages += 1;
         assert!(pages <= 8, "ride pages never returned to the paused screen");
     }
-    assert!(pages >= 5, "visited {pages} ride pages");
+    assert!(pages >= 4, "visited {pages} ride pages");
 }
 
 fn frames_over(sim: &mut Sim, ms: u64) -> u32 {

@@ -33,7 +33,7 @@ fn main_page(screens: &Value) -> &Value {
         .expect("ride/main is a named screen")
 }
 
-/// The main page as the phone reads it with the lower line's cadence
+/// The main page as the phone reads it with the grid's cadence field
 /// changed to power: the revision it was read at, its nodes and the index
 /// of the changed one.
 fn power_for_cadence(sim: &mut Sim) -> (u64, Vec<u8>, usize) {
@@ -51,15 +51,13 @@ fn power_for_cadence(sim: &mut Sim) -> (u64, Vec<u8>, usize) {
     for tile in catalogue["tiles"].as_array().unwrap() {
         assert!(!tile["forms"].as_array().unwrap().is_empty(), "{tile}");
     }
-    // A reading's setting names its metric in the low four bits.
-    let (reading, cadence) = tile(&catalogue, "reading", "CADENCE");
-    let (_, power) = tile(&catalogue, "reading", "POWER");
+    let (field, cadence) = tile(&catalogue, "field", "CAD RPM");
+    let (_, power) = tile(&catalogue, "field", "PWR 3S W");
     let index = nodes
         .chunks(4)
-        .position(|node| node[0] & !hero == leaf + reading && node[1] & 0x0f == cadence & 0x0f)
-        .expect("the lower line shows cadence");
-    let arg = &mut nodes[index * 4 + 1];
-    *arg = *arg & 0xf0 | power & 0x0f;
+        .position(|node| node[0] & !hero == leaf + field && node[1] == cadence)
+        .expect("the grid shows cadence");
+    nodes[index * 4 + 1] = power;
     (base, nodes, index)
 }
 
@@ -97,7 +95,7 @@ fn a_phone_changes_the_main_page_over_wifi_and_it_survives_a_power_cut() {
     let panel = &catalogue["panel"];
     let (width, height) = (panel[0].as_u64().unwrap(), panel[1].as_u64().unwrap());
     let solves = dry["solves"].as_array().unwrap();
-    assert_eq!(solves.len(), 16, "{dry}");
+    assert_eq!(solves.len(), 2, "with and without a radar: {dry}");
     for solve in solves {
         let leaves = solve["leaves"].as_array().unwrap();
         assert!(!leaves.is_empty(), "{solve}");
@@ -200,11 +198,14 @@ fn a_main_page_the_phone_saved_is_the_one_the_ride_shows() {
         .map(|run| run.text)
         .collect();
     assert!(
-        inside.iter().any(|text| text == "W"),
+        inside.iter().any(|text| text == "PWR 3S W"),
         "{inside:?} in {placed}:\n{}",
         sim.screen().text()
     );
-    assert!(!inside.iter().any(|text| text == "RPM"), "{inside:?}");
+    assert!(
+        !inside.iter().any(|text| text.contains("RPM")),
+        "{inside:?}"
+    );
 
     let capture = sim.capture();
     let replayed = Sim::replay(&capture);

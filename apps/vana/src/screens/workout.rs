@@ -1796,7 +1796,14 @@ mod tests {
                     .unwrap()
                     .rect();
                 let canvas = bare.canvas();
-                let shapes = canvas.shapes.iter().map(|shape| shape.bounds());
+                // Stats hides only words the banner crosses; its rules and
+                // fills show on past the banner's edge.
+                let kit = page == RidePage::Main;
+                let shapes = canvas
+                    .shapes
+                    .iter()
+                    .filter(|_| !kit)
+                    .map(|shape| shape.bounds());
                 let runs = canvas.runs.iter().map(|run| Rect {
                     left: run.left.saturating_sub(SPILL),
                     top: run.top,
@@ -1807,7 +1814,7 @@ mod tests {
                     .chain(runs)
                     .filter(|rect| rect.top < banner.bottom && banner.bottom < rect.bottom)
                     .collect::<std::vec::Vec<_>>();
-                if page == RidePage::Main {
+                if page == RidePage::Climb {
                     assert!(
                         !straddling.is_empty(),
                         "{what}: a reading straddles the banner's edge"

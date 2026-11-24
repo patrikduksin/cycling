@@ -390,6 +390,17 @@ impl Canvas {
         self.runs.retain(|run| shown(run.top, run.bottom()));
     }
 
+    /// Drop the runs that cross `rows` and the shapes wholly inside them;
+    /// a shape that reaches past them keeps showing where nothing covers it.
+    pub fn hide_words(&mut self, rows: core::ops::Range<usize>) {
+        let clear = |top: usize, bottom: usize| bottom <= rows.start || rows.end <= top;
+        self.runs.retain(|run| clear(run.top, run.bottom()));
+        self.shapes.retain(|shape| {
+            let bounds = shape.bounds();
+            bounds.top < rows.start || rows.end < bounds.bottom
+        });
+    }
+
     fn spans(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         let shapes = self.shapes.iter().map(|shape| shape.bounds());
         let shapes = shapes.map(|bounds| (bounds.top, bounds.bottom));

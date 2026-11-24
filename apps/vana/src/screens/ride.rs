@@ -433,6 +433,22 @@ pub(super) fn hide_banner(view: &mut View, laid: Option<&crate::compose::builtin
     let mut rows = covered.top..covered.bottom;
     let nodes = laid.map_or(&[][..], |laid| laid.screen().tree().nodes());
     let tiles = laid.map_or(&[][..], |laid| laid.leaves());
+    if laid.is_some_and(|laid| laid.id().themed()) {
+        // A kit tile goes whole only where the banner covers its words; the
+        // banner paints over its fills and rules.
+        let overlaps = |top: usize, bottom: usize| top < covered.bottom && covered.top < bottom;
+        for placed in tiles {
+            let tile = placed.rect.rect();
+            let worded = canvas.runs.iter().any(|run| {
+                tile.contains(run.left, run.top) && overlaps(run.top, run.bottom())
+            });
+            if worded {
+                rows = rows.start.min(tile.top)..rows.end.max(tile.bottom);
+            }
+        }
+        canvas.hide_words(rows);
+        return;
+    }
     for placed in tiles {
         let drawn = match nodes[usize::from(placed.node)].what() {
             Some(What::Leaf { component, .. }) => ![SPACE, STATUS, TOP_LINE].contains(&component),

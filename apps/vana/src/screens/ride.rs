@@ -485,7 +485,7 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
     }
     match page {
         RidePage::Climb => climb::paint_chart(scene.climb(), row),
-        RidePage::Workout => workout::paint_chart(scene.chart(), row),
+        RidePage::Workout => workout::paint_chart(scene.chart(), &mut row.plain()),
         _ => {}
     }
     scene.paint_canvas(row);
@@ -649,6 +649,9 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
                     mark => look.ink(mark),
                 }
             }
+            _ if page == RidePage::Workout => {
+                chrome::Shown(workout::chart_pixel(scene.chart(), x, y).unwrap_or(theme.bg))
+            }
             _ => chrome::Shown(theme.bg),
         };
         return scene.canvas().pixel(chrome::Look::PLAIN, x, y, under);
@@ -670,7 +673,6 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
     }
     let under = match page {
         RidePage::Climb => look.ink(climb::chart_pixel(scene.climb(), x, y)),
-        RidePage::Workout => look.ink(workout::chart_pixel(scene.chart(), x, y)),
         _ => black,
     };
     scene.canvas().pixel(look, x, y, under)

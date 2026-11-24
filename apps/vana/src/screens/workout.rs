@@ -428,6 +428,7 @@ impl<'v> Scene<'v> {
 
     fn bar_rows(&self) -> Range<usize> {
         match self.kind {
+            Kind::Ride(_) if self.theme.is_some() => 0..0,
             Kind::Ride(RidePage::Main) => self.main_bar.clone(),
             _ => 0..crate::compose::tiles::status::rows(&self.device.scaled),
         }

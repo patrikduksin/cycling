@@ -1,21 +1,20 @@
-//! The workout page as a tree of tiles: the status bar, then the workout's
-//! name and step count, the step and its target, the reading the target
-//! checks as the hero, the target band, the verdict, the time left over the
-//! step's progress, the next step, and the whole workout as a chart. The
-//! words and the chart share the room by weight, and the words' share
-//! becomes even gaps between them. Holding MOVE, or a tap on the time left,
-//! adds to the step.
-use super::{Builtin, Choices};
+//! The Workout ride page: the top line, then the target range left of the
+//! reading it checks, the target band, the time left in the step, the next
+//! step, and the whole workout as a chart that takes the rest. The radar
+//! strip, while one is paired, takes its room at the left. Holding MOVE, or
+//! a tap on the time left, adds to the step.
+use super::{Builtin, Nodes};
 use crate::compose::input::{Action, Button, Buttons, Go};
-use crate::compose::node::{Flags, MAX_NODES, Node, Size, When};
-use crate::compose::registry::{
-    SPACE, STATUS, STEP_LEFT, TARGET_BAND, WORKOUT_CHART, WORKOUT_LINE,
-};
-use crate::compose::tiles::workout_line::Line;
+use crate::compose::kit::bar::Gauge;
+use crate::compose::kit::chart::Plot;
+use crate::compose::kit::step::Step;
+use crate::compose::node::{Flags, Node, Size, When};
+use crate::compose::registry::{BAR, CHART, SPACE, STEP, TOP_LINE};
+use crate::screens::theme::LAYOUT;
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| tree().into_iter().collect(),
+    tree: |_| tree(),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Ride(Role::Act),
@@ -33,42 +32,42 @@ pub const BUILTIN: &Builtin = &Builtin {
     },
 };
 
-const BAR_UNITS: u8 = 24;
 const RADAR_UNITS: u8 = crate::screens::ride::RADAR_WIDTH as u8;
-const LEFT_UNITS: u8 = crate::screens::ride::TEXT_LEFT as u8;
-const RIGHT_UNITS: u8 = crate::screens::ride::TEXT_RIGHT as u8;
-/// How the words and the chart share the rows they leave.
-const WORDS_WEIGHT: u8 = 1;
-const CHART_WEIGHT: u8 = 1;
-pub const NODES: usize = 16;
-const _: () = assert!(NODES <= MAX_NODES);
+const PAD: u8 = LAYOUT.space.pad;
 
 const fn space(units: u8) -> Node {
     Node::leaf(SPACE, 0, Size::units(units))
 }
 
-const fn line(line: Line) -> Node {
-    Node::leaf(WORKOUT_LINE, line as u8, Size::CONTENT)
+const fn step(step: Step) -> Node {
+    Node::leaf(STEP, step as u8, Size::CONTENT)
 }
 
-pub const fn tree() -> [Node; NODES] {
+pub fn tree() -> Nodes {
+    let grow = Size::grow(1);
     let content = Size::CONTENT;
+    let radar = When::new(Flags::RADAR, Flags::NONE);
     [
-        Node::col(2, Size::grow(1)),
-        Node::leaf(STATUS, 0, Size::units(BAR_UNITS)),
-        Node::row(4, Size::grow(1)),
-        space(RADAR_UNITS).when(When::new(Flags::RADAR, Flags::NONE)),
-        space(LEFT_UNITS),
-        Node::col(2, Size::grow(1)),
-        Node::col(7, Size::grow(WORDS_WEIGHT)),
-        line(Line::Title),
-        line(Line::Step),
-        line(Line::Reading).hero(),
-        Node::leaf(TARGET_BAND, 0, content),
-        line(Line::Verdict),
-        Node::leaf(STEP_LEFT, 0, content),
-        line(Line::Next),
-        Node::leaf(WORKOUT_CHART, 0, Size::grow(CHART_WEIGHT)),
-        space(RIGHT_UNITS),
+        Node::col(2, grow),
+        Node::leaf(TOP_LINE, 0, content),
+        Node::row(2, grow),
+        space(RADAR_UNITS).when(radar),
+        Node::col(11, grow),
+        space(2 * PAD),
+        Node::row(3, content),
+        step(Step::Range),
+        Node::leaf(SPACE, 0, grow),
+        step(Step::Reading).hero(),
+        space(2 * PAD),
+        Node::leaf(BAR, Gauge::Step as u8, content),
+        space(PAD),
+        step(Step::Left),
+        space(2 * PAD),
+        step(Step::Next),
+        space(2 * PAD),
+        Node::leaf(CHART, Plot::Workout as u8, grow),
+        space(PAD),
     ]
+    .into_iter()
+    .collect()
 }

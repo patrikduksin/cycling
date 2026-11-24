@@ -20,8 +20,8 @@ power. None draws in the 5 × 7 bitmap font.
 
 Kit screens are built from one small set of tiles, the kit
 (`apps/vana/src/compose/kit`), drawn in one of two looks. The Stats ride
-page (`ride/main`) is one. Other screens follow the rules in the rest of
-this document.
+page (`ride/main`) and the Workout ride page (`ride/workout`) are two.
+Other screens follow the rules in the rest of this document.
 
 - **Looks are data.** `screens/theme` holds one `Theme` of colours by role.
   `DARK` (night) is main's palette. `LIGHT` (day) writes every word and
@@ -49,7 +49,14 @@ this document.
   line in the rule colour. `text` is one line of words or a metric, in
   sentence case where the face has lowercase. `symbol` is one icon in a
   tone. `item` is an Apple-Watch-style rounded button with a focus ring and
-  an action. `bar` shows zone segments or a level. `facts` is an
+  an action. `bar` shows zone segments, a level, or a workout step's
+  target band: a wide track with the target range lit in its zone's colour
+  over the middle half and the reading as a marker ringed in the
+  background. `step` is a line of the workout step: the target range high
+  over low with a rule in its zone colour between, the hero reading with
+  its unit over `3s`, the time left, or the next step with its zone as a
+  square. `chart` is the box a page's chart painter fills under the tiles.
+  `facts` is an
   inset-grouped list. `kit::grid` lays out rows of cells with rules between
   them that line up. The kit's faces are under Type scale below.
 
@@ -562,7 +569,7 @@ Applied to the cycling-specific charts:
 | Zone gauge (main page) | One segment per zone, 5 px. Zones below the current one are lit in their colours. The current zone fills left to right as the reading moves through it. Zones above are `TERTIARY`. The zone chip (`Z4`) beside the reading is `BODY` in the zone colour, `Z-` without a zone. |
 | Time in zone (stats) | One 8 px bar per metric, `PWR` and `HR` captions on its left, segments proportional to time in each zone, in zone colours, with 2 px gaps and no empty zones. A `TERTIARY` track before any time is recorded. |
 | Elevation profile (climb) | A solid area per column, coloured by the steepness of that column's grade, on one `TERTIARY` baseline, with a 6 px `WHITE` disc for the rider. The grade sits in the top left, in `LARGE` while it fits beside power and heart rate (`VALUE` otherwise), each of those with its zone on a rounded chip in the zone's colour; a 5 px bar under them shows the current grade's steepness colour. The road the profile dims ([UX flows](ux-flows.md#climb) says which stretch the profile spans and what it dims) is at 25%. On a climb from the map, a 6 px progress bar under the chart, as wide as the chart, fills `WHITE`, with FOOT, `NN% UP` and TOP under it. The NO MAP caption is `SECONDARY`. |
-| Workout (workout page) | One bar per played step across the content width, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the zone of the target's middle, `CADENCE` for cadence and `TERTIARY` without a target. Steps done and on now are full colour, steps ahead 25%. A `WHITE` bar under the chart marks the step on now, or under the stair on now for a ramp; the stairs ahead are 25%. Above the chart, the step's band gauge: a `TERTIARY` track, the target band in its metric colour, and a `WHITE` disc at the 3 s reading. A ramp's band is 95% to 110% of the stage's watts, which the page names (`HOLD 121 W`). |
+| Workout (workout page) | One bar per played step across the chart's box inside its gutters, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity, scaled so the hardest step nearly fills the chart. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the theme's zone colour of the target's middle, Z3's for cadence and the unlit colour without a target. Steps already ridden keep a third of their colour over the background; the step on now and those ahead are full colour. A 2 px line in the text colour runs the chart's height where the ride is now. |
 | Target band (main page) | During a workout, a 2 px `WHITE` bar under the power or heart gauge spans the step's target. |
 | Track (map) | See [Map page](#map-page) below. |
 | Lap comparison (laps) | One vertical bar per lap across the page's full width, each centred in an equal slot, up to 24 px wide with at least 3 px between bars, on one `TERTIARY` baseline. Height is proportional to the lap's average power, or its speed on a ride without power, in that metric's colour. Finished laps are drawn at 25%, the open lap in full colour, and the best lap gets a 2 px `WHITE` cap. The oldest lap is on the left and the open lap on the right; the 16 kept laps and the open one fit. |
@@ -829,7 +836,7 @@ holding TopLeft to reboot are in [UX flows](ux-flows.md#buttons).
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left extends the step by a minute (500 m for a distance step) |
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
 | Long press | Still for 1 s, then lifted | On the map, stops following the course (COURSE OFF; [UX flows](ux-flows.md#map)) |

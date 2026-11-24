@@ -107,9 +107,12 @@ fn every_screen_paints_its_colours_through_the_light_look() {
     for scene in SCENES.iter().filter(|scene| !scene.name.contains("light")) {
         let name = scene.name;
         let mut sim = (scene.reach)();
-        // The Stats page draws from the kit in its theme's own colours,
-        // not the dark colours mapped through the look.
-        if sim.ride_page_name().as_deref() == Some("ride/main") {
+        // Kit pages draw in their theme's own colours, not the dark
+        // colours mapped through the look.
+        if matches!(
+            sim.ride_page_name().as_deref(),
+            Some("ride/main" | "ride/workout")
+        ) {
             continue;
         }
         let Some(shown) = paint(&mut sim, true) else {

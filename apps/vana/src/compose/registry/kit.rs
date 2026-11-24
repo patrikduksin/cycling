@@ -1,5 +1,5 @@
 //! Ids 112–123: the minimal tile kit (`compose::kit`).
-use crate::compose::kit::{bar, facts, field, item, rule, symbol, text, top_line};
+use crate::compose::kit::{bar, chart, facts, field, item, rule, step, symbol, text, top_line};
 use crate::compose::tile::{Component, Erased};
 
 pub const FIELD: u8 = 112;
@@ -10,6 +10,8 @@ pub const SYMBOL: u8 = 116;
 pub const ITEM: u8 = 117;
 pub const BAR: u8 = 118;
 pub const FACTS: u8 = 119;
+pub const STEP: u8 = 120;
+pub const CHART: u8 = 121;
 
 pub(super) static TILES: &[&dyn Component] = &[
     &Erased::<field::FieldTile>::NEW,
@@ -20,6 +22,8 @@ pub(super) static TILES: &[&dyn Component] = &[
     &Erased::<item::Item>::NEW,
     &Erased::<bar::Bar>::NEW,
     &Erased::<facts::Facts>::NEW,
+    &Erased::<step::StepTile>::NEW,
+    &Erased::<chart::Chart>::NEW,
 ];
 
-const _: () = assert!(TILES.len() == (FACTS - FIELD) as usize + 1);
+const _: () = assert!(TILES.len() == (CHART - FIELD) as usize + 1);

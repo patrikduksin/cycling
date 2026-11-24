@@ -6,7 +6,7 @@ use super::view::{Presented, Shows};
 use crate::clock::Zone;
 use crate::compose::builtin::ScreenId;
 use crate::compose::input::{Action, ListAct};
-use crate::compose::registry::WORKOUT_CHART;
+use crate::compose::registry::CHART;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::current::Request;
 use crate::ride::laps::AutoLap;
@@ -369,15 +369,20 @@ impl Runtime {
         view.zone_time = readout.zone_time;
         view.profile = self.preferences.profile;
         view.rider = self.preferences.options.rider;
+        view.light = light;
         if page == Page::Ride {
             view.training = readout.training;
             if view.ride_page == RidePage::Workout {
                 let laid = self.composition.laids().get(ScreenId::RideWorkout);
-                let rect = laid.and_then(|laid| laid.box_of(WORKOUT_CHART));
+                let rect = laid.and_then(|laid| laid.box_of(CHART));
+                let theme = crate::compose::data::Data::theme(&view);
                 view.show_workout(match (&self.training.player, rect) {
-                    (Some(player), Some(rect)) => {
-                        crate::screens::ride::workout_chart(player, &view.profile, rect)
-                    }
+                    (Some(player), Some(rect)) => crate::screens::ride::workout_chart(
+                        player,
+                        &view.profile,
+                        crate::compose::kit::chart::plotted(rect, &self.device.scaled),
+                        theme,
+                    ),
                     _ => Default::default(),
                 });
             }
@@ -482,7 +487,6 @@ impl Runtime {
                 pinned: super::lookahead::pinned_of(&self.lookahead),
             });
         }
-        view.light = light;
         if page == Page::Ride && view.ride_page == RidePage::Map {
             view.show_map(super::course::map_of(&self.track));
         }

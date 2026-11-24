@@ -510,7 +510,7 @@ fn a_workout() {
             sim.press(Role::Back);
             sim.advance(seconds(3));
         }
-        sim.expect_text("ALL OUT");
+        assert_eq!(sim.workout()["step"], "11/12", "twenty minutes all out");
     });
     walk.cell("ride-workout", "all-out");
     walk.all(|sim| sim.ride_at(30.0, 260.0, 142.0, 90.0));

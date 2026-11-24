@@ -374,7 +374,7 @@ pub(crate) mod scenes {
         sim.pair(&["SPEED/CAD", "POWER METER"]);
         sim.start_ride();
         sim.ride_at(30.0, 180.0, 0.0, 85.0);
-        sim.ride_page("4/5");
+        sim.ride_page("ride/climb");
         while sim.world().distance_m < 1000.0 {
             sim.advance(seconds(1));
         }
@@ -421,8 +421,8 @@ pub(crate) mod scenes {
 
     pub(crate) fn stats() -> Sim {
         let mut sim = riding(120);
-        sim.ride_page("2/5");
-        sim.expect_text("AVG W");
+        sim.ride_page("ride/main");
+        sim.expect_text("NP W");
         sim
     }
 
@@ -430,7 +430,7 @@ pub(crate) mod scenes {
         let mut sim = riding(60);
         sim.lap(1);
         sim.advance(seconds(30));
-        sim.ride_page("3/5");
+        sim.ride_page("ride/lap");
         sim.expect_text("LAP TIME");
         sim
     }
@@ -442,14 +442,14 @@ pub(crate) mod scenes {
         sim.wait_for("RECORDING", seconds(2)).unwrap();
         sim.ride_at(30.0, 120.0, 142.0, 90.0);
         sim.advance(seconds(20));
-        assert_eq!(sim.screen().page().as_deref(), Some("1/6"));
+        assert_eq!(sim.ride_page_name().as_deref(), Some("ride/workout"));
         sim.expect_text("1/12");
         sim
     }
 
     pub(crate) fn map_page() -> Sim {
         let mut sim = riding(90);
-        sim.ride_page("5/5");
+        sim.ride_page("ride/map");
         sim.expect_text("100 M");
         sim
     }
@@ -512,7 +512,7 @@ pub(crate) mod scenes {
         while sim.world().distance_m < metres {
             sim.advance(seconds(1));
         }
-        sim.ride_page("5/5");
+        sim.ride_page("ride/map");
         sim
     }
 
@@ -559,7 +559,7 @@ pub(crate) mod scenes {
         while sim.world().distance_m < 570.0 {
             sim.advance(seconds(1));
         }
-        sim.ride_page("5/5");
+        sim.ride_page("ride/map");
         sim.advance(seconds(2));
         sim.expect_text(scale);
         sim
@@ -763,7 +763,7 @@ pub(crate) mod scenes {
 
     fn main_with_band() -> Sim {
         let mut sim = workout_page();
-        sim.ride_page("2/6");
+        sim.ride_page("ride/main");
         sim
     }
 

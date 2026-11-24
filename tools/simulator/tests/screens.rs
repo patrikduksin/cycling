@@ -402,24 +402,23 @@ fn riding(world: fn(Model) -> Sim) -> Walk {
 fn a_free_ride() {
     let mut walk = riding(with_files);
     let pages = [
-        ("ride-main", "1/5"),
-        ("ride-stats", "2/5"),
-        ("ride-lap", "3/5"),
-        ("ride-map", "5/5"),
+        ("ride-main", "ride/main"),
+        ("ride-lap", "ride/lap"),
+        ("ride-map", "ride/map"),
     ];
-    for (screen, indicator) in pages {
-        walk.guide(|sim| sim.ride_page(indicator));
+    for (screen, page) in pages {
+        walk.guide(|sim| sim.ride_page(page));
         walk.cell(screen, "free-ride");
     }
     walk.all(vehicles);
     walk.advance(seconds(2));
-    for (screen, indicator) in pages {
-        walk.guide(|sim| sim.ride_page(indicator));
+    for (screen, page) in pages {
+        walk.guide(|sim| sim.ride_page(page));
         walk.cell(screen, "vehicles");
     }
     walk.advance(seconds(30));
     walk.guide(|sim| {
-        sim.ride_page("1/5");
+        sim.ride_page("ride/main");
         sim.pause_ride();
     });
     walk.cell("paused", "free-ride");
@@ -471,7 +470,7 @@ fn a_saver_ride() {
 #[test]
 fn a_climb_and_its_summary() {
     let mut walk = riding(hilly);
-    walk.guide(|sim| sim.ride_page("4/5"));
+    walk.guide(|sim| sim.ride_page("ride/climb"));
     walk.all(|sim| sim.ride_at(14.0, 260.0, 150.0, 75.0));
     walk.ride_to(1600.0);
     walk.cell("ride-climb", "climbing");
@@ -503,10 +502,10 @@ fn a_workout() {
     walk.all(|sim| sim.ride_at(30.0, 150.0, 142.0, 90.0));
     walk.advance(seconds(30));
     walk.cell("ride-workout", "warm-up");
-    walk.guide(|sim| sim.ride_page("2/6"));
+    walk.guide(|sim| sim.ride_page("ride/main"));
     walk.cell("ride-main", "workout");
     walk.guide(|sim| {
-        sim.ride_page("1/6");
+        sim.ride_page("ride/workout");
         for _ in 0..10 {
             sim.press(Role::Back);
             sim.advance(seconds(3));
@@ -604,14 +603,11 @@ fn a_course() {
     walk.all(|sim| sim.ride_at(30.0, 210.0, 142.0, 88.0));
     walk.ride_to(300.0);
     walk.cell("ride-main", "course-ahead");
-    walk.guide(|sim| sim.ride_page("5/5"));
+    walk.guide(|sim| sim.ride_page("ride/map"));
     walk.cell("ride-map", "course");
     walk.ride_to(900.0);
-    for (screen, indicator) in [("ride-main", "1/5"), ("ride-stats", "2/5")] {
-        walk.guide(|sim| sim.ride_page(indicator));
-        walk.cell(screen, "turn");
-    }
-    walk.guide(|sim| sim.ride_page("1/5"));
+    walk.guide(|sim| sim.ride_page("ride/main"));
+    walk.cell("ride-main", "turn");
     while !walk.guide.screen().contains("ARRIVED") {
         assert!(walk.guide.world().distance_m < 2_200.0, "never arrived");
         walk.advance(seconds(1));

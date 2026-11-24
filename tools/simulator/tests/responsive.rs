@@ -121,9 +121,9 @@ fn riding(model: Model, world: fn(Model) -> Sim) -> Twin {
     twin
 }
 
-fn page(model: Model, world: fn(Model) -> Sim, indicator: &str) -> Twin {
+fn page(model: Model, world: fn(Model) -> Sim, name: &str) -> Twin {
     let mut twin = riding(model, world);
-    twin.guide(|sim| sim.ride_page(indicator));
+    twin.guide(|sim| sim.ride_page(name));
     twin
 }
 
@@ -163,7 +163,7 @@ fn on_course(model: Model) -> Sim {
     sim
 }
 
-fn course_page(model: Model, metres: f64, indicator: &str) -> Twin {
+fn course_page(model: Model, metres: f64, name: &str) -> Twin {
     let mut twin = Twin::paired(model, on_course, &KINDS);
     twin.both(|sim| {
         sim.init_bulk();
@@ -181,7 +181,7 @@ fn course_page(model: Model, metres: f64, indicator: &str) -> Twin {
     while twin.sim.world().distance_m < metres {
         twin.advance(seconds(1));
     }
-    twin.guide(|sim| sim.ride_page(indicator));
+    twin.guide(|sim| sim.ride_page(name));
     twin
 }
 
@@ -206,10 +206,13 @@ fn the_main_page_fills_a_taller_panel() {
     let mut twin = riding(WIDE, world);
     let screen = twin.sim.screen();
     assert_eq!((screen.width, screen.height), (240, 400));
-    shows(&twin.sim, &["KM/H", "W", "BPM", "RPM", "KM"]);
-    let speed = screen.run("KM/H").expect("speed").y;
-    let lower = screen.run("RPM").expect("cadence").y;
-    assert!(lower > 320, "the readings spread down the panel: {lower}");
+    shows(
+        &twin.sim,
+        &["SPD KM/H", "PWR 3S W", "HEART BPM", "CAD RPM", "DIST KM"],
+    );
+    let speed = screen.run("SPD KM/H").expect("speed").y;
+    let lower = screen.run("DIST KM").expect("distance").y;
+    assert!(lower > 300, "the readings spread down the panel: {lower}");
     assert!(speed < lower);
     twin.sim.checkpoint("ride main on wide");
 }
@@ -226,18 +229,18 @@ fn the_main_page_lays_out_at_three_quarters() {
 #[test]
 fn every_ride_page_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
-        let mut twin = page(model, world, "2/5");
-        shows(&twin.sim, &["DIST KM", "AVG W", "ASCENT M", "PWR", "HR"]);
+        let mut twin = page(model, world, "ride/main");
+        shows(&twin.sim, &["PWR 3S W", "Z5", "CAD RPM", "GRADE", "NP W"]);
         twin.sim
             .checkpoint(&format!("ride stats on {}", model.name));
         twin.guide(|sim| {
             sim.press(Role::Back);
             sim.advance(seconds(30));
-            sim.ride_page("3/5");
+            sim.ride_page("ride/lap");
         });
         shows(&twin.sim, &["LAP TIME", "LAP 2", "LAP KM", "W DIFF"]);
         twin.sim.checkpoint(&format!("ride lap on {}", model.name));
-        twin.guide(|sim| sim.ride_page("5/5"));
+        twin.guide(|sim| sim.ride_page("ride/map"));
         twin.sim.checkpoint(&format!("ride map on {}", model.name));
         assert!(lit(&twin.sim) > 2_000, "{} map", model.name);
         shows(&twin.sim, &["100 M", "KM"]);
@@ -247,7 +250,7 @@ fn every_ride_page_draws_on_both_test_panels() {
 #[test]
 fn the_climb_page_draws_on_both_test_panels() {
     for model in [WIDE, SMALL] {
-        let mut twin = page(model, hilly, "4/5");
+        let mut twin = page(model, hilly, "ride/climb");
         twin.both(|sim| sim.ride_at(14.0, 260.0, 150.0, 75.0));
         while twin.sim.world().distance_m < 1600.0 {
             twin.advance(seconds(1));
@@ -340,7 +343,7 @@ fn the_workout_page_draws_on_both_test_panels() {
         });
         twin.both(|sim| sim.ride_at(30.0, 120.0, 142.0, 90.0));
         twin.advance(seconds(20));
-        assert_eq!(twin.guide.screen().page().as_deref(), Some("1/6"));
+        assert_eq!(twin.guide.ride_page_name().as_deref(), Some("ride/workout"));
         shows(&twin.sim, &["VO2 MAX", "WARM UP", "W", "LEFT", "NEXT"]);
         if model.name == WIDE.name {
             shows(&twin.sim, &["1/12", "108-151 W"]);
@@ -365,16 +368,12 @@ fn the_workout_page_draws_on_both_test_panels() {
 #[test]
 fn a_course_ride_draws_its_sign_on_both_test_panels() {
     for model in [WIDE, SMALL] {
-        let mut twin = course_page(model, 700.0, "1/5");
+        let mut twin = course_page(model, 700.0, "ride/main");
         twin.sim
             .checkpoint(&format!("course main on {}", model.name));
         let distance = twin.guide.screen().field("M").expect("the C606's sign");
-        shows(&twin.sim, &[&distance, "M", "BPM", "RPM"]);
-        twin.guide(|sim| sim.ride_page("2/5"));
-        twin.sim
-            .checkpoint(&format!("course banner on {}", model.name));
-        shows(&twin.sim, &[&distance, "M", "AVG W"]);
-        twin.guide(|sim| sim.ride_page("5/5"));
+        shows(&twin.sim, &[&distance, "M", "GRADE"]);
+        twin.guide(|sim| sim.ride_page("ride/map"));
         twin.sim
             .checkpoint(&format!("course map on {}", model.name));
         assert!(lit(&twin.sim) > 2_000, "{} course map", model.name);

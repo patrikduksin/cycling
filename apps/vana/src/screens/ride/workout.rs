@@ -270,9 +270,12 @@ pub fn chart(player: &Player, profile: &TrainingProfile, rect: Rect, theme: &The
             intensity(played.step.target, profile).unwrap_or(40),
         );
         if index == position && !done {
-            let step = match ramp {
-                Some((_, stairs, current)) => (current * 1000 / stairs) as usize,
-                None => usize::from(now.progress),
+            let step = match (ramp, now.left) {
+                (Some((ramp, stairs, _)), Left::Open(secs)) => {
+                    let span = u64::from(stairs) * u64::from(ramp.every.max(1));
+                    (u64::from(secs) * 1000 / span).min(1000) as usize
+                }
+                _ => usize::from(now.progress),
             };
             let at = (first + (last - first) * step / 1000).min(width.saturating_sub(1));
             chart.now = at as u16;
@@ -645,6 +648,24 @@ mod tests {
             &DARK,
         );
         assert!((0..rect.width()).any(|c| chart.top(c) != EMPTY));
+    }
+
+    #[test]
+    fn in_a_ramp_the_line_moves_through_each_stage() {
+        let profile = TrainingProfile::default();
+        let rect = chart_box(&crate::screens::C606);
+        let line_at = |seconds| {
+            let mut player = Player::new(FTP_RAMP);
+            player.skip();
+            ride(&mut player, seconds, 140);
+            chart(&player, &profile, rect, &DARK).line().start
+        };
+        let (start, half, next) = (line_at(60), line_at(90), line_at(120));
+        assert!(start < half && half < next, "{start} {half} {next}");
+        assert!(
+            half.abs_diff((start + next) / 2) <= 1,
+            "{start} {half} {next}"
+        );
     }
 
     #[test]

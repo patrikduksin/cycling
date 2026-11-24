@@ -4,7 +4,7 @@
 //! ring in the focus colour.
 use super::{px, specs};
 use crate::compose::data::Data;
-use crate::compose::input::Action;
+use crate::compose::input::{Action, OnPage};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
@@ -44,7 +44,43 @@ specs! {
             solid: true,
             action: Action::Ride(Role::Act),
         },
+        Forget = 128 => Spec {
+            label: "FORGET",
+            symbol: Some(Symbol::Trash),
+            tone: Tone::Bad,
+            solid: false,
+            action: Action::Page(OnPage::Forget),
+        },
+        Zero = 129 => Spec {
+            label: "ZERO",
+            symbol: Some(Symbol::Target),
+            tone: Tone::Good,
+            solid: true,
+            action: Action::Page(OnPage::Calibrate),
+        },
+        Keep = 130 => Spec {
+            label: "BACK",
+            symbol: Some(Symbol::Chevron),
+            tone: Tone::Text,
+            solid: false,
+            action: Action::Page(OnPage::Back),
+        },
+        ForgetNow = 131 => Spec {
+            label: "FORGET",
+            symbol: Some(Symbol::Trash),
+            tone: Tone::Bad,
+            solid: true,
+            action: Action::Page(OnPage::Answer(true)),
+        },
     }
+}
+
+fn shared_width(at: &Scaled) -> usize {
+    let widest = Button::ALL.iter().map(|button| {
+        let (symbol, label) = group(button.spec(), at);
+        symbol + label
+    });
+    2 * px(at, LAYOUT.space.gutter) + widest.max().unwrap_or(0)
 }
 
 /// The symbol's ink width and the label's, as one centred group.
@@ -124,9 +160,8 @@ impl Tile for Item {
 
     fn forms(button: Button, at: &Scaled) -> Forms {
         let spec = button.spec();
-        let (symbol, label) = group(spec, at);
         forms(&[Form {
-            width: (2 * px(at, LAYOUT.space.gutter) + symbol + label) as u16,
+            width: shared_width(at) as u16,
             height: px(at, LAYOUT.space.button) as u16,
             shapes: 2 + spec.symbol.is_some() as u8,
             runs: 1,

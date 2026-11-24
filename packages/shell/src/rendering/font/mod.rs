@@ -138,8 +138,15 @@ impl Face {
     }
 
     /// The glyph drawn for `character`, or a space outside the face's table.
+    /// A UTF-8 middle dot draws from the caret's slot, where the kit faces
+    /// keep the dot, its first byte drawing nothing.
     pub const fn glyph(&self, character: u8) -> &Glyph {
-        let index = (self.drawn(character) as usize).wrapping_sub(0x20);
+        let slot = match character {
+            0xc2 => return &Glyph::NONE,
+            0xb7 => b'^',
+            _ => self.drawn(character),
+        };
+        let index = (slot as usize).wrapping_sub(0x20);
         if index < self.glyphs.len() {
             &self.glyphs[index]
         } else {

@@ -1,20 +1,21 @@
 use super::menu::{Mine, SETTLE_MS, View};
-use super::render::{AMBER, CYAN, GREEN};
 use super::*;
 use crate::compose::Flags;
-use crate::compose::builtin::{Choices, Laid};
+use crate::compose::builtin::{Choices, Laid, ScreenId};
+use crate::compose::registry::{
+    SENSOR_BACK, SENSOR_FACTS, SENSOR_LIST, SENSOR_SEARCH, SENSOR_TITLE,
+};
+use crate::compose::tiles::sensor_list;
 use crate::screens::canvas::{Canvas, Shape};
-use crate::screens::chrome::{ACCENT, RED, Rect, SECONDARY, WHITE};
-use crate::screens::cue::Cue;
+use crate::screens::chrome::Rect;
+use crate::screens::cue::{Cue, Icon};
+use crate::screens::theme::{DARK, LIGHT, Tone};
 use crate::screens::{C606, Device, panels};
 use crate::sensors::ant::{Battery, BatteryStatus, device_type};
 use crate::sensors::saved::SAVED_CAPACITY;
 use device_api::ant::{DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::Role;
 use firmware_shell::input::Input;
-use firmware_shell::rendering::font::FaceRole;
-
-const SCREEN: Rect = C606.scaled.screen();
 
 fn press(button: Role) -> Input {
     Input::Press {
@@ -43,6 +44,13 @@ fn strap(number: u16) -> Identity {
     identity(device_type::HEART_RATE, number)
 }
 
+fn strap_found(number: u16) -> Discovery {
+    Discovery {
+        identity: strap(number),
+        ..peer(number)
+    }
+}
+
 fn nearby(peers: &[Discovery]) -> [Option<Discovery>; DISCOVERY_CAPACITY] {
     core::array::from_fn(|index| peers.get(index).copied())
 }
@@ -54,6 +62,7 @@ fn saved(tiles: &[(Identity, Connection)]) -> [Option<Selected>; SAVED_CAPACITY]
             connection,
             battery: None,
             product: Default::default(),
+            reading: None,
         })
     })
 }
@@ -113,8 +122,9 @@ fn canvas_on(menu: &Menu, device: &'static Device) -> Canvas {
     view.canvas().clone()
 }
 
-fn cues(menu: &Menu) -> std::vec::Vec<Cue> {
-    cues_on(menu, &C606)
+fn cues(menu: &Menu) -> std::vec::Vec<(Role, Icon)> {
+    let cues = menu.frame(&C606).prepare().cues().to_vec();
+    cues.iter().map(|cue| (cue.role, cue.icon)).collect()
 }
 
 fn cues_on(menu: &Menu, device: &'static Device) -> std::vec::Vec<Cue> {
@@ -131,31 +141,38 @@ fn tap(menu: &mut Menu, device: &'static Device, x: usize, y: usize, now: u64) -
     menu.tap_at(&laid, device, x, y, now)
 }
 
-/// The screen rows card `index` of the list shown covers, scrolled as it
-/// shows, and whether it shows whole.
-fn card(menu: &Menu, device: &'static Device, index: usize) -> (Rect, bool) {
-    let laid = laid(menu, device);
-    let page = laid.page().expect("a list");
-    let offset = menu.offset(&laid);
-    let (top, bottom) = page.span(index);
-    let shift = page.top as i32 - offset;
-    let rect = Rect {
-        top: (top + shift).max(0) as usize,
-        bottom: (bottom + shift).max(0) as usize,
-        left: page.column.left,
-        right: page.column.right,
-    };
-    (rect, page.whole(index, offset))
+fn middle(rect: Rect) -> (usize, usize) {
+    (rect.center_x(), rect.top.midpoint(rect.bottom))
 }
 
-/// The focused card of the list shown.
-fn focused(menu: &Menu, device: &'static Device) -> (Rect, bool) {
-    let list = match menu.screen() {
-        crate::compose::builtin::ScreenId::SensorsNearby => crate::compose::data::ListKind::Nearby,
-        _ => crate::compose::data::ListKind::Sensors,
-    };
-    let index = menu.focus(list).expect("a focused card");
-    card(menu, device, usize::from(index))
+fn list(menu: &Menu) -> List {
+    match menu.screen() {
+        ScreenId::SensorsNearby => List::Nearby,
+        _ => List::Sensors,
+    }
+}
+
+fn shown(menu: &Menu, device: &'static Device) -> std::vec::Vec<(usize, Row, Rect)> {
+    let laid = laid(menu, device);
+    let rect = laid.box_of(SENSOR_LIST).expect("a list");
+    sensor_list::placed(menu, list(menu), rect, &device.scaled).to_vec()
+}
+
+fn row(menu: &Menu, device: &'static Device, index: usize) -> Option<Rect> {
+    let rows = shown(menu, device);
+    rows.iter()
+        .find(|(at, ..)| *at == index)
+        .map(|(.., rect)| *rect)
+}
+
+fn focused(menu: &Menu, device: &'static Device) -> Rect {
+    let index = menu.focus(list(menu)).expect("a focused row");
+    row(menu, device, index).expect("the focused row shows")
+}
+
+fn search(menu: &Menu) -> (std::string::String, Tone, usize) {
+    let search = menu.search();
+    (search.text.as_str().into(), search.tone, search.added)
 }
 
 #[test]
@@ -165,10 +182,8 @@ fn opening_with_nothing_saved_goes_straight_to_nearby_and_searches() {
     assert_eq!(menu.open(), Some(Action::Scan));
     assert_eq!(page(&menu), Page::Nearby);
     let title = run(&menu, "NEARBY").expect("NEARBY titles the page");
-    assert!(core::ptr::eq(
-        title.line.face(),
-        C606.scaled.face(FaceRole::Title)
-    ));
+    let heading = C606.scaled.face(crate::screens::theme::LAYOUT.face.heading);
+    assert!(core::ptr::eq(title.line.face(), heading));
     assert!(!canvas(&menu).shows("ADD SENSOR"));
     let mut menu = Menu::new();
     menu.refresh(
@@ -181,16 +196,12 @@ fn opening_with_nothing_saved_goes_straight_to_nearby_and_searches() {
     assert_eq!(menu.diagnostics().focus, Some(strap(1)));
     let sensors = run(&menu, "SENSORS").expect("SENSORS titles the page");
     assert_eq!((sensors.left, sensors.top), (title.left, title.top));
-    assert!(core::ptr::eq(
-        sensors.line.face(),
-        C606.scaled.face(FaceRole::Title)
-    ));
     assert!(canvas(&menu).shows("HEART RATE"));
     assert!(canvas(&menu).shows("ADD SENSOR"));
 }
 
 #[test]
-fn only_nearby_searches() {
+fn only_nearby_searches_and_a_tap_on_its_line_searches_again() {
     let tiles = [
         (strap(1), Connection::Live),
         (identity(device_type::POWER, 2), Connection::Searching),
@@ -216,22 +227,9 @@ fn only_nearby_searches() {
     menu.refresh([None; DISCOVERY_CAPACITY], saved(&tiles), false);
     assert_eq!(menu.diagnostics().focus, None);
     assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
-    let refresh = canvas(&menu)
-        .shapes
-        .iter()
-        .find_map(|shape| match *shape {
-            Shape::Icon {
-                icon, left, top, ..
-            } if core::ptr::eq(icon.0, &crate::screens::icons::REFRESH) => {
-                Some((left + 9, top + 9))
-            }
-            _ => None,
-        })
-        .expect("the refresh mark");
-    assert_eq!(
-        tap(&mut menu, &C606, refresh.0, refresh.1, rider.now),
-        Some(Action::Scan)
-    );
+    let line = laid(&menu, &C606).box_of(SENSOR_SEARCH).expect("the line");
+    let (x, y) = middle(line);
+    assert_eq!(tap(&mut menu, &C606, x, y, rider.now), Some(Action::Scan));
 }
 
 #[test]
@@ -266,12 +264,6 @@ fn move_walks_the_rows_and_wraps_and_back_leaves() {
     assert_eq!(rider.press(&mut menu, Role::Back), Some(Action::Ride));
 }
 
-/// NEARBY's line under its title, as text.
-fn search_line(menu: &Menu) -> (std::string::String, u16) {
-    let (text, color) = menu.search_line();
-    (text.as_str().into(), color)
-}
-
 #[test]
 fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     let speed = identity(device_type::SPEED, 10);
@@ -303,8 +295,9 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     menu.added(speed);
     menu.set_message(MenuMessage::ScanCancelled);
     assert_eq!(page(&menu), Page::Nearby);
-    assert_eq!(search_line(&menu), ("1 ADDED".into(), GREEN));
-    assert!(!canvas(&menu).shows("ID 10"));
+    assert_eq!(search(&menu).2, 1);
+    assert!(canvas(&menu).shows("1 ADDED"));
+    assert!(!canvas(&menu).shows("ID 10 · ANT+"));
     assert_eq!(menu.diagnostics().focus, Some(cadence));
     assert_eq!(
         rider.press(&mut menu, Role::Act),
@@ -313,18 +306,18 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     tiles.push((cadence, Connection::WaitingForRadio));
     menu.refresh(nearby(&found), saved(&tiles), false);
     menu.added(cadence);
-    assert_eq!(search_line(&menu), ("2 ADDED".into(), GREEN));
+    assert_eq!(search(&menu).2, 2);
     assert_eq!(menu.diagnostics().focus, Some(radar));
     menu.added(radar);
-    assert_eq!(search_line(&menu), ("2 ADDED".into(), GREEN), "not saved");
+    assert_eq!(search(&menu).2, 2, "not saved");
     menu.set_message(MenuMessage::ScanFailed);
-    assert_eq!(search_line(&menu).1, AMBER);
+    assert_eq!(search(&menu).1, Tone::Warn);
     assert_eq!(rider.press(&mut menu, Role::Back), Some(Action::StopScan));
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, Some(cadence));
     rider.focus(&mut menu, None);
     assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
-    assert_eq!(search_line(&menu).0, "FIND NEARBY");
+    assert_eq!(search(&menu).0, "TAP HERE TO SEARCH");
     rider.press(&mut menu, Role::Back);
     assert_eq!(menu.diagnostics().focus, None);
 }
@@ -343,12 +336,8 @@ fn back_from_nearby_returns_to_sensors_or_leaves_when_nothing_is_saved() {
     assert_eq!(rider.press(&mut empty, Role::Back), Some(Action::Ride));
 }
 
-fn saved_now(menu: &mut Menu, peers: &[Discovery], tiles: &[(Identity, Connection)]) {
-    menu.refresh(nearby(peers), saved(tiles), true);
-}
-
 #[test]
-fn several_sensors_pair_from_one_search_whatever_is_saved_already() {
+fn sensors_added_from_one_search_fold_into_short_rows_then_say_new_on_sensors() {
     let current = identity(device_type::POWER, 1);
     let found = [peer(20), strap_found(30), peer(40)];
     let mut menu = opened(&found, &[(current, Connection::Live)]);
@@ -356,6 +345,7 @@ fn several_sensors_pair_from_one_search_whatever_is_saved_already() {
     rider.focus(&mut menu, None);
     rider.press(&mut menu, Role::Act);
     assert_eq!(page(&menu), Page::Nearby);
+    assert!(canvas(&menu).shows("TAP TO ADD ONE OR MORE"));
     assert_eq!(
         rider.press(&mut menu, Role::Act),
         Some(Action::Connect(peer(20).identity))
@@ -364,33 +354,47 @@ fn several_sensors_pair_from_one_search_whatever_is_saved_already() {
         (current, Connection::Live),
         (peer(20).identity, Connection::Live)
     ];
-    saved_now(&mut menu, &found, &tiles);
+    menu.refresh(nearby(&found), saved(&tiles), true);
     menu.added(peer(20).identity);
     assert_eq!(page(&menu), Page::Nearby, "NEARBY stays open");
     assert_eq!(menu.diagnostics().focus, Some(strap(30)), "focus moves on");
-    assert_eq!(search_line(&menu), ("1 ADDED".into(), GREEN));
+    assert_eq!(search(&menu), ("SEARCHING".into(), Tone::Info, 1));
+    assert!(canvas(&menu).shows("BACK WHEN DONE"));
+    let rows = shown(&menu, &C606);
+    assert!(matches!(rows[0].1, Row::Added(s) if s.identity == peer(20).identity));
+    assert!(
+        rows[0].2.height() < rows[1].2.height(),
+        "an added row is short"
+    );
+    assert_eq!(menu.focus(List::Nearby), Some(1), "past the added row");
+    assert!(canvas(&menu).shows("LIVE"));
+    let check = crate::screens::icons::Symbol::CheckDisc;
+    let check = C606.scaled.art.symbol(check);
+    assert!(canvas(&menu).shapes.iter().any(|shape| matches!(
+        shape,
+        Shape::Icon { icon, color, .. } if core::ptr::eq(icon.0, check) && *color == DARK.good
+    )));
     assert_eq!(
         rider.press(&mut menu, Role::Act),
         Some(Action::Connect(strap(30)))
     );
     tiles.push((strap(30), Connection::Live));
-    saved_now(&mut menu, &found, &tiles);
+    menu.refresh(nearby(&found), saved(&tiles), true);
     menu.added(strap(30));
     assert_eq!(menu.diagnostics().focus, Some(peer(40).identity));
-    assert_eq!(search_line(&menu), ("2 ADDED".into(), GREEN));
+    assert_eq!(search(&menu).2, 2);
     assert_eq!(menu.added_peers(), [peer(20).identity, strap(30)]);
     assert_eq!(rider.press(&mut menu, Role::Back), Some(Action::StopScan));
     assert_eq!(menu.diagnostics().focus, Some(strap(30)));
+    let news = menu
+        .rows(List::Sensors)
+        .filter(|row| matches!(row, Row::Saved { new: true, .. }))
+        .count();
+    assert_eq!(news, 2);
+    assert!(canvas(&menu).shows("NEW · LIVE"));
     rider.focus(&mut menu, None);
     rider.press(&mut menu, Role::Act);
     assert!(menu.added_peers().is_empty());
-}
-
-fn strap_found(number: u16) -> Discovery {
-    Discovery {
-        identity: strap(number),
-        ..peer(number)
-    }
 }
 
 #[test]
@@ -401,13 +405,12 @@ fn nearby_lists_the_strongest_signal_first() {
     };
     let found = [at(1, -85), at(2, -50), at(3, -75), at(4, -52)];
     let mut menu = opened(&found, &[]);
-    let order: std::vec::Vec<_> = (0..4)
-        .map(
-            |index| match menu.item(crate::compose::data::ListKind::Nearby, index) {
-                Some(Item::Found { identity, bars, .. }) => (identity.device_number, bars),
-                other => panic!("{other:?}"),
-            },
-        )
+    let order: std::vec::Vec<_> = menu
+        .rows(List::Nearby)
+        .map(|row| match row {
+            Row::Found { identity, bars, .. } => (identity.device_number, bars),
+            other => panic!("{other:?}"),
+        })
         .collect();
     assert_eq!(order, [(2, 4), (4, 4), (3, 2), (1, 1)]);
     assert_eq!(
@@ -431,10 +434,12 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
     rider.focus(&mut menu, None);
     rider.press(&mut menu, Role::Act);
     assert!(menu.full());
-    assert_eq!(search_line(&menu), ("FULL - FORGET ONE".into(), AMBER));
+    assert_eq!(search(&menu).0, "FULL - FORGET ONE");
+    assert_eq!(search(&menu).1, Tone::Warn);
+    assert_eq!(menu.hint(), "BACK, THEN FORGET ONE");
     assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(menu.diagnostics().message, Some(MenuMessage::SlotsFull));
-    assert_eq!(search_line(&menu), ("FULL - FORGET ONE".into(), AMBER));
+    assert_eq!(search(&menu).0, "FULL - FORGET ONE");
     let mut menu = opened(&[peer(10)], &[]);
     menu.refresh([None; DISCOVERY_CAPACITY], [None; SAVED_CAPACITY], false);
     assert!(canvas(&menu).shows("NOT SEEN"));
@@ -446,76 +451,66 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
 fn the_search_line_says_how_the_search_goes() {
     let mut menu = opened(&[], &[]);
     let line = |menu: &Menu| {
-        let (text, color) = menu.search_line();
-        (text.as_bytes().to_vec(), color)
+        let (text, tone, _) = search(menu);
+        (text, tone)
     };
-    assert_eq!(line(&menu), (b"FIND NEARBY".to_vec(), SECONDARY));
+    assert_eq!(line(&menu), ("TAP HERE TO SEARCH".into(), Tone::Sub));
     menu.refresh([None; DISCOVERY_CAPACITY], [None; SAVED_CAPACITY], true);
     menu.set_message(MenuMessage::Scanning);
-    assert_eq!(line(&menu), (b"SEARCHING...".to_vec(), ACCENT));
+    assert_eq!(line(&menu), ("SEARCHING".into(), Tone::Info));
+    assert!(menu.search().wake && canvas(&menu).shows("WAKE A SENSOR"));
     menu.refresh([None; DISCOVERY_CAPACITY], [None; SAVED_CAPACITY], false);
     menu.set_message(MenuMessage::ScanDone);
-    assert_eq!(line(&menu), (b"NO SENSORS FOUND".to_vec(), SECONDARY));
+    assert_eq!(line(&menu), ("NO SENSORS FOUND".into(), Tone::Sub));
     menu.refresh(nearby(&[peer(1)]), [None; SAVED_CAPACITY], false);
-    assert_eq!(line(&menu), (b"SCAN DONE - PICK".to_vec(), SECONDARY));
+    assert_eq!(line(&menu), ("SCAN DONE - PICK".into(), Tone::Info));
     menu.set_message(MenuMessage::ScanFailed);
-    assert_eq!(line(&menu), (b"SCAN FAILED - RETRY".to_vec(), AMBER));
+    assert_eq!(line(&menu), ("SCAN FAILED - RETRY".into(), Tone::Warn));
     menu.set_notice(Some(MenuMessage::SavedUnreadable));
     menu.set_message(MenuMessage::Scanning);
-    assert_eq!(line(&menu), (b"NOT SAVED".to_vec(), AMBER));
+    assert_eq!(line(&menu), ("NOT SAVED".into(), Tone::Warn));
 }
 
 #[test]
 fn sensors_names_trouble_with_the_radio_or_saving_in_its_title() {
     let mut menu = opened(&[], &[(strap(1), Connection::Live)]);
     menu.set_message(MenuMessage::ScanFailed);
-    assert_eq!(run(&menu, "SENSORS").map(|r| r.color), Some(WHITE));
+    assert_eq!(run(&menu, "SENSORS").map(|r| r.color), Some(DARK.text));
     menu.set_message(MenuMessage::RadioUnavailable);
-    assert_eq!(
-        run(&menu, "RADIO UNAVAILABLE").map(|r| r.color),
-        Some(AMBER)
-    );
+    let trouble = run(&menu, "RADIO UNAVAILABLE").map(|r| r.color);
+    assert_eq!(trouble, Some(DARK.warn));
     menu.set_notice(Some(MenuMessage::NotSaved));
-    assert_eq!(run(&menu, "NOT SAVED").map(|r| r.color), Some(AMBER));
+    assert_eq!(run(&menu, "NOT SAVED").map(|r| r.color), Some(DARK.warn));
 }
 
 #[test]
-fn rows_name_each_state_in_its_colour_and_a_battery_to_change_after_it() {
+fn rows_name_each_state_in_its_tone_and_a_battery_after_it() {
     let cases = [
-        (Connection::Live, "LIVE", GREEN),
-        (Connection::Searching, "SEARCHING", CYAN),
-        (Connection::NotFound, "NOT FOUND YET", AMBER),
-        (Connection::WaitingForRadio, "WAITING FOR RADIO", CYAN),
-        (Connection::Switching, "SWITCHING", CYAN),
-        (Connection::NotInRange, "NOT IN RANGE", SECONDARY),
-        (Connection::Standby, "IN RANGE", SECONDARY),
-        (Connection::DataLost, "DATA LOST", AMBER),
-        (Connection::WaitingForData, "WAITING FOR DATA", AMBER),
-        (Connection::RadioUnavailable, "RADIO UNAVAILABLE", AMBER),
-        (Connection::Unsupported, "TYPE UNSUPPORTED", AMBER),
+        (Connection::Live, "Live", DARK.good),
+        (Connection::Searching, "Searching", DARK.warn),
+        (Connection::NotFound, "Not found yet", DARK.warn),
+        (Connection::WaitingForRadio, "Waiting for radio", DARK.warn),
+        (Connection::Switching, "Switching", DARK.warn),
+        (Connection::NotInRange, "Not in range", DARK.sub),
+        (Connection::Standby, "In range", DARK.sub),
+        (Connection::DataLost, "Data lost", DARK.warn),
+        (Connection::WaitingForData, "Waiting for data", DARK.warn),
+        (Connection::RadioUnavailable, "Radio unavailable", DARK.bad),
+        (Connection::Unsupported, "Type unsupported", DARK.bad),
     ];
     for (connection, text, color) in cases {
         let menu = opened(&[], &[(strap(1), connection)]);
-        assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
+        let caps = text.to_uppercase();
+        assert_eq!(run(&menu, &caps).map(|r| r.color), Some(color), "{text}");
     }
     let batteries = [
-        (BatteryStatus::New, Some(3_100), None, Some(GREEN)),
-        (BatteryStatus::Good, Some(2_949), None, Some(GREEN)),
-        (BatteryStatus::Ok, None, None, Some(GREEN)),
-        (
-            BatteryStatus::Low,
-            Some(2_400),
-            Some(("BATTERY LOW", AMBER)),
-            Some(AMBER),
-        ),
-        (
-            BatteryStatus::Critical,
-            Some(2_100),
-            Some(("BATTERY CRITICAL", RED)),
-            None,
-        ),
+        (BatteryStatus::New, Some(3_100), "Live · 3.1 V", DARK.good),
+        (BatteryStatus::Good, Some(2_949), "Live · 2.9 V", DARK.good),
+        (BatteryStatus::Ok, None, "Live", DARK.good),
+        (BatteryStatus::Low, Some(2_400), "Battery Low", DARK.warn),
+        (BatteryStatus::Critical, None, "Battery Critical", DARK.bad),
     ];
-    for (status, millivolts, warning, live) in batteries {
+    for (status, millivolts, text, color) in batteries {
         let mut tiles = saved(&[(strap(1), Connection::Live)]);
         tiles[0].as_mut().unwrap().battery = Some(Battery {
             status,
@@ -525,36 +520,44 @@ fn rows_name_each_state_in_its_colour_and_a_battery_to_change_after_it() {
         let mut menu = Menu::new();
         menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
         menu.open();
-        let state = run(&menu, "LIVE");
-        assert_eq!(state.map(|state| state.color), live, "{status:?}");
-        let canvas = canvas(&menu);
-        let dots = canvas.shapes.iter();
-        let dots = dots.filter(|s| matches!(s, Shape::Disc { .. })).count();
-        let Some((text, color)) = warning else {
-            assert_eq!(dots, 0, "{status:?} adds no dot");
-            let texts = canvas.runs.iter().map(|run| run.line.text());
-            let names = [&b"SENSORS"[..], b"HEART RATE", b"LIVE", b"ADD SENSOR"];
-            assert!(texts.eq(names), "{status:?} adds nothing");
-            continue;
-        };
-        let battery = run(&menu, text).unwrap_or_else(|| panic!("{text}"));
-        assert_eq!(battery.color, color, "{text}");
-        if let Some(state) = state {
-            assert!(battery.left > state.right(), "{text} follows the state");
-            assert_eq!(dots, 1, "a dot between them");
-        }
+        let caps = text.to_uppercase();
+        assert_eq!(run(&menu, &caps).map(|r| r.color), Some(color), "{text}");
     }
-    let mut tiles = saved(&[(strap(1), Connection::WaitingForRadio)]);
-    tiles[0].as_mut().unwrap().battery = Some(Battery {
-        status: BatteryStatus::Critical,
-        millivolts: None,
-        identifier: 0,
-    });
-    let mut menu = Menu::new();
-    menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
-    menu.open();
-    assert!(run(&menu, "WAITING FOR RADIO").is_some());
-    assert!(run(&menu, "BATTERY CRITICAL").is_none());
+}
+
+#[test]
+fn a_live_row_shows_its_reading_and_one_not_in_use_shows_dashes() {
+    let meters = [
+        (identity(device_type::POWER, 1), Connection::Live),
+        (identity(device_type::POWER, 2), Connection::NotInRange),
+    ];
+    let menu = opened(&[], &meters);
+    let canvas = canvas(&menu);
+    let readings: std::vec::Vec<_> = canvas
+        .runs
+        .iter()
+        .filter(|run| run.line.text() == b"--")
+        .map(|run| run.color)
+        .collect();
+    assert_eq!(readings, [DARK.sub, DARK.sub], "no power reading yet");
+    assert_eq!(
+        canvas
+            .runs
+            .iter()
+            .filter(|run| run.line.text() == b"W")
+            .count(),
+        2
+    );
+    let names: std::vec::Vec<_> = menu
+        .rows(List::Sensors)
+        .filter_map(|row| match row {
+            Row::Saved { sensor, .. } => {
+                Some(std::string::String::from(menu.row_name(sensor).as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["Power 1", "Power 2"], "two of a kind read apart");
 }
 
 #[test]
@@ -563,23 +566,18 @@ fn ten_saved_sensors_scroll_so_the_focus_stays_in_view() {
         core::array::from_fn(|n| (identity(n as u8 + 1, n as u16), Connection::Live));
     let mut menu = opened(&[], &tiles);
     let mut rider = Rider::new();
-    let ring = C606.scaled.unit(3);
     for step in 0..12 {
-        let (rect, whole) = focused(&menu, &C606);
-        assert!(whole, "step {step}: {rect:?}");
-        let middle = (rect.top + rect.bottom) / 2;
-        let pixel = menu.frame(&C606).pixel(rect.left - ring / 2 - 1, middle);
-        assert_eq!(pixel, ACCENT, "step {step}: ring");
+        let rect = focused(&menu, &C606);
+        let pixel = menu
+            .frame(&C606)
+            .pixel(rect.left + 1, rect.top.midpoint(rect.bottom));
+        assert_eq!(pixel, DARK.focus, "step {step}: ring");
         rider.press(&mut menu, Role::Move);
     }
     rider.focus(&mut menu, None);
     assert!(canvas(&menu).shows("SENSORS"));
-    let (add, _) = focused(&menu, &C606);
-    let middle = (add.top + add.bottom) / 2;
-    assert_eq!(
-        tap(&mut menu, &C606, 120, middle, rider.now),
-        Some(Action::Scan)
-    );
+    let (x, y) = middle(focused(&menu, &C606));
+    assert_eq!(tap(&mut menu, &C606, x, y, rider.now), Some(Action::Scan));
 }
 
 #[test]
@@ -587,29 +585,23 @@ fn eight_nearby_sensors_scroll_so_the_focus_stays_in_view() {
     let found: std::vec::Vec<_> = (0..8).map(|n| peer(100 + n)).collect();
     let mut menu = opened(&found, &[]);
     let mut rider = Rider::new();
-    for step in 0..10 {
-        let (rect, whole) = focused(&menu, &C606);
-        assert!(whole, "step {step}: {rect:?}");
+    for _ in 0..10 {
+        focused(&menu, &C606);
         rider.press(&mut menu, Role::Move);
     }
 }
 
 #[test]
-fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget() {
+fn a_power_meter_page_waits_a_moment_then_act_zeroes_and_move_asks_to_forget() {
     let meter = identity(device_type::POWER, 5512);
     let mut menu = opened(&[], &[(meter, Connection::Live)]);
     let opened_at = 20_000;
     assert_eq!(menu.input(press(Role::Act), opened_at), None);
     assert_eq!(page(&menu), Page::Detail);
-    let cues: std::vec::Vec<_> = cues(&menu).iter().map(|c| (c.role, c.icon)).collect();
-    use crate::screens::cue::Icon;
+    assert!(canvas(&menu).shows("Power meter"));
     assert_eq!(
-        cues,
-        [
-            (Role::Act, Icon::Calibrate),
-            (Role::Back, Icon::Back),
-            (Role::Move, Icon::Trash)
-        ]
+        cues(&menu),
+        [(Role::Act, Icon::Calibrate), (Role::Move, Icon::Trash)]
     );
     assert_eq!(menu.input(press(Role::Act), opened_at + 400), None);
     assert_eq!(menu.input(press(Role::Act), opened_at + 990), None);
@@ -623,34 +615,40 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
     };
     assert_eq!(rider.press(&mut menu, Role::Move), None);
     assert_eq!(page(&menu), Page::Forget);
-    assert!(canvas(&menu).shows("FORGET") && canvas(&menu).shows("SENSOR?"));
-    assert!(canvas(&menu).shows("POWER METER 5512"));
+    assert!(canvas(&menu).shows("Forget power meter?"));
+    assert!(canvas(&menu).shows("5512 · ANT+"));
+    assert_eq!(
+        cues(&menu),
+        [(Role::Act, Icon::Trash), (Role::Move, Icon::Back)]
+    );
     assert_eq!(rider.press(&mut menu, Role::Move), None);
+    assert_eq!(page(&menu), Page::Detail, "MOVE goes back");
+    rider.press(&mut menu, Role::Move);
     assert_eq!(rider.press(&mut menu, Role::Back), None);
-    assert_eq!(page(&menu), Page::Detail);
+    assert_eq!(page(&menu), Page::Detail, "BACK goes back");
     rider.press(&mut menu, Role::Move);
     assert_eq!(
         rider.press(&mut menu, Role::Act),
-        Some(Action::Forget(identity(device_type::POWER, 5512)))
+        Some(Action::Forget(meter))
     );
     assert_eq!(page(&menu), Page::Sensors);
 }
 
 #[test]
-fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
+fn any_other_sensor_page_forgets_from_move_or_act() {
     let mut menu = opened(&[], &[(strap(100), Connection::Live)]);
     let mut rider = Rider::new();
     rider.press(&mut menu, Role::Act);
     assert_eq!(page(&menu), Page::Detail);
-    let roles: std::vec::Vec<_> = cues(&menu).iter().map(|c| c.role).collect();
-    assert_eq!(roles, [Role::Act, Role::Back]);
+    assert_eq!(cues(&menu), [(Role::Move, Icon::Trash)]);
     assert_eq!(menu.input(press(Role::Act), rider.now + 400), None);
     assert_eq!(page(&menu), Page::Detail);
     assert_eq!(rider.press(&mut menu, Role::Move), None);
-    assert_eq!(page(&menu), Page::Detail);
+    assert_eq!(page(&menu), Page::Forget);
+    assert!(canvas(&menu).shows("Forget heart rate?"));
+    rider.press(&mut menu, Role::Back);
     assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(page(&menu), Page::Forget);
-    assert!(canvas(&menu).shows("HEART RATE 100"));
     assert_eq!(menu.input(press(Role::Act), rider.now + 400), None);
     assert_eq!(page(&menu), Page::Forget);
     assert_eq!(
@@ -663,7 +661,7 @@ fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
 }
 
 #[test]
-fn a_sensor_removed_under_its_detail_page_returns_to_sensors() {
+fn a_sensor_removed_under_its_page_returns_to_sensors() {
     let tiles = [
         (strap(1), Connection::Live),
         (identity(device_type::POWER, 2), Connection::Live),
@@ -680,13 +678,15 @@ fn a_sensor_removed_under_its_detail_page_returns_to_sensors() {
 }
 
 #[test]
-fn taps_act_on_rows_and_cues_as_their_buttons_do() {
+fn taps_act_on_rows_buttons_titles_and_cues_as_their_keys_do() {
     for device in panels::ALL {
         taps_act_on(device);
     }
 }
 
 fn taps_act_on(device: &'static Device) {
+    use crate::compose::kit::item::Button;
+    use crate::compose::registry::ITEM;
     let meter = identity(device_type::POWER, 2);
     let mut menu = Menu::new();
     menu.refresh(
@@ -695,64 +695,66 @@ fn taps_act_on(device: &'static Device) {
         false,
     );
     menu.open();
-    let panel = device.scaled.panel;
-    let tab = |role| device.keys.of_role(role).tab(&device.scaled, false);
-    let (middle, bottom) = (panel.width / 2, panel.height - 8);
-    let (left, right) = (
-        tab(device_api::input::Role::Move).center_x(),
-        tab(device_api::input::Role::Act).center_x(),
-    );
-    let back = tab(device_api::input::Role::Back);
-    let high = back.top.midpoint(back.bottom);
-    let row = |menu: &Menu, index: usize| {
-        let (rect, _) = card(menu, device, index);
-        (rect.top + rect.bottom) / 2
+    let button = |menu: &Menu, which: Button| {
+        let laid = laid(menu, device);
+        let rect = laid
+            .tiles()
+            .find(|(id, arg, _)| *id == ITEM && *arg == which as u8)
+            .map(|(.., placed)| placed.rect.rect())
+            .unwrap_or_else(|| panic!("{which:?}"));
+        middle(rect)
+    };
+    let title = |menu: &Menu| {
+        let laid = laid(menu, device);
+        let rect = laid.box_of(SENSOR_TITLE).or(laid.box_of(SENSOR_BACK));
+        let rect = rect.expect("a title to tap");
+        (rect.left + 12, rect.top.midpoint(rect.bottom))
     };
     let now = 50_000;
-    let tap = |menu: &mut Menu, x, y, now| tap(menu, device, x, y, now);
-    assert_eq!(
-        tap(&mut menu, middle, 2, now),
-        None,
-        "the status bar is no target"
-    );
-    let second = row(&menu, 1);
-    assert_eq!(tap(&mut menu, middle, second, now), None);
+    let tap = |menu: &mut Menu, (x, y): (usize, usize), now| tap(menu, device, x, y, now);
+    let width = device.scaled.panel.width;
+    assert_eq!(tap(&mut menu, (width / 2, 2), now), None, "the bar is none");
+    let second = middle(row(&menu, device, 1).expect("the second row"));
+    assert_eq!(tap(&mut menu, second, now), None);
     assert_eq!(page(&menu), Page::Detail);
     assert_eq!(menu.diagnostics().focus, Some(meter));
     let view = menu.touch_view();
-    assert_eq!(tap(&mut menu, right, bottom, now + 200), None);
+    let zero = button(&menu, Button::Zero);
+    assert_eq!(tap(&mut menu, zero, now + 200), None, "it settles first");
     assert_eq!(
-        tap(&mut menu, right, bottom, now + SETTLE_MS),
+        tap(&mut menu, zero, now + SETTLE_MS),
         Some(Action::Calibrate(meter))
     );
-    let card = laid(&menu, device)
-        .box_of(crate::compose::registry::SENSOR_ICON)
-        .expect("the icon card");
-    assert_eq!(
-        tap(&mut menu, middle, card.bottom - 1, now + SETTLE_MS),
-        None,
-        "content is no target"
-    );
+    let facts = laid(&menu, device).box_of(SENSOR_FACTS).expect("the facts");
+    assert_eq!(tap(&mut menu, middle(facts), now), None, "facts are none");
     assert_eq!(page(&menu), Page::Detail);
-    assert_eq!(tap(&mut menu, left, bottom, now + SETTLE_MS), None);
+    let forget = button(&menu, Button::Forget);
+    assert_eq!(tap(&mut menu, forget, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Forget);
-    assert_ne!(
-        menu.touch_view(),
-        view,
-        "a contact never moves between pages"
-    );
-    assert_eq!(tap(&mut menu, 8, high, now + SETTLE_MS), None);
+    assert_ne!(menu.touch_view(), view, "a contact never moves pages");
+    let keep = button(&menu, Button::Keep);
+    assert_eq!(tap(&mut menu, keep, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Detail);
-    assert_eq!(tap(&mut menu, 8, high, now + SETTLE_MS), None);
+    let back = title(&menu);
+    assert_eq!(tap(&mut menu, back, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Sensors);
-    let third = row(&menu, 2);
-    assert_eq!(tap(&mut menu, middle, third, now), Some(Action::Scan));
+    let add = middle(row(&menu, device, 2).expect("ADD SENSOR"));
+    assert_eq!(tap(&mut menu, add, now), Some(Action::Scan));
     assert_eq!(page(&menu), Page::Nearby);
-    let first = row(&menu, 0);
+    let first = middle(row(&menu, device, 0).expect("a found sensor"));
     assert_eq!(
-        tap(&mut menu, middle, first, now),
+        tap(&mut menu, first, now),
         Some(Action::Connect(peer(10).identity))
     );
+    menu.refresh(
+        nearby(&[peer(10)]),
+        saved(&[(strap(1), Connection::Live), (meter, Connection::Live)]),
+        false,
+    );
+    let back = title(&menu);
+    assert_eq!(tap(&mut menu, back, now), Some(Action::StopScan));
+    let back = title(&menu);
+    assert_eq!(tap(&mut menu, back, now), Some(Action::Ride));
 }
 
 #[test]
@@ -783,8 +785,8 @@ fn equal_device_numbers_show_their_transmission_type() {
     let mut second = peer(10);
     second.identity.transmission_type = 2;
     let menu = opened(&[peer(10), second], &[]);
-    assert!(canvas(&menu).shows("ID 10.1"));
-    assert!(canvas(&menu).shows("ID 10.2"));
+    assert!(canvas(&menu).shows("ID 10.1 · ANT+"));
+    assert!(canvas(&menu).shows("ID 10.2 · ANT+"));
 }
 
 #[test]
@@ -800,17 +802,26 @@ fn home_glance_lists_selected_sensors_with_their_state() {
     assert_eq!(glance.len(), 1);
     assert_eq!(glance[0].kind, device_type::POWER);
     assert!(!glance[0].live);
-    assert_eq!(glance[0].color, CYAN);
+    assert_eq!(glance[0].color, DARK.warn);
 }
 
 #[test]
-fn the_detail_page_shows_the_battery_in_the_colour_of_its_urgency() {
+fn the_page_lists_status_reading_battery_id_and_link() {
     let cases = [
-        (Some(BatteryStatus::Good), Some(2_898), "2.9", WHITE),
-        (Some(BatteryStatus::Low), Some(2_449), "2.4", AMBER),
-        (Some(BatteryStatus::Critical), Some(2_100), "2.1", RED),
-        (Some(BatteryStatus::Low), None, "LOW", AMBER),
-        (None, None, "--", WHITE),
+        (
+            Some(BatteryStatus::Good),
+            Some(2_898),
+            "Good · 2.9 V",
+            DARK.text,
+        ),
+        (
+            Some(BatteryStatus::Low),
+            Some(2_449),
+            "Low · 2.4 V",
+            DARK.warn,
+        ),
+        (Some(BatteryStatus::Critical), None, "Critical", DARK.bad),
+        (None, None, "--", DARK.sub),
     ];
     for (status, millivolts, text, color) in cases {
         let mut tiles = saved(&[(strap(100), Connection::Live)]);
@@ -819,32 +830,50 @@ fn the_detail_page_shows_the_battery_in_the_colour_of_its_urgency() {
             millivolts,
             identifier: 0,
         });
+        tiles[0].as_mut().unwrap().product.manufacturer = Some(123);
         let mut menu = Menu::new();
         menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
         menu.open();
         Rider::new().press(&mut menu, Role::Act);
         assert_eq!(page(&menu), Page::Detail);
         assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
-        assert_eq!(run(&menu, "V").is_some(), millivolts.is_some(), "{text}");
-        assert!(canvas(&menu).shows("BATTERY") && canvas(&menu).shows("100"));
+        let canvas = canvas(&menu);
+        for shown in [
+            "Heart rate",
+            "Polar",
+            "Status",
+            "Live",
+            "Reading",
+            "Battery",
+            "ID",
+            "100",
+            "Link",
+            "ANT+",
+        ] {
+            assert!(canvas.shows(shown), "{shown}");
+        }
     }
 }
 
 #[test]
-fn calibration_notes_show_in_their_colour_only_on_a_power_meter() {
+fn calibration_notes_take_the_status_row_only_on_a_power_meter() {
     let notes = [
-        (CalibrationNote::Calibrating, "CALIBRATING...", CYAN),
-        (CalibrationNote::Done(512), "CALIBRATED OFFSET 512", GREEN),
+        (CalibrationNote::Calibrating, "Zeroing", DARK.info),
+        (CalibrationNote::Done(512), "Zeroed, offset 512", DARK.good),
         (
             CalibrationNote::Done(i16::MIN),
-            "CALIBRATED OFFSET -32768",
-            GREEN,
+            "Zeroed, offset -32768",
+            DARK.good,
         ),
-        (CalibrationNote::WaitingForRadio, "WAITING FOR RADIO", CYAN),
-        (CalibrationNote::Failed, "CALIBRATION FAILED", AMBER),
-        (CalibrationNote::NeedsRestart, "RESTART TO CALIBRATE", AMBER),
-        (CalibrationNote::NotConnected, "NOT CONNECTED", AMBER),
-        (CalibrationNote::WhileRiding, "NOT DURING A RIDE", AMBER),
+        (
+            CalibrationNote::WaitingForRadio,
+            "Waiting for radio",
+            DARK.info,
+        ),
+        (CalibrationNote::Failed, "Keep cranks still", DARK.warn),
+        (CalibrationNote::NeedsRestart, "Restart to zero", DARK.warn),
+        (CalibrationNote::NotConnected, "Not connected", DARK.warn),
+        (CalibrationNote::WhileRiding, "Not during a ride", DARK.warn),
     ];
     let meter = identity(device_type::POWER, 5512);
     for (note, text, color) in notes {
@@ -852,15 +881,8 @@ fn calibration_notes_show_in_their_colour_only_on_a_power_meter() {
         Rider::new().press(&mut menu, Role::Act);
         menu.set_calibration(menu.shown().map(|s| (s.identity, note)));
         assert_eq!(note.text().as_str(), text);
-        let line = run(&menu, text).unwrap_or_else(|| panic!("{text}"));
-        assert_eq!(line.color, color);
-        if let Some(hint) = note.hint() {
-            let hint = run(&menu, hint).expect("hint");
-            assert_eq!(hint.color, SECONDARY);
-            assert!(hint.top > line.top, "the hint under the note");
-        }
-        canvas(&menu).assert_laid_out(SCREEN, &[text], text);
-        assert_clear_of_cues(&menu, text);
+        assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
+        assert!(!canvas(&menu).shows("Live"), "{text} stands for the state");
     }
     let mut strap_menu = opened(&[], &[(strap(1), Connection::Live)]);
     Rider::new().press(&mut strap_menu, Role::Act);
@@ -869,12 +891,22 @@ fn calibration_notes_show_in_their_colour_only_on_a_power_meter() {
             .shown()
             .map(|s| (s.identity, CalibrationNote::Calibrating)),
     );
-    assert!(!canvas(&strap_menu).shows("CALIBRATING..."));
+    assert!(!canvas(&strap_menu).shows("Zeroing"));
 }
 
-#[track_caller]
-fn assert_clear_of_cues(menu: &Menu, what: &str) {
-    assert_clear_of_cues_on(menu, &C606, what);
+#[test]
+fn the_day_look_writes_words_black_and_keeps_state_colours() {
+    let menu = opened(&[], &[(strap(1), Connection::Live)]);
+    let mut view = menu.frame(&C606);
+    view.light = true;
+    view.prepare();
+    let canvas = view.canvas();
+    let color = |text: &str| canvas.find(text).map(|run| run.color);
+    assert_eq!(color("SENSORS"), Some(LIGHT.text));
+    assert_eq!(color("HEART RATE"), Some(LIGHT.text));
+    assert_eq!(color("LIVE"), Some(LIGHT.good));
+    assert_eq!(color("ADD SENSOR"), Some(LIGHT.good));
+    assert_eq!(view.pixel(2, 300), LIGHT.bg, "the page fills in its look");
 }
 
 #[track_caller]
@@ -917,7 +949,8 @@ pub(in crate::screens) fn crowded() -> std::vec::Vec<(std::string::String, Menu)
         Connection::Unsupported,
         Connection::DataLost,
         Connection::Searching,
-        Connection::Switching,
+        // The speed sensor, live, shows the widest speed.
+        Connection::Live,
         Connection::NotInRange,
     ];
     let mut tiles = saved(&[]);
@@ -935,8 +968,16 @@ pub(in crate::screens) fn crowded() -> std::vec::Vec<(std::string::String, Menu)
                 millivolts: (slot % 3 != 0).then_some(3_950),
                 identifier: 0,
             }),
-            product: Default::default(),
+            product: crate::sensors::ant::Product {
+                manufacturer: Some([263, 289, 115][slot % 3]),
+                model: None,
+            },
+            reading: None,
         });
+        let tile = tiles[slot].as_mut().unwrap();
+        if tile.connection == Connection::Live {
+            tile.reading = Some(i32::MAX);
+        }
     }
     let found: [_; DISCOVERY_CAPACITY] = core::array::from_fn(|n| {
         let mut discovery = peer(u16::MAX - n as u16);
@@ -955,17 +996,11 @@ pub(in crate::screens) fn crowded() -> std::vec::Vec<(std::string::String, Menu)
         if let View::Mine(Mine::Saved(_)) = menu.state.view {
             rider.press(&mut menu, Role::Act);
             states.push((std::format!("detail {step}"), menu_copy(&menu)));
-            menu.set_calibration(menu.shown().map(|s| (s.identity, CalibrationNote::Failed)));
-            states.push((std::format!("detail, failed {step}"), menu_copy(&menu)));
+            let failed = CalibrationNote::Done(i16::MIN);
+            menu.set_calibration(menu.shown().map(|s| (s.identity, failed)));
+            states.push((std::format!("detail, zeroed {step}"), menu_copy(&menu)));
             menu.set_calibration(None);
-            if menu.state.calibratable(match menu.state.view {
-                View::Detail(slot) => slot,
-                _ => unreachable!(),
-            }) {
-                rider.press(&mut menu, Role::Move);
-            } else {
-                rider.press(&mut menu, Role::Act);
-            }
+            rider.press(&mut menu, Role::Move);
             states.push((std::format!("forget {step}"), menu_copy(&menu)));
             rider.press(&mut menu, Role::Back);
             rider.press(&mut menu, Role::Back);
@@ -973,18 +1008,29 @@ pub(in crate::screens) fn crowded() -> std::vec::Vec<(std::string::String, Menu)
         rider.press(&mut menu, Role::Move);
     }
     let mut add = Menu::new();
-    let fresh: [_; DISCOVERY_CAPACITY] = core::array::from_fn(|n| {
-        let mut discovery = peer(u16::MAX - n as u16);
-        discovery.identity.device_type = kinds[n];
-        discovery.identity.transmission_type = 254;
-        Some(discovery)
-    });
-    add.refresh(fresh, [None; SAVED_CAPACITY], true);
+    add.refresh(found, [None; SAVED_CAPACITY], true);
     add.open();
     add.set_message(MenuMessage::SavedUnreadable);
     for step in 0..9 {
         states.push((std::format!("add {step}"), menu_copy(&add)));
         rider.press(&mut add, Role::Move);
+    }
+    let found_all = found;
+    let mut pairing = Menu::new();
+    pairing.refresh(found, [None; SAVED_CAPACITY], true);
+    pairing.open();
+    let mut paired = saved(&[]);
+    for (slot, found) in found.iter().flatten().take(5).enumerate() {
+        paired[slot] = Some(Selected {
+            identity: found.identity,
+            connection: Connection::Live,
+            battery: None,
+            product: Default::default(),
+            reading: None,
+        });
+        pairing.refresh(found_all, paired, true);
+        pairing.added(found.identity);
+        states.push((std::format!("paired {slot}"), menu_copy(&pairing)));
     }
     states
 }
@@ -1000,6 +1046,7 @@ fn menu_copy(menu: &Menu) -> Menu {
     copy.state.message = menu.state.message;
     copy.state.notice = menu.state.notice;
     copy.state.calibration = menu.state.calibration;
+    copy.state.added = menu.state.added.clone();
     copy
 }
 
@@ -1010,10 +1057,10 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
         for (what, menu) in crowded() {
             let canvas = canvas_on(&menu, device);
             let want: &[&str] = match (what.as_str(), menu.state.view) {
-                ("sensors 0", _) => &["POWER METER", "BIKE LIGHTS", "RADIO UNAVAILABLE"],
-                ("add 0", _) => &["NOT SAVED", "POWER METER", "BIKE LIGHTS", "ID 65535"],
-                (_, View::Detail(_)) => &["BATTERY", "ID"],
-                (_, View::Forget(_)) => &["FORGET", "SENSOR?"],
+                ("sensors 0", _) => &["SENSORS", "POWER", "LIGHTS", "RADIO UNAVAILABLE"],
+                ("add 0", _) => &["NOT SAVED", "POWER", "LIGHTS", "ID 65535 · ANT+"],
+                (_, View::Detail(_)) => &["Battery", "ID", "Link"],
+                (_, View::Forget(_)) => &["FORGET", "Sensor"],
                 _ => &[],
             };
             for text in want {
@@ -1029,16 +1076,10 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
                 );
             }
             menu.frame(device).prepare().check_layout();
-            match menu.state.view {
-                View::Mine(_) | View::Nearby(Some(_)) => {
-                    let (rect, whole) = focused(&menu, device);
-                    assert!(whole, "{what}: {rect:?}");
-                }
-                View::Nearby(None) => {}
-                _ => {
-                    canvas.assert_laid_out(device.scaled.screen(), want, &what);
-                    assert_clear_of_cues_on(&menu, device, &what);
-                }
+            canvas.assert_laid_out_at(&device.scaled, device.scaled.screen(), want, &what);
+            assert_clear_of_cues_on(&menu, device, &what);
+            if let View::Mine(_) | View::Nearby(Some(_)) = menu.state.view {
+                focused(&menu, device);
             }
         }
     }
@@ -1058,372 +1099,5 @@ fn painted_rows_match_the_per_pixel_reference() {
                 }
             }
         }
-    }
-}
-
-/// `nodes` stored as screen `id`'s tree, if accept takes it.
-fn stored(
-    nodes: &[crate::compose::Node],
-    id: crate::compose::builtin::ScreenId,
-    device: &'static Device,
-) -> Option<crate::compose::Screens> {
-    let mut bytes = std::vec![
-        crate::compose::parse::VERSION,
-        1,
-        id.key(),
-        nodes.len() as u8
-    ];
-    bytes.extend(nodes.iter().flat_map(|node| node.bytes()));
-    bytes.push(0);
-    let mut screens = crate::compose::Screens::EMPTY;
-    let controls = |key| crate::compose::builtin::ScreenId::controls(key, device.keys);
-    crate::compose::parse(&bytes, &device.scaled, &controls, &mut screens).ok()?;
-    Some(screens)
-}
-
-fn stored_laids(
-    screens: &crate::compose::Screens,
-    menu: &Menu,
-    device: &'static Device,
-) -> crate::compose::builtin::Laids {
-    let mut laids =
-        crate::compose::builtin::Laids::new(device, Choices::default(), Flags::NONE, screens);
-    laids.show(menu.screen(), device, screens);
-    laids
-}
-
-/// The page `menu` shows on `device`, drawn from `laids`.
-fn stored_canvas(
-    menu: &Menu,
-    laids: &crate::compose::builtin::Laids,
-    device: &'static Device,
-) -> Canvas {
-    let mut view = menu.frame(device);
-    view.laids = Some(laids);
-    view.prepare();
-    view.canvas().clone()
-}
-
-#[test]
-fn a_tap_acts_on_the_sensor_the_stored_tree_draws() {
-    use crate::compose::{Node, Size, data::ListKind, registry::SENSOR_ROW};
-    let mut menu = opened(&[peer(10)], &[(strap(1), Connection::Live)]);
-    let mut rider = Rider::new();
-    rider.focus(&mut menu, None);
-    rider.press(&mut menu, Role::Act);
-    assert_eq!(page(&menu), Page::Nearby);
-    // NEARBY's tree, stored as a scroll of the saved sensors.
-    let nodes = [
-        Node::scroll(ListKind::Sensors, Size::grow(1)),
-        Node::col(1, Size::units(56)),
-        Node::leaf(SENSOR_ROW, 0, Size::grow(1)),
-    ];
-    let screens = stored(&nodes, menu.screen(), &C606).expect("accepted");
-    let laids = stored_laids(&screens, &menu, &C606);
-    let canvas = stored_canvas(&menu, &laids, &C606);
-    assert!(canvas.shows("HEART RATE") && !canvas.shows("POWER METER"));
-    let laid = laids.get(menu.screen()).expect("shown");
-    let cards = laid.page().expect("a scroll");
-    let (top, bottom) = cards.span(0);
-    let middle = cards.top + ((top + bottom) / 2) as usize;
-    let tapped = menu.tap_at(laid, &C606, 120, middle, rider.now);
-    assert_ne!(tapped, Some(Action::Connect(peer(10).identity)));
-    assert_eq!(page(&menu), Page::Detail, "the strap it draws opens");
-}
-
-#[test]
-fn a_stored_search_line_searches_again_with_no_scroll() {
-    use crate::compose::{
-        Node, Size,
-        registry::{SENSOR_SEARCH, SPACE},
-    };
-    let mut menu = opened(&[], &[]);
-    let nodes = [
-        Node::col(3, Size::grow(1)),
-        Node::leaf(SPACE, 0, Size::units(48)),
-        Node::leaf(SENSOR_SEARCH, 0, Size::CONTENT),
-        Node::leaf(SPACE, 0, Size::grow(1)),
-    ];
-    let screens = stored(&nodes, menu.screen(), &C606).expect("accepted");
-    let laids = stored_laids(&screens, &menu, &C606);
-    assert!(stored_canvas(&menu, &laids, &C606).shows("FIND NEARBY"));
-    let laid = laids.get(menu.screen()).expect("shown");
-    let search = laid.box_of(SENSOR_SEARCH).expect("the search line");
-    let tapped = menu.tap_at(laid, &C606, search.right - 4, search.top + 4, 10_000);
-    assert_eq!(tapped, Some(Action::Scan));
-}
-
-#[test]
-fn the_status_bar_covers_no_stored_tile() {
-    use crate::compose::{
-        Node, Size,
-        data::ListKind,
-        registry::{SENSOR_ROW, SENSOR_SEARCH},
-    };
-    let menu = opened(&[], &[]);
-    // The search line where the bar would be, and no room kept for it.
-    let nodes = [
-        Node::col(2, Size::grow(1)),
-        Node::leaf(SENSOR_SEARCH, 0, Size::units(22)),
-        Node::scroll(ListKind::Nearby, Size::grow(1)),
-        Node::col(1, Size::units(56)),
-        Node::leaf(SENSOR_ROW, 0, Size::grow(1)),
-    ];
-    let screens = stored(&nodes, menu.screen(), &C606).expect("accepted");
-    let laids = stored_laids(&screens, &menu, &C606);
-    let laid = laids.get(menu.screen()).expect("shown");
-    let search = laid.box_of(SENSOR_SEARCH).expect("the search line");
-    assert!(
-        search.top < crate::screens::chrome::status_bar(&C606.scaled).bottom,
-        "it lies in the bar's band"
-    );
-    let mut view = menu.frame(&C606);
-    view.laids = Some(&laids);
-    let look = crate::screens::look::look(false);
-    let black = look.ink(crate::screens::chrome::BLACK);
-    view.prepare();
-    let tile = view.canvas().clone();
-    let scene = view.prepare();
-    for y in search.top..search.bottom {
-        for x in search.left..search.right {
-            let drawn = tile.pixel(look, x, y, black).0;
-            assert_eq!(scene.pixel(x, y), drawn, "the tile shows at {x},{y}");
-        }
-    }
-}
-
-/// What a sensor tile reads, outside a frame: the menu, and the item of a
-/// list it draws.
-struct Shown<'m> {
-    menu: &'m Menu,
-    row: Option<crate::compose::data::Row>,
-}
-
-impl crate::compose::data::Data for Shown<'_> {
-    fn metric(&self, _: crate::compose::data::Metric) -> Option<i32> {
-        None
-    }
-
-    fn zone(&self, _: crate::compose::data::Effort) -> Option<u8> {
-        None
-    }
-
-    fn list(&self, list: crate::compose::data::ListKind) -> u16 {
-        self.menu.count(list)
-    }
-
-    fn row(&self) -> Option<crate::compose::data::Row> {
-        self.row
-    }
-
-    fn sensors(&self) -> Option<&Menu> {
-        Some(self.menu)
-    }
-}
-
-/// Each sensor tile draws its widest words whole in every look it offers,
-/// on every panel: accept measures each look on them, so no box it takes
-/// cuts a name, a state, an identity or an offset.
-#[test]
-fn every_sensor_tile_draws_its_widest_words_whole_in_each_look() {
-    use crate::compose::data::{ListKind, Row};
-    use crate::compose::registry::{
-        SENSOR_CELLS, SENSOR_LINE, SENSOR_ROW, SENSOR_SEARCH, SENSOR_TITLE, tile,
-    };
-    use crate::compose::tiles::sensor_line::Says;
-    use crate::compose::{Placed, Rect16};
-    let widest = Identity {
-        device_type: device_type::POWER,
-        device_number: u16::MAX,
-        transmission_type: u8::MAX,
-    };
-    let mut twin = widest;
-    twin.transmission_type = 1;
-    let found = |identity| Discovery {
-        identity,
-        rssi: -40,
-        seen_ms: 0,
-    };
-    // Every case: a menu, the tile and its argument, the row it draws and
-    // the words it must show whole.
-    let mut cases: std::vec::Vec<(Menu, u8, u8, Option<Row>, std::string::String)> =
-        std::vec::Vec::new();
-    for message in MenuMessage::ALL {
-        let mut menu = opened(&[], &[(strap(1), Connection::Live)]);
-        if MenuMessage::NOTICES.contains(&message) {
-            menu.set_notice(Some(message));
-        } else {
-            menu.set_message(message);
-        }
-        let (title, _) = menu.title();
-        cases.push((
-            menu,
-            SENSOR_TITLE,
-            ListKind::Sensors as u8,
-            None,
-            title.into(),
-        ));
-        let mut menu = opened(&[], &[]);
-        menu.set_notice(Some(message));
-        let (line, _) = menu.search_line();
-        cases.push((menu, SENSOR_SEARCH, 0, None, line.as_str().into()));
-    }
-    for (kind, connection) in NAMES.iter().zip(Connection::ALL.iter().cycle()) {
-        let device_type = (0..=u8::MAX)
-            .find(|&t| super::kind(t) == *kind)
-            .expect("a type");
-        let identity = Identity {
-            device_type,
-            device_number: u16::MAX,
-            transmission_type: 255,
-        };
-        let menu = opened(&[], &[(identity, *connection)]);
-        let row = Some(Row {
-            list: ListKind::Sensors,
-            index: 0,
-            focused: false,
-        });
-        let name = std::string::String::from_utf8_lossy(kind).into_owned();
-        cases.push((menu_copy(&menu), SENSOR_ROW, 0, row, name));
-        let (state, _) = menu.state.selected[0].expect("saved").link();
-        let state = std::string::String::from_utf8_lossy(state).into_owned();
-        cases.push((menu, SENSOR_ROW, 0, row, state));
-    }
-    let nearby_row = Some(Row {
-        list: ListKind::Nearby,
-        index: 0,
-        focused: false,
-    });
-    let menu = opened(&[found(widest), found(twin)], &[]);
-    cases.push((menu, SENSOR_ROW, 0, nearby_row, "ID 65535.255".into()));
-    for note in [
-        CalibrationNote::Done(i16::MIN),
-        CalibrationNote::NeedsRestart,
-    ] {
-        let mut menu = opened(&[found(twin)], &[(widest, Connection::RadioUnavailable)]);
-        let mut rider = Rider::new();
-        rider.press(&mut menu, Role::Act);
-        menu.set_calibration(menu.shown().map(|s| (s.identity, note)));
-        let text = note.text().as_str().into();
-        cases.push((
-            menu_copy(&menu),
-            SENSOR_LINE,
-            Says::Calibration as u8,
-            None,
-            text,
-        ));
-        cases.push((
-            menu_copy(&menu),
-            SENSOR_LINE,
-            Says::State as u8,
-            None,
-            "RADIO UNAVAILABLE".into(),
-        ));
-        cases.push((menu_copy(&menu), SENSOR_CELLS, 0, None, "65535.255".into()));
-        rider.press(&mut menu, Role::Move);
-        assert_eq!(page(&menu), Page::Forget);
-        cases.push((
-            menu,
-            SENSOR_LINE,
-            Says::Forgotten as u8,
-            None,
-            "POWER METER 65535.255".into(),
-        ));
-    }
-    let mut cut = std::vec::Vec::new();
-    for device in panels::ALL {
-        let at = &device.scaled;
-        for (menu, component, arg, row, want) in &cases {
-            let data = Shown { menu, row: *row };
-            for (form, look) in tile(*component).forms(*arg, at).iter().enumerate() {
-                let placed = Placed {
-                    rect: Rect16 {
-                        left: 0,
-                        top: 0,
-                        right: look.width,
-                        bottom: look.height,
-                    },
-                    node: 0,
-                    form: form as u8,
-                };
-                let mut canvas = Canvas::default();
-                tile(*component).prepare(*arg, &placed, at, &data, &mut canvas);
-                if !canvas.shows(want) {
-                    let name = tile(*component).name();
-                    cut.push(std::format!("{name} look {form} on {:?}: {want}", at.panel));
-                }
-            }
-        }
-    }
-    assert!(cut.is_empty(), "{cut:#?}");
-}
-
-#[test]
-fn a_search_line_in_a_card_is_refused_so_no_tap_on_it_pairs_the_card() {
-    use crate::compose::{
-        Node, Size,
-        data::ListKind,
-        registry::{SENSOR_ROW, SENSOR_SEARCH, SPACE},
-    };
-    let menu = opened(&[peer(10)], &[]);
-    assert_eq!(page(&menu), Page::Nearby);
-    let nodes = [
-        Node::col(3, Size::grow(1)),
-        Node::leaf(SPACE, 0, Size::units(48)),
-        Node::scroll(ListKind::Nearby, Size::grow(1)),
-        Node::col(2, Size::units(88)),
-        Node::leaf(SENSOR_SEARCH, 0, Size::units(24)),
-        Node::leaf(SENSOR_ROW, 0, Size::grow(1)),
-        Node::leaf(SPACE, 0, Size::units(48)),
-    ];
-    for device in panels::ALL {
-        assert!(
-            stored(&nodes, menu.screen(), device).is_none(),
-            "{:?}",
-            device.scaled.panel
-        );
-    }
-}
-
-/// The status bar paints exactly the rows its tile keeps, so a tile right
-/// under a status tile of its own size loses none of its pixels.
-#[test]
-fn the_status_bar_paints_only_the_rows_its_tile_keeps_on_every_panel() {
-    use crate::compose::{
-        Node, Size,
-        registry::{GAUGE, SPACE, STATUS},
-    };
-    let menu = opened(&[], &[]);
-    let nodes = [
-        Node::col(3, Size::grow(1)),
-        Node::leaf(STATUS, 0, Size::CONTENT),
-        Node::leaf(GAUGE, 0, Size::CONTENT),
-        Node::leaf(SPACE, 0, Size::grow(1)),
-    ];
-    for device in panels::ALL {
-        let panel = device.scaled.panel;
-        let screens = stored(&nodes, menu.screen(), device).expect("accepted");
-        let laids = stored_laids(&screens, &menu, device);
-        let laid = laids.get(menu.screen()).expect("shown");
-        let (status, gauge) = (laid.box_of(STATUS).unwrap(), laid.box_of(GAUGE).unwrap());
-        assert_eq!(status.bottom, gauge.top, "{panel:?}");
-        let mut view = menu.frame(device);
-        view.laids = Some(&laids);
-        let look = crate::screens::look::look(false);
-        let black = look.ink(crate::screens::chrome::BLACK);
-        view.prepare();
-        let tile = view.canvas().clone();
-        let scene = view.prepare();
-        let mut drawn = 0;
-        for y in gauge.top..gauge.bottom {
-            for x in gauge.left..gauge.right {
-                let want = tile.pixel(look, x, y, black).0;
-                if want != black.0 {
-                    drawn += 1;
-                    assert_eq!(scene.pixel(x, y), want, "{panel:?}: the gauge at {x},{y}");
-                }
-            }
-        }
-        assert!(drawn > 0, "{panel:?}: the gauge draws");
     }
 }

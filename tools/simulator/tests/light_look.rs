@@ -107,10 +107,11 @@ fn every_screen_paints_its_colours_through_the_light_look() {
         let mut sim = (scene.reach)();
         // Kit pages draw in their theme's own colours, not the dark
         // colours mapped through the look.
-        if matches!(
+        let kit = matches!(
             sim.ride_page_name().as_deref(),
             Some("ride/main" | "ride/climb" | "ride/workout")
-        ) {
+        );
+        if kit || sim.vana_page() == "sensors" {
             continue;
         }
         let Some(shown) = paint(&mut sim, true) else {

@@ -209,12 +209,12 @@ fn menus() {
     walk.cell("sensors", "detail");
     walk.guide(|sim| {
         sim.press(Role::Move);
-        sim.expect_text("SENSOR?");
+        sim.expect_text("FORGET");
     });
     walk.cell("sensors", "forget");
     walk.guide(|sim| {
         sim.press(Role::Back);
-        sim.expect_text("BATTERY");
+        sim.expect_text("ANT+");
         sim.press(Role::Back);
         sim.nearby_page();
     });

@@ -46,7 +46,6 @@ const FAMILIES: &[Family] = &[
     family(48, 56, statics::TILES),
     family(statics::LINE, 64, statics::QUESTIONS),
     family(64, 76, scroll::TILES),
-    family(76, 80, scroll::SENSORS),
     family(80, 96, script::TILES),
     family(96, 104, sensors::TILES),
     family(104, 112, sheet::TILES),

@@ -29,6 +29,9 @@ DIGITS = "0123456789"
 TEXT = "".join(chr(c) for c in range(FIRST, CAPS_LAST + 1))
 PRINTABLE = "".join(chr(c) for c in range(FIRST, LAST + 1))
 NUMBERS = " +-./0123456789:%"
+DOT_SLOT, DOT = "^", "·"
+KIT_TEXT = TEXT.replace(DOT_SLOT, DOT)
+KIT_PRINTABLE = PRINTABLE.replace(DOT_SLOT, DOT)
 
 # name, weight, em size in pixels, characters, extra tracking in pixels, doc
 FACES = [
@@ -49,10 +52,10 @@ FACES = [
     ("TOTAL_30", 700, 30, NUMBERS, 0, "The ride's averages when a course is done."),
     ("TOTAL_11", 900, 11, "ABCDEGHIKMNPRSTVW /", 0.6, "The captions over those totals."),
     ("FOOT_20", 700, 20, NUMBERS, 0, "The distance left in the map's footer."),
-    ("TAG", 800, 11, TEXT, 0, "Ride-page field titles, zone tags and the top line's battery."),
-    ("NOTE", 700, 13, PRINTABLE, 0, "Sentence-case subtitles and list labels."),
-    ("LABEL", 800, 15, PRINTABLE, 0, "List values and button labels."),
-    ("HEADING", 800, 21, PRINTABLE, 0, "A phone-style screen's title."),
+    ("TAG", 800, 11, KIT_TEXT, 0, "Ride-page field titles, zone tags and the top line's battery."),
+    ("NOTE", 700, 13, KIT_PRINTABLE, 0, "Sentence-case subtitles and list labels."),
+    ("LABEL", 800, 15, KIT_PRINTABLE, 0, "List values and button labels."),
+    ("HEADING", 800, 21, KIT_PRINTABLE, 0, "A phone-style screen's title."),
     ("DIGITS_40", 700, 40, NUMBERS, 0, "Ride-grid field digits."),
     ("DIGITS_26", 700, 26, NUMBERS, 0, "The % beside 40 px digits, and mid-size values."),
     ("DIGITS_15", 700, 15, NUMBERS, 0, "The ride top line's elapsed time."),
@@ -185,7 +188,7 @@ def emit(scale: Fraction = Fraction(1)) -> str:
         # A face given lowercase covers printable ASCII; the rest stop at "_".
         last = LAST if any(c.islower() for c in chars) else CAPS_LAST
         for code in range(FIRST, last + 1):
-            g = glyphs.get(chr(code))
+            g = glyphs.get(DOT if chr(code) == DOT_SLOT and DOT in glyphs else chr(code))
             if g is None:
                 entries.append("    Glyph::NONE,")
                 continue

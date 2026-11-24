@@ -1,11 +1,6 @@
 //! Sensor selection and physical-button navigation, independent of radio scheduling.
-//!
-//! `menu` owns the pages, their focus and input, `shown` is what their
-//! trees (`compose::builtin::sensors`) read and where a tap lands, and
-//! `render` holds their colours.
 mod menu;
 mod message;
-mod render;
 mod shown;
 mod slot;
 #[cfg(test)]
@@ -13,38 +8,47 @@ pub(super) mod tests;
 
 pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu, Page, SETTLE_MS};
 pub use message::{CalibrationNote, MenuMessage};
-
-pub use shown::{Item, widest};
+pub use shown::{List, Part, Reading, Row, Search, reading, widest};
 pub use slot::{Connection, Selected};
 
 use crate::sensors::ant::device_type;
 
-/// Every name `kind` gives.
-pub const NAMES: [&[u8]; 10] = [
-    b"RADAR",
-    b"POWER METER",
-    b"HEART RATE",
-    b"SPEED/CAD",
-    b"CADENCE",
-    b"SPEED",
-    b"SHIFTING",
-    b"TRAINER",
-    b"BIKE LIGHTS",
-    b"ANT SENSOR",
+/// What a sensor of one ANT device type is called: in a list's row, and
+/// at the top of its page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Names {
+    pub short: &'static str,
+    pub long: &'static str,
+}
+
+const fn named(short: &'static str, long: &'static str) -> Names {
+    Names { short, long }
+}
+
+pub const NAMES: [Names; 10] = [
+    named("Radar", "Radar"),
+    named("Power", "Power meter"),
+    named("Heart rate", "Heart rate"),
+    named("Speed/cad", "Speed/cadence"),
+    named("Cadence", "Cadence sensor"),
+    named("Speed", "Speed sensor"),
+    named("Shifting", "Shifting"),
+    named("Trainer", "Trainer"),
+    named("Lights", "Bike lights"),
+    named("Sensor", "Sensor"),
 ];
 
-/// What a sensor of this ANT device type is called.
-pub fn kind(kind: u8) -> &'static [u8] {
-    match kind {
-        device_type::RADAR => b"RADAR",
-        device_type::POWER => b"POWER METER",
-        device_type::HEART_RATE => b"HEART RATE",
-        device_type::SPEED_CADENCE => b"SPEED/CAD",
-        device_type::CADENCE => b"CADENCE",
-        device_type::SPEED => b"SPEED",
-        device_type::SHIFTING | device_type::SHIFTING_DI2 => b"SHIFTING",
-        device_type::FITNESS_EQUIPMENT => b"TRAINER",
-        device_type::BIKE_LIGHTS => b"BIKE LIGHTS",
-        _ => b"ANT SENSOR",
-    }
+pub const fn names(kind: u8) -> Names {
+    NAMES[match kind {
+        device_type::RADAR => 0,
+        device_type::POWER => 1,
+        device_type::HEART_RATE => 2,
+        device_type::SPEED_CADENCE => 3,
+        device_type::CADENCE => 4,
+        device_type::SPEED => 5,
+        device_type::SHIFTING | device_type::SHIFTING_DI2 => 6,
+        device_type::FITNESS_EQUIPMENT => 7,
+        device_type::BIKE_LIGHTS => 8,
+        _ => 9,
+    }]
 }

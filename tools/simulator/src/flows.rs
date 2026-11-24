@@ -82,21 +82,14 @@ impl Sim {
         }
         self.focus_row(kind);
         self.press(Role::Act);
-        self.expect_text("BATTERY");
+        self.expect_text("ANT+");
     }
 
-    /// Open a saved sensor's detail page and forget it with the trash cue,
-    /// beside MOVE on a power meter and beside ACT on any other sensor, then
-    /// confirm FORGET SENSOR? with the trash cue beside ACT.
     #[track_caller]
     pub fn disconnect_sensor(&mut self, kind: &str) {
         self.open_sensor_detail(kind);
         self.advance(vana::screens::sensors::SETTLE_MS);
-        self.press(if kind == "POWER METER" {
-            Role::Move
-        } else {
-            Role::Act
-        });
+        self.press(Role::Move);
         self.expect_text("FORGET");
         self.advance(vana::screens::sensors::SETTLE_MS);
         self.press(Role::Act);
@@ -119,7 +112,8 @@ impl Sim {
     fn focus_row(&mut self, kind: &str) {
         for _ in 0..14 {
             let screen = self.screen();
-            if screen.run(kind).is_some_and(|run| focused(&screen, &run)) {
+            let mut rows = screen.frame().read().into_iter();
+            if rows.any(|run| run.text == row_name(kind) && focused(&screen, &run)) {
                 return;
             }
             self.press(Role::Move);
@@ -490,14 +484,24 @@ fn on_nearby(screen: &crate::sim::Screen) -> bool {
     screen.run("NEARBY").is_some()
 }
 
+/// The row name, in the capitals a list draws, of the sensor whose page
+/// title is `kind` in capitals, such as "POWER" for "POWER METER".
+fn row_name(kind: &str) -> String {
+    let names = vana::screens::sensors::NAMES.iter();
+    let named = names
+        .into_iter()
+        .find(|names| names.long.eq_ignore_ascii_case(kind));
+    named.map_or(kind, |names| names.short).to_ascii_uppercase()
+}
+
 /// The state line under `kind`'s name reads LIVE.
 fn row_live(screen: &crate::sim::Screen, kind: &str) -> bool {
     let runs = screen.frame().read();
-    let Some(name) = runs.iter().find(|run| run.text == kind) else {
+    let Some(name) = runs.iter().find(|run| run.text == row_name(kind)) else {
         return false;
     };
     runs.iter().any(|run| {
-        run.text == "LIVE"
+        run.text.contains("LIVE")
             && run.x.abs_diff(name.x) < 4
             && (name.y + 8..name.y + 30).contains(&run.y)
     })

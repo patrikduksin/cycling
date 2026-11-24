@@ -103,6 +103,9 @@ pub trait Data {
     fn status(&self) -> Status {
         Status::default()
     }
+    fn clock(&self) -> &str {
+        ""
+    }
 }
 
 /// The fix and the battery.
@@ -621,10 +624,6 @@ const SECTION_TITLES: [&str; crate::screens::settings::SECTIONS.len()] = {
 pub enum ListKind {
     Workouts,
     Settings,
-    /// The saved sensors, then ADD SENSOR.
-    Sensors,
-    /// The sensors a search found that are not saved.
-    Nearby,
 }
 
 impl ListKind {
@@ -633,8 +632,6 @@ impl ListKind {
         match self {
             Self::Workouts => "WORKOUTS",
             Self::Settings => "SETTINGS",
-            Self::Sensors => "SENSORS",
-            Self::Nearby => "NEARBY",
         }
     }
 
@@ -643,8 +640,6 @@ impl ListKind {
         match self {
             Self::Workouts => &["WORKOUTS"],
             Self::Settings => &SECTION_TITLES,
-            Self::Sensors => &["SENSORS"],
-            Self::Nearby => &["NEARBY"],
         }
     }
 
@@ -657,9 +652,7 @@ impl ListKind {
     /// shows more at once.
     pub const fn most_in_view(self) -> usize {
         match self {
-            Self::Workouts | Self::Settings | Self::Sensors | Self::Nearby => {
-                super::list::MOST_IN_VIEW
-            }
+            Self::Workouts | Self::Settings => super::list::MOST_IN_VIEW,
         }
     }
 
@@ -667,8 +660,6 @@ impl ListKind {
         match id {
             0 => Some(Self::Workouts),
             1 => Some(Self::Settings),
-            2 => Some(Self::Sensors),
-            3 => Some(Self::Nearby),
             _ => None,
         }
     }

@@ -2,6 +2,7 @@
 use super::shown::Target;
 use super::slot::{LinkStatus, Selected};
 use super::{CalibrationNote, MenuMessage};
+use crate::screens::theme::{DARK, Tone};
 use crate::sensors::ant::{BatteryStatus, device_type};
 use crate::sensors::saved::SAVED_CAPACITY;
 use device_api::ant::{DISCOVERY_CAPACITY, Discovery, Identity};
@@ -27,7 +28,7 @@ pub enum Action {
 pub struct Glance {
     pub kind: u8,
     pub live: bool,
-    /// The status colour the sensor rows use.
+    /// Its state's colour in the night look.
     pub color: u16,
     /// The battery status it last reported, if any.
     pub battery: Option<BatteryStatus>,
@@ -40,15 +41,15 @@ impl Glance {
     fn of(kind: u8, status: LinkStatus, battery: Option<BatteryStatus>) -> Self {
         let live = status == LinkStatus::Live;
         let low = battery.is_some_and(BatteryStatus::is_low);
+        let tone = if live && low {
+            Tone::Warn
+        } else {
+            status.tone()
+        };
         Self {
             kind,
             live,
-            // A live sensor with a weak battery needs a look too.
-            color: if live && low {
-                super::render::AMBER
-            } else {
-                status.color()
-            },
+            color: DARK.tone(tone),
             battery,
         }
     }
@@ -310,6 +311,7 @@ impl State {
     }
 
     fn open(&mut self) -> Option<Action> {
+        self.added.clear();
         if self.nothing_saved() {
             return self.open_nearby();
         }
@@ -373,9 +375,9 @@ impl State {
             Target::Mine(row) => self.view = View::Mine(row),
             Target::Nearby(index) => self.view = View::Nearby(Some(index)),
             Target::Refresh => return self.search_again(),
-            Target::Cue(Role::Back) => return self.press(Press::Back, now),
-            Target::Cue(Role::Move) => return self.press(Press::Move, now),
-            Target::Cue(Role::Act) => {}
+            Target::Key(Role::Back) => return self.press(Press::Back, now),
+            Target::Key(Role::Move) => return self.press(Press::Move, now),
+            Target::Key(Role::Act) => {}
         }
         self.press(Press::Act, now)
     }
@@ -454,17 +456,17 @@ impl State {
             (View::Detail(slot), Press::Act) if settled && self.calibratable(slot) => {
                 Some(Action::Calibrate(self.selected[slot]?.identity))
             }
-            (View::Detail(slot), Press::Move) if self.calibratable(slot) => {
+            (View::Detail(slot), Press::Move) => {
                 self.view = View::Forget(slot);
                 self.opened = now;
                 None
             }
-            (View::Detail(slot), Press::Act) if settled && !self.calibratable(slot) => {
+            (View::Detail(slot), Press::Act) if settled => {
                 self.view = View::Forget(slot);
                 self.opened = now;
                 None
             }
-            (View::Forget(slot), Press::Back) => {
+            (View::Forget(slot), Press::Back | Press::Move) => {
                 self.view = View::Detail(slot);
                 self.opened = now;
                 None
@@ -575,7 +577,7 @@ impl State {
             .find(|&index| self.listed(index))
     }
 
-    fn slot_of(&self, peer: Identity) -> Option<usize> {
+    pub(super) fn slot_of(&self, peer: Identity) -> Option<usize> {
         self.selected
             .iter()
             .position(|s| s.is_some_and(|s| s.identity == peer))

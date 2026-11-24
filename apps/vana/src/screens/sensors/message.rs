@@ -1,4 +1,5 @@
 //! Page feedback shown on the sensor screen.
+use crate::screens::theme::Tone;
 
 /// Sensor-page feedback from discovery, startup and rider requests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,26 +160,28 @@ impl CalibrationNote {
         Self::WhileRiding,
     ];
 
-    pub fn text(self) -> heapless::String<28> {
+    pub fn text(self) -> heapless::String<24> {
         use core::fmt::Write;
         let mut text = heapless::String::new();
         let _ = match self {
-            Self::Calibrating => text.write_str("CALIBRATING..."),
-            Self::WaitingForRadio => text.write_str("WAITING FOR RADIO"),
-            Self::NeedsRestart => text.write_str("RESTART TO CALIBRATE"),
-            Self::Done(offset) => write!(text, "CALIBRATED OFFSET {offset}"),
-            Self::Failed => text.write_str("CALIBRATION FAILED"),
-            Self::NotConnected => text.write_str("NOT CONNECTED"),
-            Self::WhileRiding => text.write_str("NOT DURING A RIDE"),
+            Self::Calibrating => text.write_str("Zeroing"),
+            Self::WaitingForRadio => text.write_str("Waiting for radio"),
+            Self::NeedsRestart => text.write_str("Restart to zero"),
+            Self::Done(offset) => write!(text, "Zeroed, offset {offset}"),
+            Self::Failed => text.write_str("Keep cranks still"),
+            Self::NotConnected => text.write_str("Not connected"),
+            Self::WhileRiding => text.write_str("Not during a ride"),
         };
         text
     }
 
-    /// A grey line saying what to do, for the failure the rider can act on.
-    pub const fn hint(self) -> Option<&'static str> {
+    pub const fn tone(self) -> Tone {
         match self {
-            Self::Failed => Some("CRANKS STILL, TRY AGAIN"),
-            _ => None,
+            Self::Calibrating | Self::WaitingForRadio => Tone::Info,
+            Self::Done(_) => Tone::Good,
+            Self::Failed | Self::NeedsRestart | Self::NotConnected | Self::WhileRiding => {
+                Tone::Warn
+            }
         }
     }
 }

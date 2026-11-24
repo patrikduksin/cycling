@@ -290,9 +290,8 @@ impl<'a> Frame<'a> {
             glyphs
         });
         let mut runs = self.group(glyphs);
-        // A lone stroke or bar, such as a map line read as a thin "I", is not text.
         runs.retain(|run| {
-            !(run.text.len() == 1 && b"-.,:/_=Il|".contains(&run.text.as_bytes()[0]))
+            !(run.text.len() == 1 && b"-.,:/_=Il|^".contains(&run.text.as_bytes()[0]))
         });
         runs.retain(|run| !run.text.bytes().all(|b| b == b'_' || b == b' '));
         runs.sort_by_key(|run| (run.y, run.x));

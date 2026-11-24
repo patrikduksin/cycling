@@ -1,61 +1,77 @@
-//! A sensor list's title: SENSORS, or the trouble it names in amber, and
-//! NEARBY.
-use crate::compose::data::{Data, ListKind};
+use crate::compose::data::Data;
+use crate::compose::kit::px;
 use crate::compose::solve::Placed;
-use crate::compose::tile::{Form, Forms, Tile};
-use crate::screens::canvas::Canvas;
-use crate::screens::chrome::{Align, WHITE};
+use crate::compose::tile::{Form, Forms, Tile, forms};
+use crate::screens::canvas::{Canvas, Shape};
+use crate::screens::chrome::Align;
+use crate::screens::icons::{StaticIcon, Symbol};
 use crate::screens::scaled::Scaled;
-use crate::screens::sensors::widest;
-use firmware_shell::rendering::font::FaceRole;
+use crate::screens::sensors::{List, MenuMessage, widest};
+use crate::screens::theme::LAYOUT;
 
 pub struct SensorTitle;
 
-const FACES: [FaceRole; 2] = [FaceRole::Title, FaceRole::Body];
+fn columns(at: &Scaled) -> (usize, usize) {
+    let space = &LAYOUT.space;
+    let chevron = at.art.symbol(Symbol::Chevron).ink(0, 0);
+    let left = px(at, space.gutter);
+    (left, left + chevron.width() + px(at, space.gutter))
+}
 
 impl Tile for SensorTitle {
-    type Arg = ListKind;
-    const NAME: &'static str = "sensor_title";
+    type Arg = List;
+    const NAME: &'static str = "sensor title";
 
-    /// A look fits the list's name in its face and, in the body face it
-    /// falls back to, any trouble SENSORS names in its place.
-    fn forms(list: ListKind, at: &Scaled) -> Forms {
-        let body = at.face(FaceRole::Body);
-        let trouble = match list {
-            ListKind::Sensors => widest::title(body),
-            _ => 0,
+    fn forms(list: List, at: &Scaled) -> Forms {
+        let heading = at.face(LAYOUT.face.heading);
+        let title = match list {
+            List::Sensors => {
+                let trouble = MenuMessage::ALL
+                    .into_iter()
+                    .filter(|message| message.on_sensors())
+                    .chain(MenuMessage::NOTICES)
+                    .map(|message| message.short().as_bytes());
+                let label = at.face(LAYOUT.face.label);
+                widest::of(label, trouble).max(heading.fit_width(b"SENSORS"))
+            }
+            List::Nearby => heading.fit_width(b"NEARBY"),
         };
-        FACES
-            .iter()
-            .map(|&role| {
-                let name = Form::text(at.face(role), list.name().as_bytes());
-                Form {
-                    width: name.width.max(trouble as u16),
-                    ..name
-                }
-            })
-            .collect()
+        forms(&[Form {
+            width: (columns(at).1 + title + px(at, LAYOUT.space.gutter)) as u16,
+            height: (heading.fit_height() + px(at, LAYOUT.space.pad)) as u16,
+            shapes: 1,
+            runs: 1,
+        }])
     }
 
-    fn prepare(list: ListKind, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
+    fn prepare(list: List, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
         let Some(menu) = data.sensors() else {
             return;
         };
-        let (text, color) = match list {
-            ListKind::Sensors => menu.title(),
-            _ => (list.name(), WHITE),
-        };
-        let rect = placed.rect;
-        let faces = &FACES[usize::from(placed.form)..];
-        let faces = [at.face(faces[0]), at.face(FACES[1])];
+        let theme = data.theme();
+        let rect = placed.rect.rect();
+        let heading = at.face(LAYOUT.face.heading);
+        let base = rect.top + heading.fit_height();
+        let (chevron_at, title_at) = columns(at);
+        let icon = at.art.symbol(Symbol::Chevron);
+        let ink = icon.ink(0, 0);
+        let cap_middle = base - usize::from(heading.cap) / 2;
+        out.shape(Shape::Icon {
+            icon: StaticIcon(icon),
+            left: (rect.left + chevron_at).saturating_sub(ink.left),
+            top: cap_middle.saturating_sub(ink.top + ink.height() / 2),
+            color: theme.sub,
+        });
+        let (title, tone) = menu.title(list);
+        let left = rect.left + title_at;
         out.fit(
-            &faces,
-            text.as_bytes(),
-            usize::from(rect.width()),
-            usize::from(rect.left),
-            usize::from(rect.bottom),
+            &[heading, at.face(LAYOUT.face.label)],
+            title.as_bytes(),
+            rect.right.saturating_sub(left),
+            left,
+            base,
             Align::Left,
-            color,
+            theme.tone(tone),
         );
     }
 }

@@ -412,7 +412,13 @@ impl<'v> Scene<'v> {
             return color;
         }
         let mut color = match self.kind {
-            Kind::PageUnderBar => self.canvas().pixel(look, x, y, black),
+            Kind::PageUnderBar => match self.theme {
+                Some(theme) => {
+                    let bg = super::chrome::Shown(theme.bg);
+                    self.canvas().pixel(Look::PLAIN, x, y, bg)
+                }
+                None => self.canvas().pixel(look, x, y, black),
+            },
             Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
             Kind::Summary { elevation, .. } => {
                 let under = self
@@ -1142,7 +1148,8 @@ impl<'a> View<'a> {
                 .then(|| ride::radar(&self.graphics.radar, &device.scaled)),
             _ => None,
         };
-        let themed = self.screen_id().themed() && matches!(kind, Kind::Ride(_));
+        let themed =
+            self.screen_id().themed() && matches!(kind, Kind::Ride(_) | Kind::PageUnderBar);
         Scene {
             device,
             kind,
@@ -1263,9 +1270,6 @@ impl<'a> View<'a> {
         if self.page == Page::Settings {
             let (section, _) = self.sections.section(self.cursor);
             self.bar.set_pages(section, self.sections.count());
-        }
-        if let Some(menu) = self.sensor_pages() {
-            self.scroll = menu.offset(laid);
         }
         fill(self, |view| {
             let mut canvas = Canvas::default();

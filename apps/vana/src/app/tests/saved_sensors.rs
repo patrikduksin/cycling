@@ -571,7 +571,11 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     use crate::screens::sensors::Page as SensorPage;
     let heart = peer(HEART, 4242);
     let touch = |runtime: &mut Runtime, radio: &mut Radio, now| {
-        let point = device_api::input::Point { x: 188, y: 312 };
+        let x = match runtime.menu.diagnostics().page {
+            SensorPage::Detail => 52,
+            _ => 188,
+        };
+        let point = device_api::input::Point { x, y: 312 };
         runtime.input_received(Input::Touch(point), now, now, radio)
     };
     let saved = |runtime: &Runtime| runtime.preferences.sensors.active(HEART).is_some();
@@ -733,4 +737,41 @@ fn a_combined_speed_cadence_sensor_never_reports_a_battery() {
         &battery_page(sensor, [0x52, 0x10, 0x20, 0, 0, 0x30, 0x23, 0x41]),
     );
     assert_eq!(links.battery(0, sensor), None);
+}
+
+const CADENCE: u8 = 122;
+const SPEED_CADENCE: u8 = 121;
+
+/// A crank turning at `rpm`, as its sensor of `kind` reports it at `now`.
+fn crank(kind: u8, rpm: u64, now: u64) -> [u8; 8] {
+    let count = rpm * now / 60_000;
+    let event_time = (count * 61_440 / rpm) as u16;
+    let mut data = [0; 8];
+    let at = if kind == SPEED_CADENCE { 0 } else { 4 };
+    data[at..at + 2].copy_from_slice(&event_time.to_le_bytes());
+    data[at + 2..at + 4].copy_from_slice(&(count as u16).to_le_bytes());
+    data
+}
+
+#[test]
+fn each_sensor_row_reads_its_own_sensor_not_the_ride_metric() {
+    let (cadence, combined) = (peer(CADENCE, 1), peer(SPEED_CADENCE, 2));
+    let mut runtime = restored(&[cadence, combined]);
+    let mut radio = Radio::new();
+    run(&mut runtime, &mut radio, 0, 200);
+    for now in (200..6_000).step_by(250) {
+        radio.data(CADENCE, crank(CADENCE, 90, now), now);
+        radio.data(SPEED_CADENCE, crank(SPEED_CADENCE, 60, now), now);
+        run(&mut runtime, &mut radio, now, now + 250);
+    }
+    let reading = |kind| {
+        let tiles = runtime.sensor_tiles(&radio, 6_000);
+        let tile = tiles
+            .into_iter()
+            .flatten()
+            .find(|tile| tile.identity.device_type == kind);
+        tile.expect("saved").reading
+    };
+    assert_eq!(reading(CADENCE), Some(90));
+    assert_eq!(reading(SPEED_CADENCE), Some(60), "not the cadence-only 90");
 }

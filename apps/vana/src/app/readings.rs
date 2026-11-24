@@ -290,6 +290,29 @@ impl Readings {
             .or_else(|| self.combined_crank.tenths(now))
     }
 
+    /// What the connected ANT sensor of `kind` measures itself, in the unit
+    /// of its row's `Reading`: watts, beats or revolutions a minute, or mm/s.
+    /// Only the active sensor of a kind is connected, so this is its own.
+    pub(super) fn own(&self, kind: u8, now: u64) -> Option<i32> {
+        let fresh = |received_ms: u64| now.saturating_sub(received_ms) <= READING_FRESH_MS;
+        let rpm = |tenths: u16| i32::from((tenths + 5) / 10);
+        match kind {
+            device_type::POWER => self
+                .power
+                .filter(|power| fresh(power.received_ms))
+                .map(|power| i32::from(power.value.watts)),
+            device_type::HEART_RATE => self
+                .heart
+                .filter(|heart| fresh(heart.received_ms))
+                .and_then(|heart| heart.value.bpm)
+                .map(i32::from),
+            device_type::CADENCE => self.crank.tenths(now).map(rpm),
+            device_type::SPEED_CADENCE => self.combined_crank.tenths(now).map(rpm),
+            device_type::SPEED => self.speed.value(now).map(|mm_s| mm_s as i32),
+            _ => None,
+        }
+    }
+
     fn receive(&mut self, packet: Packet) {
         let kind = packet.identity.device_type;
         if matches!(kind, device_type::SPEED | device_type::SPEED_CADENCE) {

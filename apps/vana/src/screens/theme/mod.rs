@@ -152,6 +152,12 @@ pub struct Space {
     pub dot: u8,
     /// A grouped list's row.
     pub row: u8,
+    /// A grouped list's row on a page of five facts.
+    pub dense_row: u8,
+    /// A glance list's row: a name over its state, a reading at the right.
+    pub item: u8,
+    /// A phone-style page's icon tile or disc.
+    pub badge: u8,
     /// A button's height.
     pub button: u8,
     /// A focus ring's width.

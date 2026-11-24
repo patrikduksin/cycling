@@ -58,6 +58,14 @@ SYMBOLS = [
     ("span", 12),
     ("up", 12),
     ("flag", 12),
+    ("chevron", 16),
+    ("trash", 20),
+    ("target", 20),
+    ("check-disc", 18),
+    ("bars", 24),
+    ("bars-1", 24),
+    ("bars-2", 24),
+    ("bars-3", 24),
 ]
 
 TURN = (

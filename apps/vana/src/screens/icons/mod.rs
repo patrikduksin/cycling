@@ -173,7 +173,7 @@ pub struct Art {
     pub arrow: &'static Icon,
     pub puck: &'static Icon,
     signs: &'static [[SignArt; 3]; 8],
-    symbols: &'static [Icon; 8],
+    symbols: &'static [Icon; 16],
 }
 
 impl Art {
@@ -266,14 +266,20 @@ impl Sensor {
     /// The colour of the metric the sensor measures, or white for one that
     /// measures none of them.
     pub const fn tint(self) -> u16 {
-        use super::chrome;
+        super::theme::DARK.tone(self.tone())
+    }
+
+    /// The tone of the metric the sensor measures, or of words for one that
+    /// measures none of them.
+    pub const fn tone(self) -> super::theme::Tone {
+        use super::theme::Tone;
         match self {
-            Self::Heart => chrome::HEART,
-            Self::Power => chrome::POWER,
-            Self::Speed | Self::SpeedCadence => chrome::SPEED,
-            Self::Cadence => chrome::CADENCE,
+            Self::Heart => Tone::Heart,
+            Self::Power => Tone::Power,
+            Self::Speed | Self::SpeedCadence => Tone::Speed,
+            Self::Cadence => Tone::Cadence,
             Self::Radar | Self::Shifting | Self::Trainer | Self::Lights | Self::Generic => {
-                chrome::WHITE
+                Tone::Text
             }
         }
     }

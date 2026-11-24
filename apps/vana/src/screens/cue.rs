@@ -1,6 +1,6 @@
 use super::Device;
 use super::chrome::{
-    BLACK, GREEN, Look, RAISED, RED, Rect, Row, SECONDARY, Shown, WHITE, blend, disc,
+    ACCENT, BLACK, GREEN, Look, RAISED, RED, Rect, Row, SECONDARY, Shown, WHITE, blend, disc,
     paint_disc_over, rounded,
 };
 use super::scaled::Scaled;
@@ -152,6 +152,10 @@ pub enum Icon {
     Calibrate,
     Less,
     More,
+    /// Step the focus through a list.
+    Step,
+    /// Open the focused row.
+    Open,
 }
 
 impl Icon {
@@ -175,7 +179,8 @@ impl Cue {
         match self.icon {
             Icon::Play | Icon::Check | Icon::Calibrate => (GREEN, BLACK),
             Icon::Stop | Icon::Trash => (RED, WHITE),
-            Icon::Back => (SECONDARY, BLACK),
+            Icon::Back | Icon::Step => (SECONDARY, BLACK),
+            Icon::Open => (ACCENT, WHITE),
             Icon::Less | Icon::More => (RAISED, WHITE),
         }
     }
@@ -388,6 +393,8 @@ fn icon(icon: Icon, x: i32, y: i32) -> u8 {
         }
         Icon::Check => stroke(x, y, &[(-24, 0), (-8, 16), (24, -18)], 7),
         Icon::Back => stroke(x, y, &[(10, -24), (-14, 0), (10, 24)], 7),
+        Icon::Step => stroke(x, y, &[(-24, -10), (0, 14), (24, -10)], 7),
+        Icon::Open => stroke(x, y, &[(-10, -24), (14, 0), (-10, 24)], 7),
         // A bin: the lid and its handle, then the body narrowing down.
         Icon::Trash => stroke(x, y, &[(-24, -16), (24, -16)], 5)
             .max(stroke(x, y, &[(-8, -16), (-8, -24), (8, -24), (8, -16)], 5))

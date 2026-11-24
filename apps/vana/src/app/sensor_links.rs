@@ -775,13 +775,18 @@ impl Runtime {
             let channel = channel_of(&channels, peer.device_type);
             let in_range = found.iter().flatten().any(|f| f.identity == peer);
             let active = saved.is_active(slot);
+            let connection = self
+                .links
+                .connection(slot, peer, channel, radio, active, in_range);
+            let live = connection == Connection::Live;
             Some(Selected {
                 identity: peer,
-                connection: self
-                    .links
-                    .connection(slot, peer, channel, radio, active, in_range),
+                connection,
                 battery: self.links.battery(slot, peer),
                 product: self.links.product(slot, peer),
+                reading: live
+                    .then(|| self.readings.own(peer.device_type, now))
+                    .flatten(),
             })
         })
     }

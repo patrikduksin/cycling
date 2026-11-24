@@ -1,204 +1,129 @@
-//! The sensor pages. SENSORS lists the saved sensors and ADD SENSOR under
-//! its title; NEARBY lists what a search found under its title and the
-//! search line. A sensor's page pictures it over its name and state, its
-//! BATTERY and ID, and on a power meter its calibration.
-//!
-//! The menu (`screens::sensors`) takes the presses itself: lost input makes
-//! MOVE confirm the focus before ACT, and ACT waits a moment after a page
-//! opens. The buttons here set the cues.
-use super::workouts::{BAR_UNITS, HEADING_UNITS, SIDE_UNITS, UNDER_HEADING_UNITS};
-use super::{Builtin, Choices, Nodes};
-use crate::compose::data::ListKind;
-use crate::compose::input::{Action, Button, Buttons, OnPage};
+use super::{BAR_UNITS, Builtin, Nodes};
+use crate::compose::input::{Action, Button, Buttons, ListAct, OnPage};
+use crate::compose::kit::item::Button as Item;
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::{
-    SENSOR_CELLS, SENSOR_ICON, SENSOR_LINE, SENSOR_ROW, SENSOR_SEARCH, SENSOR_TITLE, SPACE, STATUS,
+    ITEM, SENSOR_BACK, SENSOR_FACTS, SENSOR_HEAD, SENSOR_HINT, SENSOR_LIST, SENSOR_SEARCH,
+    SENSOR_TITLE, SPACE, STATUS,
 };
-use crate::compose::tiles::sensor_line::Says;
 use crate::screens::cue::Icon;
+use crate::screens::sensors::{List, Part};
+use crate::screens::theme::LAYOUT;
 
-/// A sensor's card on either list.
-const CARD_UNITS: u8 = 56;
-/// NEARBY's search line under its title.
-const SEARCH_UNITS: u8 = 22;
-/// Between a sensor's name and its state, and between two lines that
-/// read as one.
-const NEAR_UNITS: u8 = 6;
-/// The rows a corner cue takes.
-const CUE_UNITS: u8 = 42;
-
-const LEAVE: Button = Button {
+const BACK: Button = Button {
     action: Action::Page(OnPage::Back),
     cue: None,
 };
-const BACK: Button = Button {
-    action: Action::Page(OnPage::Back),
-    cue: Some(Icon::Back),
-};
 
-const fn lists() -> Buttons {
+const fn button(action: Action, cue: Icon) -> Option<Button> {
+    Some(Button {
+        action,
+        cue: Some(cue),
+    })
+}
+
+const fn list(act: Icon) -> Buttons {
     Buttons {
-        back: Some(LEAVE),
-        ..Buttons::FREE
+        act: button(Action::List(ListAct::Act), act),
+        back: Some(BACK),
+        move_: button(Action::List(ListAct::Step), Icon::Step),
+        held: None,
     }
 }
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| list(ListKind::Sensors),
-    buttons: lists(),
+    tree: |_| glance(List::Sensors),
+    buttons: list(Icon::Open),
 };
 
 pub const NEARBY: &Builtin = &Builtin {
-    tree: |_: &Choices| list(ListKind::Nearby),
-    buttons: lists(),
+    tree: |_| glance(List::Nearby),
+    buttons: list(Icon::Check),
 };
 
-/// A saved sensor's page, unless it is a power meter.
 pub const DETAIL: &Builtin = &Builtin {
-    tree: |_: &Choices| page(&detail(false)),
+    tree: |_| page(Part::Detail, [Some(Item::Forget), None]),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Page(OnPage::Forget),
-            cue: Some(Icon::Trash),
+            cue: None,
         }),
         back: Some(BACK),
-        move_: None,
+        move_: button(Action::Page(OnPage::Forget), Icon::Trash),
         held: None,
     },
 };
 
 pub const POWER_METER: &Builtin = &Builtin {
-    tree: |_: &Choices| page(&detail(true)),
+    tree: |_| page(Part::Detail, [Some(Item::Forget), Some(Item::Zero)]),
     buttons: Buttons {
-        act: Some(Button {
-            action: Action::Page(OnPage::Calibrate),
-            cue: Some(Icon::Calibrate),
-        }),
+        act: button(Action::Page(OnPage::Calibrate), Icon::Calibrate),
         back: Some(BACK),
-        move_: Some(Button {
-            action: Action::Page(OnPage::Forget),
-            cue: Some(Icon::Trash),
-        }),
+        move_: button(Action::Page(OnPage::Forget), Icon::Trash),
         held: None,
     },
 };
 
 pub const FORGET: &Builtin = &Builtin {
-    tree: |_: &Choices| {
-        page(&[
-            Node::leaf(SENSOR_ICON, 0, Size::CONTENT),
-            Node::col(2, Size::CONTENT),
-            line(Says::Forget),
-            line(Says::Sensor),
-            line(Says::Forgotten),
-        ])
+    tree: |_| page(Part::Forget, [Some(Item::Keep), Some(Item::ForgetNow)]),
+    buttons: Buttons {
+        act: button(Action::Page(OnPage::Answer(true)), Icon::Trash),
+        back: Some(BACK),
+        move_: button(Action::Page(OnPage::Back), Icon::Back),
+        held: None,
     },
-    buttons: answer(Icon::Trash),
 };
 
-const fn answer(icon: Icon) -> Buttons {
-    Buttons {
-        act: Some(Button {
-            action: Action::Page(OnPage::Answer(true)),
-            cue: Some(icon),
-        }),
-        back: Some(BACK),
-        move_: None,
-        held: None,
-    }
+const fn space(size: Size) -> Node {
+    Node::leaf(SPACE, 0, size)
 }
 
-const fn space(units: u8) -> Node {
-    Node::leaf(SPACE, 0, Size::units(units))
-}
-
-const fn line(says: Says) -> Node {
-    Node::leaf(SENSOR_LINE, says as u8, Size::CONTENT)
-}
-
-fn collect(nodes: impl IntoIterator<Item = Node>) -> Nodes {
-    let mut collected = Nodes::new();
-    for node in nodes {
-        if collected.push(node).is_err() {
-            unreachable!("a sensor page is under twenty nodes");
-        }
-    }
-    collected
-}
-
-fn list(list: ListKind) -> Nodes {
-    let nearby = list == ListKind::Nearby;
-    let head = [
-        Node::col(2, Size::grow(1)),
+fn glance(list: List) -> Nodes {
+    let nearby = list == List::Nearby;
+    let search = nearby.then_some(Node::leaf(SENSOR_SEARCH, 0, Size::CONTENT));
+    let hint = nearby.then_some(Node::leaf(SENSOR_HINT, 0, Size::CONTENT));
+    [
+        Node::col(3 + 2 * u8::from(nearby), Size::grow(1)),
         Node::leaf(STATUS, 0, Size::units(BAR_UNITS)),
-        Node::row(3, Size::grow(1)),
-        space(SIDE_UNITS),
-        Node::col(3 + u8::from(nearby), Size::grow(1)),
-        Node::leaf(SENSOR_TITLE, list as u8, Size::units(HEADING_UNITS)),
-    ];
-    let search = nearby.then_some(Node::leaf(SENSOR_SEARCH, 0, Size::units(SEARCH_UNITS)));
-    let rest = [
-        space(UNDER_HEADING_UNITS),
-        Node::scroll(list, Size::grow(1)),
-        Node::col(1, Size::units(CARD_UNITS)),
-        Node::leaf(SENSOR_ROW, 0, Size::grow(1)),
-        space(SIDE_UNITS),
-    ];
-    collect(head.into_iter().chain(search).chain(rest))
+        Node::leaf(SENSOR_TITLE, list as u8, Size::CONTENT),
+    ]
+    .into_iter()
+    .chain(search)
+    .chain([Node::leaf(SENSOR_LIST, list as u8, Size::grow(1))])
+    .chain(hint)
+    .collect()
 }
 
-fn detail(power: bool) -> Nodes {
-    let named = [
-        Node::leaf(SENSOR_ICON, 0, Size::CONTENT),
-        Node::col(3, Size::CONTENT),
-        line(Says::Name),
-        space(NEAR_UNITS),
-        line(Says::State),
-        Node::leaf(SENSOR_CELLS, 0, Size::CONTENT),
-    ];
-    let calibration = [
-        Node::col(3, Size::CONTENT),
-        line(Says::Calibration),
-        space(NEAR_UNITS),
-        line(Says::Hint),
-    ];
-    let calibration = calibration.into_iter().filter(|_| power);
-    collect(named.into_iter().chain(calibration))
-}
-
-/// A page over the whole panel: `body`, a column of things that keep
-/// their size, between side margins and the cue rows at its top and
-/// foot, so its room becomes even gaps.
-fn page(body: &[Node]) -> Nodes {
-    let frame = [
-        Node::row(3, Size::grow(1)),
-        space(SIDE_UNITS),
-        Node::col(top_level(body) + 2, Size::grow(1)),
-        space(CUE_UNITS),
-    ];
-    collect(
-        frame
-            .into_iter()
-            .chain(body.iter().copied())
-            .chain([space(CUE_UNITS), space(SIDE_UNITS)]),
-    )
-}
-
-/// How many of `body`'s nodes are its column's own children: the rest
-/// belong to the columns among them.
-fn top_level(body: &[Node]) -> u8 {
-    use crate::compose::node::What;
-    let mut children = 0;
-    let mut owed = 0usize;
-    for node in body {
-        if owed == 0 {
-            children += 1;
-        } else {
-            owed -= 1;
-        }
-        if let Some(What::Col { children } | What::Row { children }) = node.what() {
-            owed += usize::from(children);
-        }
-    }
-    children
+fn page(part: Part, buttons: [Option<Item>; 2]) -> Nodes {
+    let units = &LAYOUT.space;
+    let top = match part {
+        Part::Detail => Node::leaf(SENSOR_BACK, 0, Size::CONTENT),
+        Part::Forget => space(Size::units(units.top_line)),
+    };
+    let margin = || space(Size::units(units.pad));
+    let gap = || space(Size::units(units.gap));
+    let half = |item: Option<Item>| match item {
+        Some(item) => Node::leaf(ITEM, item as u8, Size::grow(1)),
+        None => space(Size::grow(1)),
+    };
+    [
+        Node::col(7, Size::grow(1)),
+        top,
+        Node::leaf(SENSOR_HEAD, part as u8, Size::CONTENT),
+        space(Size::units(units.gutter)),
+        Node::row(3, Size::CONTENT),
+        margin(),
+        Node::leaf(SENSOR_FACTS, part as u8, Size::grow(1)),
+        margin(),
+        space(Size::grow(1)),
+        Node::row(5, Size::CONTENT),
+        gap(),
+        half(buttons[0]),
+        gap(),
+        half(buttons[1]),
+        gap(),
+        gap(),
+    ]
+    .into_iter()
+    .collect()
 }

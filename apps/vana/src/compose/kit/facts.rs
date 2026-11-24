@@ -9,7 +9,7 @@ use crate::compose::tile::{Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{Align, Rect};
 use crate::screens::scaled::Scaled;
-use crate::screens::theme::LAYOUT;
+use crate::screens::theme::{LAYOUT, Theme};
 use crate::screens::workout::Text;
 
 pub struct Facts;
@@ -75,10 +75,9 @@ impl Tile for Facts {
             })
             .max()
             .unwrap_or(0);
-        let space = &LAYOUT.space;
         forms(&[Form {
-            width: (2 * px(at, space.gutter) + px(at, space.gap) + widest) as u16,
-            height: (rows.len() * px(at, space.row)) as u16,
+            width: card_width(at, 0, widest) as u16,
+            height: (rows.len() * px(at, LAYOUT.space.row)) as u16,
             shapes: rows.len() as u8,
             runs: 2 * rows.len() as u8,
         }])
@@ -86,57 +85,93 @@ impl Tile for Facts {
 
     fn prepare(card: Card, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
         let theme = data.theme();
-        let space = &LAYOUT.space;
-        let rect = placed.rect.rect();
-        out.shape(Shape::Panel {
-            rect,
-            radius: px(at, LAYOUT.radius.card),
-            color: theme.raised,
-        });
-        let (note, label) = (at.face(LAYOUT.face.note), at.face(LAYOUT.face.label));
-        let (left, right) = (
-            rect.left + px(at, space.gutter),
-            rect.right - px(at, space.gutter),
-        );
-        let row = px(at, space.row);
-        for (at_row, fact) in card.spec().rows.iter().enumerate() {
-            let top = rect.top + at_row * row;
-            if at_row > 0 {
-                let thick = px(at, space.rule);
-                out.shape(Shape::Bar {
-                    rect: Rect {
-                        left,
-                        top,
-                        right: rect.right,
-                        bottom: top + thick,
-                    },
-                    radius: 0,
-                    color: theme.rule,
-                });
-            }
-            let middle = top + row / 2;
-            let shown = value(fact, data.metric(fact.metric));
-            let base = middle + label.cap as usize / 2;
-            let run = out.fit(
-                &[label],
-                shown.as_bytes(),
-                right - left,
-                right,
-                base,
-                Align::Right,
-                theme.text,
-            );
-            let base = middle + note.cap as usize / 2;
-            let room = run.left.saturating_sub(left + px(at, space.gap));
-            out.fit(
-                &[note],
-                fact.label.as_bytes(),
-                room,
-                left,
-                base,
-                Align::Left,
-                theme.sub,
-            );
+        let rows = card.spec().rows;
+        let mut shown = [const { Text::<24>::new() }; MAX_ROWS];
+        for (text, fact) in shown.iter_mut().zip(rows) {
+            *text = value(fact, data.metric(fact.metric));
         }
+        let lines = rows.iter().zip(&shown).map(|(fact, text)| Line {
+            label: fact.label.as_bytes(),
+            value: text.as_bytes(),
+            color: theme.text,
+        });
+        draw_card(out, at, theme, placed.rect.rect(), LAYOUT.space.row, lines);
+    }
+}
+
+const MAX_ROWS: usize = 6;
+
+pub struct Line<'t> {
+    pub label: &'t [u8],
+    pub value: &'t [u8],
+    pub color: u16,
+}
+
+/// The columns a card needs for labels as wide as `labels` beside values
+/// as wide as `values`, in their faces.
+pub fn card_width(at: &Scaled, labels: usize, values: usize) -> usize {
+    let space = &LAYOUT.space;
+    2 * px(at, space.gutter) + px(at, space.gap) + labels + values
+}
+
+/// A card of `lines` over `rect`, each `row` units tall, a rule between
+/// them: one shape a row, two runs.
+pub fn draw_card<'t>(
+    out: &mut Canvas,
+    at: &Scaled,
+    theme: &Theme,
+    rect: Rect,
+    row: u8,
+    lines: impl Iterator<Item = Line<'t>>,
+) {
+    let space = &LAYOUT.space;
+    out.shape(Shape::Panel {
+        rect,
+        radius: px(at, LAYOUT.radius.card),
+        color: theme.raised,
+    });
+    let (note, label) = (at.face(LAYOUT.face.note), at.face(LAYOUT.face.label));
+    let (left, right) = (
+        rect.left + px(at, space.gutter),
+        rect.right - px(at, space.gutter),
+    );
+    let row = px(at, row);
+    for (at_row, line) in lines.enumerate() {
+        let top = rect.top + at_row * row;
+        if at_row > 0 {
+            let thick = px(at, space.rule);
+            out.shape(Shape::Bar {
+                rect: Rect {
+                    left,
+                    top,
+                    right: rect.right,
+                    bottom: top + thick,
+                },
+                radius: 0,
+                color: theme.rule,
+            });
+        }
+        let middle = top + row / 2;
+        let base = middle + label.cap as usize / 2;
+        let run = out.fit(
+            &[label],
+            line.value,
+            right - left,
+            right,
+            base,
+            Align::Right,
+            line.color,
+        );
+        let base = middle + note.cap as usize / 2;
+        let room = run.left.saturating_sub(left + px(at, space.gap));
+        out.fit(
+            &[note],
+            line.label,
+            room,
+            left,
+            base,
+            Align::Left,
+            theme.sub,
+        );
     }
 }

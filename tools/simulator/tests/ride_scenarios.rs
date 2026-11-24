@@ -3587,7 +3587,7 @@ fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     sim.checkpoint("sensors menu");
     sim.tap(120, 118);
     sim.expect_text("1 ADDED");
-    sim.expect_text("POWER METER");
+    sim.expect_text("POWER");
     sim.checkpoint("sensor connected by tap");
     sim.press(Role::Back);
     sim.wait_for("LIVE", seconds(15)).unwrap();
@@ -6792,9 +6792,11 @@ fn battery(sim: &mut Sim, kind: u8, number: u16, report: BatteryReport) {
 }
 
 fn run_color(sim: &Sim, text: &str) -> u16 {
-    sim.screen()
+    let screen = sim.screen();
+    let run = screen
         .run(text)
-        .unwrap_or_else(|| panic!("no {text:?}; screen:\n{}", sim.screen().text()))
+        .or_else(|| screen.find(text).into_iter().next());
+    run.unwrap_or_else(|| panic!("no {text:?}; screen:\n{}", screen.text()))
         .color
 }
 
@@ -7030,14 +7032,14 @@ fn calibrating_a_power_meter_shows_the_offset_it_reports() {
     let mut sim = rider();
     calibrate_power_meter(&mut sim, ZeroReply::Offset(-37));
     sim.press(Role::Act);
-    sim.wait_for("CALIBRATING", seconds(20)).unwrap();
+    sim.wait_for("Zeroing", seconds(20)).unwrap();
     sim.checkpoint("power meter calibrating");
-    sim.wait_for("CALIBRATED", seconds(5)).unwrap();
-    sim.expect_text("OFFSET -37");
-    assert_eq!(run_color(&sim, "CALIBRATED OFFSET -37"), GREEN);
+    sim.wait_for("Zeroed", seconds(5)).unwrap();
+    sim.expect_text("offset -37");
+    assert_eq!(run_color(&sim, "Zeroed, offset -37"), GREEN);
     sim.checkpoint("power meter calibrated with its offset");
-    sim.expect_text("BATTERY");
-    sim.wait_gone("CALIBRATED", seconds(12)).unwrap();
+    sim.expect_text("ANT+");
+    sim.wait_gone("Zeroed", seconds(12)).unwrap();
 }
 
 #[test]
@@ -7045,13 +7047,12 @@ fn a_power_meter_that_refuses_to_zero_ends_in_calibration_failed() {
     let mut sim = rider();
     calibrate_power_meter(&mut sim, ZeroReply::Failure);
     sim.press(Role::Act);
-    sim.wait_for("CALIBRATION FAILED", seconds(5)).unwrap();
-    assert_eq!(run_color(&sim, "CALIBRATION FAILED"), AMBER);
-    sim.expect_text("CRANKS STILL, TRY AGAIN");
+    sim.wait_for("Keep cranks still", seconds(5)).unwrap();
+    assert_eq!(run_color(&sim, "Keep cranks still"), AMBER);
     sim.checkpoint("power meter calibration failed");
     sim.press(Role::Act);
-    sim.wait_for("CALIBRATING", seconds(1)).unwrap();
-    sim.wait_for("CALIBRATION FAILED", seconds(5)).unwrap();
+    sim.wait_for("Zeroing", seconds(1)).unwrap();
+    sim.wait_for("Keep cranks still", seconds(5)).unwrap();
 }
 
 #[test]
@@ -7059,11 +7060,11 @@ fn a_silent_power_meter_times_out_in_calibration_failed() {
     let mut sim = rider();
     calibrate_power_meter(&mut sim, ZeroReply::Silence);
     sim.press(Role::Act);
-    sim.wait_for("CALIBRATING", seconds(1)).unwrap();
+    sim.wait_for("Zeroing", seconds(1)).unwrap();
     sim.advance(seconds(8));
-    sim.expect_text("CALIBRATING");
+    sim.expect_text("Zeroing");
     sim.checkpoint("power meter still waiting for its answer");
-    sim.wait_for("CALIBRATION FAILED", seconds(4)).unwrap();
+    sim.wait_for("Keep cranks still", seconds(4)).unwrap();
     sim.checkpoint("power meter calibration timed out");
 }
 
@@ -7072,7 +7073,7 @@ fn calibrating_a_power_meter_never_disturbs_a_later_ride() {
     let mut sim = rider();
     calibrate_power_meter(&mut sim, ZeroReply::Offset(512));
     sim.press(Role::Act);
-    sim.wait_for("CALIBRATED", seconds(5)).unwrap();
+    sim.wait_for("Zeroed", seconds(5)).unwrap();
     sim.press(Role::Back);
     sim.press(Role::Back);
     sim.ride_at(27.0, 205.0, 138.0, 88.0);
@@ -8260,7 +8261,7 @@ fn every_sensor_input_mutated_shows_in_its_replay() {
 fn a_power_meter_calibrated(sim: &mut Sim) {
     calibrate_power_meter(sim, ZeroReply::Offset(-37));
     sim.press(Role::Act);
-    sim.wait_for("CALIBRATED", seconds(25)).unwrap();
+    sim.wait_for("Zeroed", seconds(25)).unwrap();
 }
 
 #[test]

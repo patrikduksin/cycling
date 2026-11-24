@@ -364,13 +364,10 @@ fn the_sensor_pages_draw_on_both_test_panels() {
         let name = model.name;
         let mut twin = Twin::paired(model, sensors, &KINDS[..2]);
         twin.guide(|sim| sim.home("SENSORS"));
-        shows(
-            &twin.sim,
-            &["SENSORS", "HEART RATE", "POWER METER", "LIVE", "ADD SENSOR"],
-        );
+        shows(&twin.sim, &["SENSORS", "HEART RATE", "POWER", "ADD SENSOR"]);
         twin.sim.checkpoint(&format!("sensors on {name}"));
         twin.guide(|sim| sim.open_sensor_detail("POWER METER"));
-        shows(&twin.sim, &["POWER METER", "LIVE", "BATTERY", "ID", "1234"]);
+        shows(&twin.sim, &["Power meter", "Live", "1234", "ANT+"]);
         twin.sim.checkpoint(&format!("sensor detail on {name}"));
         twin.guide(|sim| {
             sim.press(Role::Back);
@@ -379,15 +376,19 @@ fn the_sensor_pages_draw_on_both_test_panels() {
         shows(&twin.sim, &["NEARBY"]);
         twin.sim.checkpoint(&format!("scanning on {name}"));
         twin.guide(|sim| sim.wait_for("ID 31", seconds(20)).map(drop).unwrap());
-        shows(&twin.sim, &["NEARBY", "RADAR", "ID 31", "ID 777"]);
+        shows(&twin.sim, &["NEARBY", "RADAR", "31", "777"]);
         twin.sim.checkpoint(&format!("nearby on {name}"));
 
         twin.sim.press(Role::Back);
         twin.sim.expect_text("ADD SENSOR");
-        let list = composed_list(model, ScreenId::Sensors);
-        twin.sim.tap(model.width as u16 / 2, card_middle(&list, 1));
+        let row = twin
+            .sim
+            .screen()
+            .run("POWER")
+            .expect("the power meter's row");
+        twin.sim.tap(row.x as u16, row.y as u16 + 4);
         twin.sim.advance(seconds(1));
-        shows(&twin.sim, &["POWER METER", "BATTERY", "1234"]);
+        shows(&twin.sim, &["Power meter", "1234", "ANT+"]);
     }
 }
 
@@ -445,17 +446,6 @@ fn raise_pad(model: Model) -> vana::screens::chrome::Rect {
     pads.map(|placed| placed.rect.rect())
         .next()
         .expect("the plus pad")
-}
-
-/// The page of cards built-in `id` scrolls on `model`'s panel.
-fn composed_list(model: Model, id: ScreenId) -> vana::screens::scroll::Layout {
-    let laid = Laid::new(id, model.device, Choices::default(), Flags::NONE, None);
-    *laid.expect("a built-in").page().expect("a list screen")
-}
-
-fn card_middle(list: &vana::screens::scroll::Layout, index: usize) -> u16 {
-    let (top, bottom) = list.span(index);
-    (list.top as i32 + (top + bottom) / 2) as u16
 }
 
 #[test]

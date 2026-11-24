@@ -56,7 +56,7 @@ fn a_zero_request_is_sent_once_and_the_offset_is_shown() {
     run(&mut runtime, &mut radio, 400, 500);
     let done = note(&runtime).unwrap();
     assert_eq!(done, CalibrationNote::Done(512));
-    assert_eq!(done.text().as_str(), "CALIBRATED OFFSET 512");
+    assert_eq!(done.text().as_str(), "Zeroed, offset 512");
 }
 
 #[test]
@@ -240,5 +240,5 @@ fn a_radio_stuck_on_an_earlier_message_asks_for_a_restart() {
     runtime.calibrate(power_meter(), &mut radio, 200);
     let note = note(&runtime).unwrap();
     assert_eq!(note, CalibrationNote::NeedsRestart);
-    assert_eq!(note.text().as_str(), "RESTART TO CALIBRATE");
+    assert_eq!(note.text().as_str(), "Restart to zero");
 }

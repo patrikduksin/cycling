@@ -1,17 +1,17 @@
 //! What the sensor pages show, as their tiles read it, and what a finger
 //! lands on.
 use super::menu::{Action, Menu, Mine, View, bars};
-use super::slot::{LinkStatus, Selected};
-use super::{CalibrationNote, MenuMessage};
+use super::slot::Selected;
+use super::{CalibrationNote, MenuMessage, names};
 use crate::compose::builtin::{Laid, ScreenId};
-use crate::compose::data::ListKind;
-use crate::compose::node::What;
-use crate::compose::registry::SENSOR_SEARCH;
+use crate::compose::data::Metric;
+use crate::compose::registry::{self, ITEM, SENSOR_BACK, SENSOR_LIST, SENSOR_SEARCH, SENSOR_TITLE};
+use crate::compose::tile::Arg;
+use crate::compose::tiles::sensor_list;
 use crate::screens::Device;
-use crate::screens::chrome::{ACCENT, AMBER, GREEN, RED, SECONDARY, WHITE};
-use crate::screens::scroll;
+use crate::screens::theme::Tone;
 use crate::screens::workout::Text;
-use crate::sensors::ant::BatteryStatus;
+use crate::sensors::ant::device_type;
 use core::fmt::Write;
 use device_api::ant::Identity;
 use device_api::input::Role;
@@ -23,21 +23,124 @@ pub(super) enum Target {
     /// A nearby sensor, by discovery slot.
     Nearby(usize),
     Refresh,
-    /// A button cue: the tap acts as its button.
-    Cue(Role),
+    Key(Role),
 }
 
-/// An item of a sensor list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Item {
-    Saved(Selected),
+#[repr(u8)]
+pub enum List {
+    Sensors = 0,
+    Nearby = 1,
+}
+
+impl Arg for List {
+    fn decode(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Sensors),
+            1 => Some(Self::Nearby),
+            _ => None,
+        }
+    }
+
+    fn encode(self) -> u8 {
+        self as u8
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sensors => "SENSORS",
+            Self::Nearby => "NEARBY",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Part {
+    Detail = 0,
+    Forget = 1,
+}
+
+impl Arg for Part {
+    fn decode(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Detail),
+            1 => Some(Self::Forget),
+            _ => None,
+        }
+    }
+
+    fn encode(self) -> u8 {
+        self as u8
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Detail => "DETAIL",
+            Self::Forget => "FORGET",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Row {
+    /// A saved sensor; `new` when the search just before added it.
+    Saved { sensor: Selected, new: bool },
     /// SENSORS' last row, which opens NEARBY.
     Add,
+    /// A sensor this search added, folded into a short row.
+    Added(Selected),
     Found {
         identity: Identity,
         present: bool,
         bars: u8,
     },
+}
+
+impl Row {
+    pub const fn short(self) -> bool {
+        matches!(self, Self::Added(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Reading {
+    pub metric: Metric,
+    /// Over the number on a row.
+    pub tag: &'static str,
+    /// After the number on the page, its space included.
+    pub unit: &'static str,
+    pub tone: Tone,
+}
+
+const fn read(metric: Metric, tag: &'static str, unit: &'static str, tone: Tone) -> Reading {
+    Reading {
+        metric,
+        tag,
+        unit,
+        tone,
+    }
+}
+
+pub const fn reading(kind: u8) -> Option<Reading> {
+    Some(match kind {
+        device_type::POWER => read(Metric::Power, "W", " W", Tone::Power),
+        device_type::HEART_RATE => read(Metric::Heart, "BPM", " bpm", Tone::Heart),
+        device_type::SPEED_CADENCE | device_type::CADENCE => {
+            read(Metric::Cadence, "RPM", " rpm", Tone::Cadence)
+        }
+        device_type::SPEED => read(Metric::Speed, "KM/H", " km/h", Tone::Speed),
+        _ => return None,
+    })
+}
+
+#[derive(Clone)]
+pub struct Search {
+    pub text: Text<32>,
+    pub tone: Tone,
+    pub added: usize,
+    /// The search runs with nothing added and nothing wrong.
+    pub wake: bool,
 }
 
 impl Menu {
@@ -53,88 +156,105 @@ impl Menu {
         }
     }
 
-    pub fn count(&self, list: ListKind) -> u16 {
-        let count = match list {
-            ListKind::Sensors => self.state.rows().count(),
-            ListKind::Nearby => self.state.nearby().count(),
-            _ => 0,
-        };
-        count as u16
-    }
-
-    /// The item the buttons act on, while its list shows.
-    pub fn focus(&self, list: ListKind) -> Option<u16> {
+    /// The rows of `list`, top to bottom. NEARBY lists what this search
+    /// added first, then what it found, strongest first.
+    pub fn rows(&self, list: List) -> impl Iterator<Item = Row> + '_ {
         let state = &self.state;
-        let index = match (list, state.view) {
-            (ListKind::Sensors, View::Mine(row)) => state.rows().position(|r| r == row),
-            (ListKind::Nearby, View::Nearby(Some(slot))) => {
-                state.nearby().position(|index| index == slot)
-            }
-            _ => None,
-        };
-        index.map(|index| index as u16)
-    }
-
-    pub fn item(&self, list: ListKind, index: u16) -> Option<Item> {
-        let state = &self.state;
-        let index = usize::from(index);
-        match list {
-            ListKind::Sensors => match state.rows().nth(index)? {
-                Mine::Saved(slot) => state.selected[slot].map(Item::Saved),
-                Mine::Add => Some(Item::Add),
-            },
-            ListKind::Nearby => {
-                let slot = state.nearby().nth(index)?;
+        let mine = (list == List::Sensors).then(|| {
+            state.rows().filter_map(|row| match row {
+                Mine::Saved(slot) => state.selected[slot].map(|sensor| Row::Saved {
+                    sensor,
+                    new: state.added.contains(&sensor.identity),
+                }),
+                Mine::Add => Some(Row::Add),
+            })
+        });
+        let nearby = list == List::Nearby;
+        let added = nearby.then(|| self.just_added().map(Row::Added));
+        let found = nearby.then(|| {
+            state.nearby().filter_map(|slot| {
                 let found = state.discoveries[slot]?;
-                Some(Item::Found {
+                Some(Row::Found {
                     identity: found.identity,
                     present: state.present[slot],
                     bars: bars(found.rssi),
                 })
+            })
+        });
+        let mine = mine.into_iter().flatten();
+        mine.chain(added.into_iter().flatten())
+            .chain(found.into_iter().flatten())
+    }
+
+    fn just_added(&self) -> impl Iterator<Item = Selected> + '_ {
+        let state = &self.state;
+        state
+            .added
+            .iter()
+            .filter_map(|peer| state.selected[state.slot_of(*peer)?])
+    }
+
+    /// The row of `list` the keys act on, while it shows.
+    pub fn focus(&self, list: List) -> Option<usize> {
+        let state = &self.state;
+        match (list, state.view) {
+            (List::Sensors, View::Mine(row)) => state.rows().position(|r| r == row),
+            (List::Nearby, View::Nearby(Some(slot))) => {
+                let found = state.nearby().position(|index| index == slot)?;
+                Some(self.just_added().count() + found)
             }
             _ => None,
         }
     }
 
-    /// SENSORS' title: trouble with the buttons, the radio or saving in
-    /// amber, else its name.
-    pub fn title(&self) -> (&'static str, u16) {
+    pub fn title(&self, list: List) -> (&'static str, Tone) {
         let state = &self.state;
-        match state.notice.or(state.message.filter(|m| m.on_sensors())) {
-            Some(problem) => (problem.short(), AMBER),
-            None => ("SENSORS", WHITE),
+        let trouble = state.notice.or(state.message.filter(|m| m.on_sensors()));
+        match (list, trouble) {
+            (List::Sensors, Some(problem)) => (problem.short(), Tone::Warn),
+            (List::Sensors, None) => ("SENSORS", Tone::Text),
+            (List::Nearby, _) => ("NEARBY", Tone::Text),
         }
     }
 
-    pub const fn scanning(&self) -> bool {
-        self.state.scanning
-    }
-
-    pub fn search_line(&self) -> (Text<24>, u16) {
+    pub fn search(&self) -> Search {
         let state = &self.state;
-        let routine = if state.scanning { ACCENT } else { SECONDARY };
-        let mut line = Text::new();
+        let added = self.just_added().count();
         let message = state.notice.or(state.message);
         let full = state.full() && message.is_none_or(MenuMessage::routine);
-        let (text, color) = match message {
-            _ if full => (MenuMessage::SlotsFull.short(), AMBER),
-            Some(message) if !message.routine() => (message.short(), AMBER),
-            Some(MenuMessage::Added) => {
-                let _ = write!(line, "{} ADDED", state.added.len());
-                return (line, GREEN);
-            }
+        let (text, tone) = match message {
+            _ if full => (MenuMessage::SlotsFull.short(), Tone::Warn),
+            Some(message) if !message.routine() => (message.short(), Tone::Warn),
             Some(MenuMessage::ScanDone) if state.nearby().next().is_none() => {
-                ("NO SENSORS FOUND", routine)
+                ("NO SENSORS FOUND", Tone::Sub)
             }
-            Some(message) => (message.short(), routine),
-            None if state.scanning => (MenuMessage::Scanning.short(), routine),
-            None => ("FIND NEARBY", routine),
+            Some(MenuMessage::Added | MenuMessage::Scanning) | None if state.scanning => {
+                ("SEARCHING", Tone::Info)
+            }
+            Some(MenuMessage::Added) | None => ("TAP HERE TO SEARCH", Tone::Sub),
+            Some(message) => (message.short(), Tone::Info),
         };
+        let mut line = Text::new();
         let _ = line.push_str(text);
-        (line, color)
+        Search {
+            wake: added == 0 && text == "SEARCHING",
+            text: line,
+            tone,
+            added,
+        }
     }
 
-    /// The saved sensor a detail page or FORGET SENSOR? shows.
+    pub fn hint(&self) -> &'static str {
+        if self.state.full() {
+            "BACK, THEN FORGET ONE"
+        } else if self.state.added.is_empty() {
+            "TAP TO ADD ONE OR MORE"
+        } else {
+            "BACK WHEN DONE"
+        }
+    }
+
+    /// The saved sensor a detail page or FORGET? shows.
     pub fn shown(&self) -> Option<Selected> {
         match self.state.view {
             View::Detail(slot) | View::Forget(slot) => self.state.selected[slot],
@@ -151,6 +271,28 @@ impl Menu {
             }
             _ => None,
         }
+    }
+
+    pub fn row_name(&self, sensor: Selected) -> Text<24> {
+        let kind = sensor.identity.device_type;
+        let twin = self
+            .state
+            .selected_peers()
+            .any(|other| other.identity != sensor.identity && other.identity.device_type == kind);
+        let mut name = Text::new();
+        match sensor.product.maker() {
+            Some(maker) if twin => {
+                let _ = name.push_str(maker);
+            }
+            _ if twin => {
+                let label = self.identity_label(sensor.identity);
+                let _ = write!(name, "{} {}", names(kind).short, label.as_str());
+            }
+            _ => {
+                let _ = name.push_str(names(kind).short);
+            }
+        }
+        name
     }
 
     /// The device number, with the transmission type when another known peer
@@ -176,16 +318,6 @@ impl Menu {
         })
     }
 
-    /// How far the list `laid` draws is scrolled: just far enough that its
-    /// focus shows whole.
-    pub fn offset(&self, laid: &Laid) -> i32 {
-        let Some((list, page)) = drawn(laid) else {
-            return 0;
-        };
-        let focus = self.focus(list);
-        focus.map_or(0, |focus| page.reveal(usize::from(focus), 0))
-    }
-
     /// A tap at (`x`, `y`) on `laid`, the page shown on `device`'s panel.
     pub fn tap_at(
         &mut self,
@@ -199,63 +331,50 @@ impl Menu {
         self.state.tap(target, now)
     }
 
-    /// The cue, card or search line under (`x`, `y`).
     fn target(&self, laid: &Laid, device: &Device, x: usize, y: usize) -> Option<Target> {
         let mut cues = laid.controls().shown(laid.focus());
         if let Some(cue) = cues.find(|cue| cue.target(device).contains(x, y)) {
-            return Some(Target::Cue(cue.role));
+            return Some(Target::Key(cue.role));
         }
-        if laid
-            .box_of(SENSOR_SEARCH)
-            .is_some_and(|search| search.contains(x, y))
-        {
+        let under = |component| laid.box_of(component).is_some_and(|b| b.contains(x, y));
+        if under(SENSOR_TITLE) || under(SENSOR_BACK) {
+            return Some(Target::Key(Role::Back));
+        }
+        if under(SENSOR_SEARCH) {
             return Some(Target::Refresh);
         }
-        let (list, page) = drawn(laid)?;
-        let count = usize::from(self.count(list));
-        let index = page.card_at(count, self.offset(laid), x, y)?;
-        let state = &self.state;
-        match list {
-            ListKind::Nearby => state.nearby().nth(index).map(Target::Nearby),
-            _ => state.rows().nth(index).map(Target::Mine),
+        let mut tiles = laid.tiles();
+        let (component, arg, placed) =
+            tiles.find(|(_, _, placed)| placed.rect.rect().contains(x, y))?;
+        match component {
+            ITEM => {
+                let action = registry::tile(ITEM).action(arg)?;
+                let buttons = laid.buttons();
+                let roles = [
+                    (Role::Move, buttons.move_),
+                    (Role::Act, buttons.act),
+                    (Role::Back, buttons.back),
+                ];
+                let (role, _) = roles
+                    .into_iter()
+                    .find(|(_, button)| button.is_some_and(|button| button.action == action))?;
+                Some(Target::Key(role))
+            }
+            SENSOR_LIST => {
+                let list = List::decode(arg)?;
+                let rows = sensor_list::placed(self, list, placed.rect.rect(), &device.scaled);
+                let (index, _, _) = rows.into_iter().find(|(_, _, rect)| rect.contains(x, y))?;
+                let state = &self.state;
+                match list {
+                    List::Sensors => state.rows().nth(index).map(Target::Mine),
+                    List::Nearby => {
+                        let found = index.checked_sub(self.just_added().count())?;
+                        state.nearby().nth(found).map(Target::Nearby)
+                    }
+                }
+            }
+            _ => None,
         }
-    }
-}
-
-/// The list `laid`'s tree scrolls and its page of cards: what draws is what
-/// a tap reads.
-fn drawn(laid: &Laid) -> Option<(ListKind, &scroll::Layout)> {
-    let node = laid.scroll()?.node;
-    match laid.screen().tree().nodes()[usize::from(node)].what()? {
-        What::Scroll { list } => Some((list, laid.page()?)),
-        _ => None,
-    }
-}
-
-impl Selected {
-    /// Its state, as its row and its page name it.
-    pub fn link(self) -> (&'static [u8], u16) {
-        let status = self.link_status();
-        let text = if status == LinkStatus::Live {
-            b"LIVE"
-        } else {
-            self.status_text()
-        };
-        (text, status.color())
-    }
-
-    /// Its battery on its row, only once it needs changing; its page has
-    /// the voltage.
-    pub fn battery_warning(self) -> Option<(&'static [u8], u16)> {
-        match self.battery?.status {
-            BatteryStatus::Critical => Some((b"BATTERY CRITICAL", RED)),
-            BatteryStatus::Low => Some((b"BATTERY LOW", AMBER)),
-            BatteryStatus::New | BatteryStatus::Good | BatteryStatus::Ok => None,
-        }
-    }
-
-    pub const fn live(self) -> bool {
-        matches!(self.link_status(), LinkStatus::Live)
     }
 }
 
@@ -277,7 +396,7 @@ impl Menu {
 /// tile's looks are measured on, so accept refuses a box that would cut
 /// them.
 pub mod widest {
-    use super::super::{CalibrationNote, Connection, MenuMessage, NAMES};
+    use super::super::{MenuMessage, NAMES};
     use firmware_shell::rendering::font::Face;
 
     /// The columns the widest of `texts` covers in `face`.
@@ -295,44 +414,15 @@ pub mod widest {
         digits * widest.unwrap_or(0)
     }
 
-    pub fn name(face: &Face) -> usize {
-        of(face, NAMES)
-    }
-
-    /// A saved sensor's state, or the battery warning that takes its place.
-    pub fn state(face: &Face) -> usize {
-        let states = Connection::ALL.map(|connection| connection.text().as_bytes());
-        let warnings: [&[u8]; 3] = [b"LIVE", b"BATTERY LOW", b"BATTERY CRITICAL"];
-        of(face, states).max(of(face, warnings))
+    pub fn long_name(face: &Face) -> usize {
+        of(face, NAMES.map(|names| names.long.as_bytes()))
     }
 
     pub fn message(face: &Face) -> usize {
-        let shorts = MenuMessage::ALL.map(|message| message.short().as_bytes());
-        let added = digits(face, 2) + face.width(b" ADDED");
-        of(face, shorts).max(added)
-    }
-
-    /// What SENSORS' title says: its name, or the trouble it names there.
-    pub fn title(face: &Face) -> usize {
-        let trouble = MenuMessage::ALL
-            .into_iter()
-            .filter(|message| message.on_sensors());
-        let trouble = trouble.chain(MenuMessage::NOTICES);
-        let name: &[u8] = b"SENSORS";
         of(
             face,
-            trouble
-                .map(|message| message.short().as_bytes())
-                .chain([name]),
+            MenuMessage::ALL.map(|message| message.short().as_bytes()),
         )
-    }
-
-    /// A calibration note, any offset included.
-    pub fn calibration(face: &Face) -> usize {
-        let texts = CalibrationNote::ALL.map(CalibrationNote::text);
-        let notes = of(face, texts.iter().map(|text| text.as_bytes()));
-        let offset = face.fit_width(b"CALIBRATED OFFSET -") + digits(face, 5);
-        notes.max(offset)
     }
 
     /// A device number with its transmission type, such as "65535.255".

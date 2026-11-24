@@ -146,7 +146,10 @@ a phone-style screen's title. `TAG` (800, 11 px, capitals) is for ride-page
 field titles, zone tags and the top line's battery. `DIGITS_40`, `DIGITS_26`
 and `DIGITS_15` (700) hold the value characters for ride-grid digits, the %
 beside them and mid-size values, and the top line's elapsed time. A face
-without lowercase draws a lowercase letter as its capital.
+without lowercase draws a lowercase letter as its capital. `TAG`, `NOTE`,
+`LABEL` and `HEADING` draw a middle dot in the caret's slot, and
+`Face::glyph` reads a UTF-8 "·" there, so text writes "·" as it is; no
+screen writes a caret.
 
 `VALUE`, `LARGE` and `HERO` hold only ` +-./0123456789:%`. Units are a
 `CAPTION` in `SECONDARY`, bottom-aligned with the number and 6 px to its
@@ -354,42 +357,46 @@ Sensor icons are drawn on a 24-unit square with round caps and 2.4-unit
 strokes, one SVG each in `apps/vana/icons`. To change one, edit its SVG and
 run `uv run apps/vana/icons/generate.py`, which rewrites
 `apps/vana/src/screens/icons/art.rs`. The script renders each whole icon at
-every size a screen draws it, 22 px (Home, NEARBY), 26 px (SENSORS) and
-34 px (a sensor's pages), plus the 18 px refresh and plus marks and the
+every size a screen draws it, 22 px (Home and the sensor lists), 26 px (a
+sensor's page) and 34 px, plus the 18 px refresh and plus marks and the
 28 px replacement arrow, into 4-bit coverage cropped to the ink, about 7.8 KB
 in all. It stops if two parts that do not touch in the drawing come within a
 pixel of each other at any size; `--zoom DIR` writes 8x sheets to review.
 
 ## Sensors
 
-Sensors has two lists and the pages of one sensor, in the same rows and
-cards as everywhere else.
+The sensor screens are kit pages in both looks (`ScreenId::themed`). The
+two lists are glance rows under the status bar; a sensor's page and
+FORGET? are phone style.
 
-- SENSORS lists the saved sensors under its `TITLE`: an icon in its metric
-  colour, the name in `BODY`, and a `CAPTION` state under it in its state
-  colour (LIVE `GREEN`, SEARCHING `ACCENT`, NOT FOUND YET `AMBER`). A battery
-  that needs changing follows a dot: BATTERY LOW in `AMBER` or BATTERY
-  CRITICAL in `RED`, which turn a live sensor's whole line their colour and
-  take its place where both do not fit. Any other battery says nothing on
-  the row; the sensor's page has it. ADD SENSOR, a card with a
-  green plus, is the last row and opens NEARBY. Rows have no card until focused. A save or
-  radio problem replaces the title in `AMBER`.
-- NEARBY is the only page that searches: it asks for a search as it
-  opens, and leaving it stops the search. Its title is in `TITLE` where
-  SENSORS has its own. A `CAPTION` line under it says how the search goes
-  (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND, how many
-  this visit added such as 2 ADDED in `GREEN`, or a problem in
-  `AMBER`) beside the refresh mark, which a tap uses to search
-  again. Each nearby sensor not saved yet is a card under that line: its
-  icon in `SECONDARY`, the name, `ID 4321`, and a green plus.
-- Both lists scroll with their focus: the page moves only as far as keeps
-  the focused row above the bottom 8 px, so the title scrolls away under
-  the status bar on a long list.
-- A sensor's page and FORGET SENSOR? take the whole screen
-  with button cues. The sensor's page centres its icon on a `CARD` square,
-  the name, its state, BATTERY and ID cells (a `CAPTION` over the value;
-  the voltage in the colour of its urgency) and, on a power meter, the
-  calibration result with a grey hint under a failure.
+- SENSORS lists the saved sensors under a back chevron and its `HEADING`
+  title. A row is an icon in its metric's tone, the name in `LABEL`
+  capitals over a `TAG` state line in its state's tone (LIVE in `good`,
+  SEARCHING in `warn`, NOT IN RANGE in `sub`), and on the right the unit
+  over the live reading in `DIGITS_26`, or `--` while the sensor sends
+  nothing. A live sensor's line adds its voltage, or a battery that wants
+  changing in its tone. A sensor the search just added says NEW. Two saved
+  sensors of one kind take their maker's name. ADD SENSOR, in `good` with
+  a plus, is the last row and opens NEARBY. A save or radio problem takes
+  the title's place in `warn`.
+- NEARBY is the only page that searches: it asks for a search as it opens,
+  and leaving it stops the search. A `TAG` line under its title says how
+  the search goes behind a dot (SEARCHING in `info`, or a problem in
+  `warn`); a tap on it searches again. Its right end says WAKE A SENSOR
+  until the search added one, then how many, such as 2 ADDED in `good`.
+  Found sensors are listed strongest signal first with signal bars; each
+  sensor added folds into a short row at the top that says LIVE with a
+  check. The hint under the list says what to do next.
+- Both lists are plain focus lists (`compose::tiles::sensor_list`): MOVE
+  steps the focus, a tap selects, and the rows start at the first that
+  lets the focused one show whole, at most five at once.
+- A sensor's page has its top line (back chevron, SENSORS and the clock),
+  its icon on a `raised` tile, its long name in `HEADING` and its maker in
+  `NOTE`, then a card of Status, Reading, Battery, ID and Link. Forget sits
+  over MOVE and, on a power meter, Zero over ACT; while a zero runs or just
+  ran, Status says how it went. FORGET? asks with a trash disc, says which
+  sensor, and puts Back over MOVE and Forget over ACT. Each button is the
+  kit's `item`; a tap on one acts as its key.
 
 ## Spacing and chrome
 

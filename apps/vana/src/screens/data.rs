@@ -62,9 +62,6 @@ impl Data for View<'_> {
         match list {
             ListKind::Workouts => self.picker().count() as u16,
             ListKind::Settings => self.sections.rows(self.cursor).0.len() as u16,
-            ListKind::Sensors | ListKind::Nearby => {
-                self.sensor_pages().map_or(0, |menu| menu.count(list))
-            }
         }
     }
 
@@ -87,11 +84,6 @@ impl Data for View<'_> {
                     pressed: self.pressed_setting(),
                 }
             }
-            ListKind::Sensors | ListKind::Nearby => Listed {
-                offset: self.scroll,
-                focus: self.sensor_pages().and_then(|menu| menu.focus(list)),
-                pressed: None,
-            },
         }
     }
 
@@ -101,7 +93,7 @@ impl Data for View<'_> {
                 let sections = self.sections;
                 sections.title(sections.section(self.cursor).0)
             }
-            ListKind::Workouts | ListKind::Sensors | ListKind::Nearby => list.name(),
+            ListKind::Workouts => list.name(),
         }
     }
 
@@ -144,7 +136,6 @@ impl Data for View<'_> {
                     chosen: false,
                 })
             }
-            ListKind::Sensors | ListKind::Nearby => None,
         }
     }
 
@@ -173,6 +164,10 @@ impl Data for View<'_> {
             gps: self.gps,
             battery: self.battery,
         }
+    }
+
+    fn clock(&self) -> &str {
+        self.time.as_str()
     }
 
     fn page(&self) -> PageData<'_> {

@@ -81,14 +81,26 @@ impl Tile for TopLine {
             cx: (4 * left + 2 * dot) as i32,
             cy: (4 * middle) as i32,
             radius: (2 * dot) as i32,
-            color: if data.recording() { theme.bad } else { theme.warn },
+            color: if data.recording() {
+                theme.bad
+            } else {
+                theme.warn
+            },
         });
         let line = at.face(LAYOUT.face.line);
         let mut time = Text::<12>::new();
         Metric::Elapsed.write(data.metric(Metric::Elapsed), &mut time);
         let base = middle + line.cap as usize / 2;
         let at_time = left + dot + px(at, space.gap);
-        out.fit(&[line], time.as_bytes(), right - at_time, at_time, base, Align::Left, theme.text);
+        out.fit(
+            &[line],
+            time.as_bytes(),
+            right - at_time,
+            at_time,
+            base,
+            Align::Left,
+            theme.text,
+        );
         let status = data.status();
         let tag = at.face(LAYOUT.face.tag);
         let mut x = right;
@@ -97,7 +109,15 @@ impl Tile for TopLine {
             let _ = write!(percent, "{}%", battery.percent.min(100));
             let base = middle + tag.cap as usize / 2;
             let color = battery_color(theme, battery);
-            let run = out.fit(&[tag], percent.as_bytes(), right - at_time, right, base, Align::Right, color);
+            let run = out.fit(
+                &[tag],
+                percent.as_bytes(),
+                right - at_time,
+                right,
+                base,
+                Align::Right,
+                color,
+            );
             x = run.left.saturating_sub(px(at, space.tight));
         }
         let icon = at.art.symbol(Symbol::Satellite);

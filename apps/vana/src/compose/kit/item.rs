@@ -52,10 +52,20 @@ fn group(spec: &Spec, at: &Scaled) -> (usize, usize) {
     let symbol = spec.symbol.map_or(0, |symbol| {
         at.art.symbol(symbol).ink(0, 0).width() + px(at, LAYOUT.space.tight)
     });
-    (symbol, at.face(LAYOUT.face.label).fit_width(spec.label.as_bytes()))
+    (
+        symbol,
+        at.face(LAYOUT.face.label).fit_width(spec.label.as_bytes()),
+    )
 }
 
-fn draw(button: Button, placed: &Placed, at: &Scaled, data: &dyn Data, focused: bool, out: &mut Canvas) {
+fn draw(
+    button: Button,
+    placed: &Placed,
+    at: &Scaled,
+    data: &dyn Data,
+    focused: bool,
+    out: &mut Canvas,
+) {
     let spec = button.spec();
     let theme = data.theme();
     let rect = placed.rect.rect();
@@ -97,7 +107,15 @@ fn draw(button: Button, placed: &Placed, at: &Scaled, data: &dyn Data, focused: 
         x += ink_box.width() + px(at, LAYOUT.space.tight);
     }
     let base = middle + label_face.cap as usize / 2;
-    out.fit(&[label_face], spec.label.as_bytes(), rect.right.saturating_sub(x), x, base, Align::Left, ink);
+    out.fit(
+        &[label_face],
+        spec.label.as_bytes(),
+        rect.right.saturating_sub(x),
+        x,
+        base,
+        Align::Left,
+        ink,
+    );
 }
 
 impl Tile for Item {

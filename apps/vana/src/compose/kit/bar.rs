@@ -17,7 +17,11 @@ pub enum Shows {
     /// One segment a zone.
     Zones(Effort),
     /// The metric's reading out of `full`, lit in `tone`.
-    Level { metric: Metric, full: i32, tone: Tone },
+    Level {
+        metric: Metric,
+        full: i32,
+        tone: Tone,
+    },
 }
 
 #[derive(Debug)]
@@ -86,14 +90,22 @@ impl Tile for Bar {
                 let pitch = (rect.width() + seam) / count;
                 for zone in 0..count {
                     let left = rect.left + zone * pitch;
-                    let right = if zone + 1 == count { rect.right } else { left + pitch - seam };
+                    let right = if zone + 1 == count {
+                        rect.right
+                    } else {
+                        left + pitch - seam
+                    };
                     let color = if zone < usize::from(lit) {
                         theme.zone(zone as u8 + 1)
                     } else {
                         theme.off
                     };
                     out.shape(Shape::Bar {
-                        rect: Rect { left, right, ..rect },
+                        rect: Rect {
+                            left,
+                            right,
+                            ..rect
+                        },
                         radius,
                         color,
                     });

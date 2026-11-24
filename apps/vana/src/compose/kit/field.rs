@@ -315,7 +315,10 @@ impl Tile for FieldTile {
                 let zone = data.zone(effort);
                 (zone, zone.and_then(|zone| theme.fill(effort, zone)))
             }
-            Fill::Steep => (None, data.metric(spec.metric).map(|tenths| theme.steep(tenths))),
+            Fill::Steep => (
+                None,
+                data.metric(spec.metric).map(|tenths| theme.steep(tenths)),
+            ),
         };
         let ink = match filled {
             Some((fill, ink)) => {
@@ -348,11 +351,27 @@ impl Tile for FieldTile {
         let mut title_right = right;
         if let Some(zone) = zone.filter(|_| look.tag && filled.is_some()) {
             let tag = tag(zone);
-            let run = out.fit(&[tag_face], tag.as_bytes(), right - x, right, base, Align::Right, ink);
+            let run = out.fit(
+                &[tag_face],
+                tag.as_bytes(),
+                right - x,
+                right,
+                base,
+                Align::Right,
+                ink,
+            );
             title_right = run.left.saturating_sub(px(at, space.tight));
         }
         let title = spec.title.as_bytes();
-        out.fit(&[tag_face], title, title_right.saturating_sub(x), x, base, Align::Left, ink);
+        out.fit(
+            &[tag_face],
+            title,
+            title_right.saturating_sub(x),
+            x,
+            base,
+            Align::Left,
+            ink,
+        );
         number(spec, look, at, data, (left, right, rect.bottom), ink, out);
     }
 }
@@ -379,6 +398,14 @@ fn number(
     let run = out.fit(&faces, number, width, left, base, Align::Left, ink);
     if percent {
         let after = run.left + run.line.face().ink_width(run.line.text());
-        out.fit(&[small], b"%", right.saturating_sub(after), after, base, Align::Left, ink);
+        out.fit(
+            &[small],
+            b"%",
+            right.saturating_sub(after),
+            after,
+            base,
+            Align::Left,
+            ink,
+        );
     }
 }

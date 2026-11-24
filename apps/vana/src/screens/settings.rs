@@ -97,10 +97,7 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
         &[Row::AutoPause, Row::AutoLap, Row::Wheel, Row::WheelMode],
     ),
     ("MAIN PAGE", &[Row::MainLeft, Row::MainRight]),
-    (
-        "RIDE PAGES",
-        &[Row::PageLap, Row::PageClimb, Row::PageMap],
-    ),
+    ("RIDE PAGES", &[Row::PageLap, Row::PageClimb, Row::PageMap]),
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",

@@ -156,13 +156,7 @@ impl RidePage {
     /// The pages of a free ride.
     pub const ALL: [Self; 4] = [Self::Main, Self::Lap, Self::Climb, Self::Map];
     /// The pages while a workout is chosen or running.
-    pub const TRAINING: [Self; 5] = [
-        Self::Workout,
-        Self::Main,
-        Self::Lap,
-        Self::Climb,
-        Self::Map,
-    ];
+    pub const TRAINING: [Self; 5] = [Self::Workout, Self::Main, Self::Lap, Self::Climb, Self::Map];
 
     /// The page as a trace names it.
     pub const fn name(self) -> &'static str {
@@ -246,11 +240,7 @@ fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
 impl Deck {
     /// The optional pages in Settings' order; a page turned back on returns
     /// to its place in it.
-    pub const OPTIONAL: [RidePage; 3] = [
-        RidePage::Lap,
-        RidePage::Climb,
-        RidePage::Map,
-    ];
+    pub const OPTIONAL: [RidePage; 3] = [RidePage::Lap, RidePage::Climb, RidePage::Map];
     /// Bytes a record stores: each optional page shown by its index, in
     /// order, then [`Self::END`].
     pub const LENGTH: usize = Self::OPTIONAL.len();
@@ -1050,7 +1040,10 @@ mod tests {
             .collect();
         // A field draws a grade's % as a run of its own after the number.
         let mut texts = runs.clone();
-        texts.extend(runs.windows(2).map(|pair| std::format!("{}{}", pair[0], pair[1])));
+        texts.extend(
+            runs.windows(2)
+                .map(|pair| std::format!("{}{}", pair[0], pair[1])),
+        );
         let mut line = std::string::String::new();
         shown(
             &mut line,
@@ -1079,7 +1072,11 @@ mod tests {
     #[test]
     fn each_page_declares_the_readings_it_draws() {
         for page in RidePage::ALL {
-            assert_eq!(page.readings().unwrap().to_vec(), drawn(Some(page)), "{page:?}");
+            assert_eq!(
+                page.readings().unwrap().to_vec(),
+                drawn(Some(page)),
+                "{page:?}"
+            );
         }
         assert_eq!(paused_readings().to_vec(), drawn(None), "paused");
     }

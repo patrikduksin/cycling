@@ -1,59 +1,58 @@
 use super::field::Field;
 use super::{field, grid};
 use crate::compose::input::Controls;
-use crate::compose::node::{Flags, Node, Size};
+use crate::compose::node::{Flags, Node, Size, What};
 use crate::compose::parse::Screen;
 use crate::compose::registry::{FIELD, RULE, tile};
 use crate::compose::solve::Solved;
+use crate::screens::chrome::Rect;
 use crate::screens::scaled::BASE;
 use std::vec::Vec;
 
-fn bytes(nodes: &[Node]) -> Vec<u8> {
-    nodes.iter().flat_map(|node| node.bytes()).collect()
-}
-
-/// A 2 × 3 grid's boxes: each field's, each rule's.
-fn solved() -> (Vec<(u8, u8, crate::screens::chrome::Rect)>, (usize, usize)) {
+/// A 2 × 3 grid's boxes on the base panel, each with its tile kind.
+fn solved() -> Vec<(u8, Rect)> {
     let rows = [
         [field(Field::Pwr), field(Field::Heart)],
         [field(Field::Spd), field(Field::Cad)],
         [field(Field::Dist), field(Field::Np)],
     ];
     let nodes: Vec<Node> = grid(&rows, Size::grow(1)).collect();
-    let screen = Screen::parse(0, &bytes(&nodes), &BASE, Controls::FREE).unwrap();
+    let bytes: Vec<u8> = nodes.iter().flat_map(|node| node.bytes()).collect();
+    let screen = Screen::parse(0, &bytes, &BASE, Controls::FREE).unwrap();
     let mut out = Solved::EMPTY;
     screen.solve(Flags::NONE, &mut out);
-    let boxes = out
-        .leaves()
+    out.leaves()
         .iter()
-        .map(|placed| {
-            let node = nodes[usize::from(placed.node)];
-            let crate::compose::node::What::Leaf { component, arg } = node.what().unwrap() else {
-                unreachable!("only leaves are placed");
-            };
-            (component, arg, placed.rect.rect())
+        .filter_map(|placed| match nodes[usize::from(placed.node)].what()? {
+            What::Leaf { component, .. } => Some((component, placed.rect.rect())),
+            _ => None,
         })
-        .collect();
-    (boxes, (BASE.panel.width, BASE.panel.height))
+        .collect()
 }
 
 #[test]
 fn a_grid_shares_its_room_evenly_and_its_rules_line_up() {
-    let (boxes, (width, height)) = solved();
-    let fields: Vec<_> = boxes.iter().filter(|(c, ..)| *c == FIELD).collect();
-    let rules: Vec<_> = boxes.iter().filter(|(c, ..)| *c == RULE).collect();
+    let boxes = solved();
+    let (width, height) = (BASE.panel.width, BASE.panel.height);
+    let kind = |want| -> Vec<Rect> {
+        boxes
+            .iter()
+            .filter(|(component, _)| *component == want)
+            .map(|(_, rect)| *rect)
+            .collect()
+    };
+    let (fields, rules) = (kind(FIELD), kind(RULE));
     assert_eq!(fields.len(), 6);
     assert_eq!(rules.len(), 3 + 2, "a rule in each row, one between rows");
-    let across: Vec<_> = rules.iter().filter(|(.., r)| r.height() == 1).collect();
-    let down: Vec<_> = rules.iter().filter(|(.., r)| r.width() == 1).collect();
+    let across: Vec<_> = rules.iter().filter(|r| r.height() == 1).collect();
+    let down: Vec<_> = rules.iter().filter(|r| r.width() == 1).collect();
     assert_eq!((across.len(), down.len()), (2, 3));
-    assert!(across.iter().all(|(.., r)| r.left == 0 && r.right == width));
-    assert!(down.windows(2).all(|pair| pair[0].2.left == pair[1].2.left));
-    let heights: Vec<usize> = fields.iter().map(|(.., r)| r.height()).collect();
-    assert!(heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 1, "{heights:?}");
-    let widths: Vec<usize> = fields.iter().map(|(.., r)| r.width()).collect();
-    assert!(widths.iter().max().unwrap() - widths.iter().min().unwrap() <= 1, "{widths:?}");
-    let bottom = boxes.iter().map(|(.., r)| r.bottom).max().unwrap();
+    assert!(across.iter().all(|r| r.left == 0 && r.right == width));
+    assert!(down.windows(2).all(|pair| pair[0].left == pair[1].left));
+    let spread = |sizes: Vec<usize>| sizes.iter().max().unwrap() - sizes.iter().min().unwrap();
+    assert!(spread(fields.iter().map(Rect::height).collect()) <= 1);
+    assert!(spread(fields.iter().map(Rect::width).collect()) <= 1);
+    let bottom = boxes.iter().map(|(_, r)| r.bottom).max().unwrap();
     assert_eq!(bottom, height, "the grid fills the panel");
 }
 

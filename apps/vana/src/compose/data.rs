@@ -2,8 +2,8 @@ use crate::ride::week::{DAYS, Weeks};
 use crate::screens::chrome::{
     ACCENT, Battery, CADENCE, GRADE, Gps, HEART, POWER, SECONDARY, SPEED, WHITE,
 };
-use crate::screens::theme::{self, Theme};
 use crate::screens::ride::{self, ClimbRoad as Road, LapBar, Training};
+use crate::screens::theme::{self, Theme};
 use crate::screens::workout::Text;
 use core::fmt::Write;
 

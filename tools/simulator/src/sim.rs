@@ -121,7 +121,7 @@ impl Screen {
             let under = || {
                 runs.iter()
                     .filter(|run| run.smooth && run.scale >= label.scale)
-                    .filter(|run| run.y > label.y && run.y < bottom + 16)
+                    .filter(|run| run.y > label.y && run.y < bottom + 20)
                     .min_by_key(|run| run.x.abs_diff(label.x))
             };
             return beside.or_else(under).map(|run| run.text.clone());

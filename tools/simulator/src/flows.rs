@@ -401,6 +401,19 @@ impl Sim {
         );
     }
 
+    /// Run until the panel shows its next frame, two seconds at most. A
+    /// page the ride brings up by itself is in the trace a few passes
+    /// before its first frame is on the panel.
+    pub fn next_frame(&mut self) {
+        let shown = self.device.display.0.borrow().submissions;
+        for _ in 0..200 {
+            self.advance(10);
+            if self.device.display.0.borrow().submissions != shown {
+                return;
+            }
+        }
+    }
+
     /// BottomLeft until the summary's page dots read `indicator`, such as "2/4".
     #[track_caller]
     pub fn summary_page(&mut self, indicator: &str) {

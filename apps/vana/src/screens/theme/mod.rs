@@ -77,22 +77,6 @@ pub enum Tone {
     Info,
 }
 
-impl Tone {
-    pub const ALL: [Self; 11] = [
-        Self::Text,
-        Self::Sub,
-        Self::Speed,
-        Self::Power,
-        Self::Heart,
-        Self::Cadence,
-        Self::Grade,
-        Self::Good,
-        Self::Warn,
-        Self::Bad,
-        Self::Info,
-    ];
-}
-
 impl Theme {
     pub const fn tone(&self, tone: Tone) -> u16 {
         match tone {

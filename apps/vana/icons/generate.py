@@ -48,7 +48,7 @@ SENSORS = [
 ]
 SENSOR_SIZES = [22, 26, 34]
 MARKS = [("refresh", 18), ("plus", 18), ("arrow", 28)]
-# Small symbols beside titles, in `Symbol` order.
+# Symbols beside titles and on buttons, in `Symbol` order.
 SYMBOLS = [
     ("power", 11),
     ("heart", 11),
@@ -66,6 +66,11 @@ SYMBOLS = [
     ("bars-1", 24),
     ("bars-2", 24),
     ("bars-3", 24),
+    ("pause", 22),
+    ("stop", 16),
+    ("play", 18),
+    ("check", 18),
+    ("tick", 14),
 ]
 
 TURN = (

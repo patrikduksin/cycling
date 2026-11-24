@@ -15,8 +15,8 @@ invariants! {
             if matches!(runtime.power.sheet, Sheet::TurningOff { .. }) && runtime.recorder_busy(),
         ConfirmOffWhileRecording: "turn-off question shown while recording"
             if matches!(runtime.power.sheet, Sheet::Confirm { .. }) && runtime.recorder_busy(),
-        SummaryWhileRiding: "summary shown while riding"
-            if runtime.navigation.page() == Page::Summary
+        DoneWhileRiding: "ride done shown while riding"
+            if runtime.navigation.page() == Page::Done
                 && runtime.ride.active().riding()
                 && runtime.ride.active().pending_action() != Some(Action::Finish),
         TwoRidingRides: "both journals riding"

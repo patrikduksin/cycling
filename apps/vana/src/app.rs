@@ -18,6 +18,7 @@ pub use course::{Crumb, MapFrame, MapWork, RideTrack, TRACK_CRUMBS, Timed};
 mod commands;
 mod course;
 mod cues;
+mod done;
 mod format;
 mod input;
 pub(crate) mod intent;
@@ -125,6 +126,8 @@ pub struct Runtime {
     motion: motion::Motion,
     shown: presentation::Shown,
     chart: view::Chart,
+    /// What Ride done shows, from the finish until the next one.
+    done: crate::screens::done::Done,
     alerts: crate::ride::alerts::Alerts,
     track: Option<&'static mut course::RideTrack>,
     /// The screens the rider changed. Until the device attaches their memory
@@ -226,6 +229,7 @@ impl Runtime {
             motion: motion::Motion::default(),
             shown: presentation::Shown::default(),
             chart: view::Chart::default(),
+            done: crate::screens::done::Done::default(),
             alerts: crate::ride::alerts::Alerts::default(),
             track: None,
             overrides: None,

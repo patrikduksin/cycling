@@ -222,6 +222,7 @@ impl Runtime {
             | Page::Home
             | Page::EndRide
             | Page::DiscardRide
+            | Page::Done
             | Page::LoseRides
             | Page::Workouts => 0,
         };
@@ -247,6 +248,7 @@ impl Runtime {
             Page::Sensors => Some(Control::Menu(point)),
             _ if composed.is_some() => composed,
             _ if key.is_some() => key,
+            Page::Done => Some(Control::Key(device_api::input::Role::Act)),
             Page::Ride if paused_screen => None,
             // The course sign floats over every ride page, a region of the
             // screen rather than a tile of its tree.

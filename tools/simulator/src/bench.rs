@@ -122,7 +122,7 @@ pub(crate) mod scenes {
         pub reach: fn() -> Sim,
     }
 
-    pub static SCENES: [Scene; 25] = [
+    pub static SCENES: [Scene; 24] = [
         Scene {
             name: "home",
             reach: home,
@@ -136,8 +136,8 @@ pub(crate) mod scenes {
             reach: climb,
         },
         Scene {
-            name: "summary",
-            reach: summary,
+            name: "ride done",
+            reach: ride_done,
         },
         Scene {
             name: "sensors list",
@@ -198,10 +198,6 @@ pub(crate) mod scenes {
         Scene {
             name: "sensor detail",
             reach: sensor_detail,
-        },
-        Scene {
-            name: "summary page 2",
-            reach: summary_second,
         },
         Scene {
             name: "boot",
@@ -338,7 +334,7 @@ pub(crate) mod scenes {
         sim
     }
 
-    fn summary() -> Sim {
+    fn ride_done() -> Sim {
         let mut sim = rider(false);
         sim.start_ride();
         sim.ride_at(28.0, 230.0, 142.0, 88.0);
@@ -523,14 +519,14 @@ pub(crate) mod scenes {
     fn paused() -> Sim {
         let mut sim = riding(30);
         sim.pause_ride();
-        sim.expect_text("PAUSED");
+        sim.expect_text("Paused");
         sim
     }
 
     fn end_ride() -> Sim {
         let mut sim = paused();
         sim.press(Role::Back);
-        sim.expect_text("END RIDE?");
+        sim.expect_text("End ride?");
         sim
     }
 
@@ -546,12 +542,6 @@ pub(crate) mod scenes {
         sim.home("SENSORS");
         sim.wait_for("LIVE", seconds(20)).unwrap();
         sim.open_sensor_detail("POWER METER");
-        sim
-    }
-
-    fn summary_second() -> Sim {
-        let mut sim = summary();
-        sim.swipe_next();
         sim
     }
 

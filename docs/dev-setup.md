@@ -189,7 +189,7 @@ posts anything.
   ```
 
 - The invariants are rules that must hold after every pass, such as "both
-  journals riding" or "summary shown while riding". VANA states them in
+  journals riding" or "ride done shown while riding". VANA states them in
   `apps/vana/src/app/invariants.rs` and
   `apps/vana/src/ride/recorder/invariants.rs`, compiled for tests and for the
   `invariants` feature and never for a device. The simulator checks them

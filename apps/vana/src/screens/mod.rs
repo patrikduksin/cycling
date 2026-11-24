@@ -5,6 +5,7 @@ pub mod check;
 pub mod chrome;
 pub mod cue;
 pub(crate) mod data;
+pub mod done;
 pub mod format;
 pub mod home;
 pub mod icons;

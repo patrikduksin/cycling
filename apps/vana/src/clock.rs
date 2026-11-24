@@ -20,6 +20,41 @@ impl Local {
     pub const fn of_day(self) -> u64 {
         self.0 % DAY as u64
     }
+
+    pub fn day(self) -> Day {
+        let days = (self.0 / DAY as u64) as i64;
+        let (_, month, date) = civil(days);
+        Day {
+            // 1970-01-01 was a Thursday.
+            weekday: ((days + 4) % 7) as u8,
+            date,
+            month,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Day {
+    /// From Sunday, 0.
+    pub weekday: u8,
+    /// Of the month, from 1.
+    pub date: u8,
+    /// From January, 1.
+    pub month: u8,
+}
+
+impl Day {
+    pub const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    pub const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    /// `Sun 24 Nov`.
+    pub fn write(self, out: &mut impl core::fmt::Write) -> core::fmt::Result {
+        let weekday = Self::WEEKDAYS[usize::from(self.weekday)];
+        let month = Self::MONTHS[usize::from(self.month - 1)];
+        write!(out, "{weekday} {} {month}", self.date)
+    }
 }
 
 /// The time zone the clock keeps.
@@ -326,5 +361,13 @@ mod tests {
             let (year, month, day) = civil(days);
             assert_eq!(days_from_civil(year, month, day), days);
         }
+    }
+
+    #[test]
+    fn a_day_reads_as_its_weekday_date_and_month() {
+        let mut text = std::string::String::new();
+        let sunday = (days_from_civil(2026, 11, 22) * DAY) as u64;
+        Local(sunday + 3_600).day().write(&mut text).unwrap();
+        assert_eq!(text, "Sun 22 Nov");
     }
 }

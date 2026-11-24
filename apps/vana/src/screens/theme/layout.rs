@@ -23,6 +23,8 @@ pub const LAYOUT: Layout = Layout {
         stroke: 2,
         marker: 10,
         chart: 40,
+        lead: 30,
+        small_disc: 24,
     },
     radius: Radius {
         button: 14,

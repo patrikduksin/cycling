@@ -36,6 +36,7 @@ use crate::ride::laps::{AutoLap, Lap, Laps};
 use crate::ride::log::{Altitude, Sample, Status};
 use crate::ride::medium::Medium;
 use crate::ride::metrics::Step;
+use crate::ride::power_trace::PowerTrace;
 use crate::ride::recorder::{Action, Recorder, Refused, ResultEvent};
 use crate::ride::settle::{Hide, Settled};
 use crate::ride::storage::RideStorage;
@@ -105,6 +106,8 @@ pub(crate) struct Ride {
     /// Altitude over distance for the summary's chart, kept and reset with
     /// `totals`.
     trace: Trace,
+    /// Power over the whole ride for Ride done, kept and reset with `totals`.
+    power: PowerTrace,
     /// Climbs finished this ride.
     climbs_done: u16,
     /// Climb detection and the elevation profile, fed and reset with `totals`.
@@ -196,6 +199,7 @@ impl Default for Ride {
             counted_ms: 0,
             laps: Laps::default(),
             zone_time: ZoneTime::default(),
+            power: PowerTrace::default(),
             efforts: Efforts::default(),
             trace: Trace::default(),
             climbs_done: 0,
@@ -253,6 +257,10 @@ impl Ride {
 
     pub(crate) fn zone_time(&self) -> &ZoneTime {
         &self.zone_time
+    }
+
+    pub(crate) fn power_trace(&self) -> &PowerTrace {
+        &self.power
     }
 
     pub(crate) fn efforts(&self) -> &Efforts {
@@ -551,6 +559,7 @@ impl Ride {
         self.zone_time = ZoneTime::default();
         self.efforts = Efforts::default();
         self.trace.reset();
+        self.power = PowerTrace::default();
     }
 
     pub(crate) fn scanning(&self) -> bool {
@@ -644,6 +653,7 @@ impl Ride {
         self.totals
             .add(credited, distance_mm, &sample, pressure_centi_pa);
         self.zone_time.add(credited, &sample, profile);
+        self.power.add(credited, sample.power_watts);
         if let Some(watts) = sample.power_watts
             && !cut_short
         {
@@ -1033,6 +1043,7 @@ impl why::State for Ride {
         out.field("totals", &self.totals);
         out.field("counted_ms", &self.counted_ms);
         out.field("zone_time", &self.zone_time);
+        out.field("power", &self.power);
         out.field("efforts", &self.efforts);
         out.field("climbs_done", &self.climbs_done);
         out.field("settled", &self.settled);

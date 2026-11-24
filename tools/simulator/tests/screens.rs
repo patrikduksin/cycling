@@ -316,22 +316,54 @@ fn a_free_ride() {
     });
     walk.cell("paused", "free-ride");
     walk.guide(|sim| {
-        sim.press(Role::Back);
-        sim.expect_text("END RIDE?");
+        sim.press(Role::Move);
+        sim.expect_text("End ride?");
     });
     walk.cell("end-ride", "free-ride");
     walk.guide(|sim| {
-        sim.press(Role::Move);
-        sim.expect_text("DISCARD RIDE?");
-    });
-    walk.cell("discard-ride", "free-ride");
-    walk.guide(|sim| {
-        sim.press(Role::Back);
-        sim.expect_text("END RIDE?");
         sim.press(Role::Act);
-        sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
+        sim.wait_for("Ride saved", seconds(5)).unwrap();
     });
-    walk.cell("summary", "overview");
+    walk.cell("ride-done", "route");
+}
+
+#[test]
+fn an_auto_pause() {
+    let mut walk = riding(with_files);
+    walk.all(|sim| sim.ride_at(0.0, 0.0, 120.0, 0.0));
+    walk.guide(|sim| {
+        sim.wait_for("Auto paused", seconds(30)).unwrap();
+    });
+    walk.cell("paused", "auto");
+}
+
+#[test]
+fn ride_done_pictures() {
+    let mut walk = riding(with_files);
+    walk.ride_to(5_200.0);
+    walk.guide(Sim::stop_ride);
+    walk.cell("ride-done", "loop");
+
+    for (variant, kinds) in [("indoor", &KINDS[..]), ("distance", &["SPEED/CAD"][..])] {
+        let mut walk = Walk::paired(with_files, kinds);
+        walk.all(|sim| {
+            sim.init_bulk();
+            sim.set_gps_fix(false);
+        });
+        walk.guide(Sim::start_ride);
+        for (seconds_on, watts) in [
+            (120, 150.0),
+            (60, 320.0),
+            (90, 200.0),
+            (60, 380.0),
+            (120, 140.0),
+        ] {
+            walk.all(|sim| sim.ride_at(30.0, watts, 150.0, 90.0));
+            walk.advance(seconds(seconds_on));
+        }
+        walk.guide(Sim::stop_ride);
+        walk.cell("ride-done", variant);
+    }
 }
 
 #[test]
@@ -370,18 +402,7 @@ fn a_climb_and_its_summary() {
     walk.all(|sim| sim.ride_at(20.0, 260.0, 150.0, 85.0));
     walk.ride_to(1800.0);
     walk.guide(Sim::stop_ride);
-    walk.cell("summary", "climb");
-    for (variant, text) in [
-        ("effort", "NP W"),
-        ("elevation", "DESCENT M"),
-        ("best-power", "BEST POWER W"),
-    ] {
-        walk.guide(|sim| {
-            sim.press(Role::Move);
-            sim.expect_text(text);
-        });
-        walk.cell("summary", variant);
-    }
+    walk.cell("ride-done", "climb");
 }
 
 #[test]

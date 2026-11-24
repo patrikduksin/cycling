@@ -30,14 +30,6 @@ impl Runtime {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn offer_shown(&self) -> bool {
-        matches!(
-            self.ftp_question(),
-            Some(crate::workout::ftp::Question::Summary(_))
-        )
-    }
-
     pub(super) fn answer_ftp_offer(&mut self, button: Role, now: u64) {
         let Some(offer) = self.summary_offer() else {
             return;

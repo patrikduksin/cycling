@@ -9,8 +9,8 @@ use crate::app::power::{AUTO_OFF_MS, Sheet};
 use crate::ride::current::Request;
 use crate::ride::log::Status;
 use crate::screens::chrome::Tone;
+use crate::screens::done::Kept;
 use crate::screens::power::Sheet as View;
-use crate::screens::ride::summary::Saving;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::HEART_RATE;
 use device_api::server::Method;
@@ -244,9 +244,6 @@ fn a_volatile_ride_is_protected_from_its_start_and_never_called_saved() {
     }
     runtime.input_received(press(Role::Back), now + 400, now + 400, &mut radio);
     assert_eq!(runtime.navigation.page(), Page::EndRide);
-    assert!(!runtime.can_discard(), "a hidden ride could never sync");
-    runtime.input_received(press(Role::Move), now + 800, now + 800, &mut radio);
-    assert_eq!(runtime.navigation.page(), Page::EndRide, "no DISCARD RIDE?");
     runtime.input_received(press(Role::Act), now + 1_200, now + 1_200, &mut radio);
     for step in 0..20 {
         tick(
@@ -257,8 +254,9 @@ fn a_volatile_ride_is_protected_from_its_start_and_never_called_saved() {
         );
     }
     now += 4_000;
-    assert_eq!(runtime.navigation.page(), Page::Summary);
-    assert_eq!(runtime.after(now).saving, Saving::Unsynced);
+    assert_eq!(runtime.navigation.page(), Page::Done);
+    runtime.refresh_done();
+    assert_eq!(runtime.done.kept(), Kept::Unsynced, "never called saved");
     assert_eq!(runtime.broken(), None);
 
     now = sync(&mut runtime, &mut journal, now);

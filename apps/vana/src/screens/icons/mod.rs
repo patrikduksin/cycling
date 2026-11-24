@@ -173,7 +173,7 @@ pub struct Art {
     pub arrow: &'static Icon,
     pub puck: &'static Icon,
     signs: &'static [[SignArt; 3]; 8],
-    symbols: &'static [Icon; 16],
+    symbols: &'static [Icon; 21],
 }
 
 impl Art {

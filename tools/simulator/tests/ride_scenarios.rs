@@ -755,6 +755,16 @@ fn main_page_power_is_a_three_second_average() {
     assert_eq!(seen.last(), Some(&500), "{seen:?}");
 }
 
+/// The number Ride done shows over `caption`, such as "5.0" over "distance".
+fn done_stat(sim: &Sim, caption: &str) -> Option<String> {
+    let runs = sim.screen().frame().read();
+    let label = runs.iter().find(|run| run.text == caption)?;
+    runs.iter()
+        .filter(|run| run.scale > label.scale && run.x == label.x && run.y < label.y)
+        .max_by_key(|run| run.y)
+        .map(|run| run.text.clone())
+}
+
 #[test]
 fn stats_page_totals_a_steady_ten_minutes() {
     let mut sim = rider();
@@ -770,22 +780,17 @@ fn stats_page_totals_a_steady_ten_minutes() {
     sim.expect_field("NP W", "200");
     sim.checkpoint("stats page after ten minutes");
 
-    // The summary keeps the totals; its pages wrap, TopLeft is Home.
+    // Ride done keeps the totals; TopLeft is Home.
     sim.stop_ride();
-    sim.expect_field("AVG W", "200");
-    sim.checkpoint("summary after saving");
-    sim.summary_page("2/4");
-    sim.expect_field("NP W", "200");
-    sim.press(Role::Move);
-    sim.press(Role::Move);
-    sim.press(Role::Move);
-    assert_eq!(sim.screen().page().as_deref(), Some("1/4"));
+    assert_eq!(done_stat(&sim, "distance").as_deref(), Some("5.0"));
+    assert_eq!(done_stat(&sim, "time").as_deref(), Some("0:10"));
+    sim.checkpoint("ride done after saving");
     sim.press(Role::Back);
     assert!(sim.on_home(), "{}", sim.screen().text());
 }
 
 #[test]
-fn the_summary_shows_calories_and_the_heart_rate_recovery_after_a_minute() {
+fn a_saved_ride_keeps_the_calories_of_its_work() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.start_ride();
@@ -793,41 +798,7 @@ fn the_summary_shows_calories_and_the_heart_rate_recovery_after_a_minute() {
     sim.advance(minutes(10));
     sim.stop_ride();
     // 200 W for ten minutes is 120 kJ, about 120 kcal.
-    // A saved ride with altitude has four pages; the effort page is second.
-    sim.press(Role::Move);
-    sim.expect_field("WORK KJ", "120");
-    sim.expect_field("KCAL", "120");
-    sim.expect_text("HR RECOVERY");
-    sim.expect_text("MEASURING");
-    sim.checkpoint("summary measuring heart rate recovery");
-
-    // The rider stops pedalling and the strap reads lower a minute on.
-    sim.ride_at(0.0, 0.0, 142.0, 0.0);
-    sim.advance(seconds(45));
-    sim.expect_text("MEASURING");
-    sim.advance(seconds(30));
-    sim.expect_text("-28 BPM");
-    sim.expect_no_text("MEASURING");
-    sim.checkpoint("summary with heart rate recovery");
-}
-
-#[test]
-fn a_ble_strap_gets_a_recovery_after_the_ride_is_saved() {
-    let mut sim = rider();
-    sim.ble_heart_strap(true);
-    sim.select_ble_heart_strap();
-    sim.start_ride();
-    sim.ride_at(30.0, 200.0, 160.0, 90.0);
-    sim.wait_for_field("HEART BPM", "160", seconds(30));
-    sim.advance(minutes(2));
-    sim.stop_ride();
-    // A saved ride with altitude has four pages; the effort page is second.
-    sim.press(Role::Move);
-    sim.expect_text("MEASURING");
-    sim.ride_at(0.0, 0.0, 130.0, 0.0);
-    sim.advance(seconds(70));
-    sim.expect_text("-30 BPM");
-    sim.checkpoint("summary with ble heart rate recovery");
+    assert_eq!(saved_session(&mut sim)[&11], 120, "FIT kcal");
 }
 
 #[test]
@@ -886,40 +857,6 @@ fn wifi_config_and_forget_wait_for_a_pending_wifi_operation() {
 }
 
 #[test]
-fn sitting_out_a_long_pause_before_ending_measures_nothing() {
-    let mut sim = rider();
-    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    sim.start_ride();
-    sim.ride_at(30.0, 200.0, 170.0, 90.0);
-    sim.advance(minutes(2));
-    sim.pause_ride();
-    sim.ride_at(0.0, 0.0, 100.0, 0.0);
-    sim.advance(minutes(3));
-    sim.stop_ride();
-    // A saved ride with altitude has four pages; the effort page is second.
-    sim.press(Role::Move);
-    sim.expect_text("KCAL");
-    sim.advance(seconds(70));
-    sim.expect_no_text("HR RECOVERY");
-}
-
-#[test]
-fn a_ride_without_a_heart_strap_shows_no_recovery() {
-    let mut sim = rider();
-    sim.pair(&["POWER METER", "SPEED/CAD"]);
-    sim.start_ride();
-    sim.ride_at(30.0, 200.0, 0.0, 90.0);
-    sim.advance(minutes(2));
-    sim.stop_ride();
-    // A saved ride with altitude has four pages; the effort page is second.
-    sim.press(Role::Move);
-    sim.expect_text("KCAL");
-    sim.advance(seconds(90));
-    sim.expect_no_text("HR RECOVERY");
-    sim.expect_no_text("MEASURING");
-}
-
-#[test]
 fn ascent_counts_the_climbs_of_a_hilly_loop() {
     let mut sim = Sim::new().boot();
     sim.need(Need::Barometer);
@@ -956,18 +893,9 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     // The exports carry the barometric elevation: a 600 m start, up to 650 m,
     // down to 550 m, and the session's ascent and descent.
     sim.stop_ride();
-    let live = sim.screen().field("ASCENT M").unwrap();
-    println!("ascent live summary: {live} m");
-    expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
-    sim.checkpoint("summary overview after the hilly lap");
-    sim.swipe_next();
-    sim.swipe_next();
-    sim.expect_text("DESCENT M");
-    expect_near(&mut sim, "MIN M", 550.0, 5.0);
-    expect_near(&mut sim, "MAX M", 650.0, 5.0);
-    expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
-    expect_near(&mut sim, "DESCENT M", 100.0, 5.0);
-    sim.checkpoint("summary elevation profile of the hilly lap");
+    let climbed: f64 = done_stat(&sim, "climbed").unwrap().parse().unwrap();
+    assert!((95.0..=105.0).contains(&climbed), "climbed {climbed} m");
+    sim.checkpoint("ride done after the hilly lap");
     let rides = sim.rides();
     let ride = &rides[0];
     let metres: Vec<f64> = ride
@@ -999,6 +927,17 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     let (ascent, descent) = (session[&22], session[&23]);
     assert!((90..=110).contains(&ascent), "FIT ascent {ascent} m");
     assert!((90..=110).contains(&descent), "FIT descent {descent} m");
+}
+
+/// The FIT session of the newest saved ride, its fields by number.
+fn saved_session(sim: &mut Sim) -> std::collections::BTreeMap<u8, u64> {
+    let fit = sim
+        .rides()
+        .last()
+        .expect("a saved ride")
+        .fit(&models::C606.product, Some(1_789_000_000_000))
+        .expect("a FIT file");
+    fit_messages(&fit, 18).remove(0)
 }
 
 /// Valid fields by number of every data message with this global number,
@@ -1212,28 +1151,9 @@ fn raising_ftp_in_settings_moves_the_same_watts_down_a_zone() {
     sim.checkpoint("250 W at FTP 250");
 }
 
-/// The KCAL on the summary's effort page, once it shows a number.
-fn summary_kcal(sim: &mut Sim) -> u32 {
-    sim.press(Role::Move);
-    sim.screen()
-        .field("KCAL")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or_else(|| panic!("no KCAL number; screen:\n{}", sim.screen().text()))
-}
-
 #[test]
-fn a_heart_rate_only_ride_shows_calories_once_the_body_is_set() {
+fn the_body_set_in_settings_survives_power_loss() {
     let mut sim = rider();
-    sim.pair(&["HEART RATE", "SPEED/CAD"]);
-    sim.start_ride();
-    sim.ride_at(30.0, 0.0, 140.0, 90.0);
-    sim.advance(minutes(10));
-    sim.stop_ride();
-    sim.press(Role::Move);
-    sim.expect_field("KCAL", "--");
-    sim.checkpoint("heart rate only, body not set: no calories");
-    go_home(&mut sim);
-
     sim.home("SETTINGS");
     sim.swipe_next();
     sim.expect_text("BODY");
@@ -1266,16 +1186,6 @@ fn a_heart_rate_only_ride_shows_calories_once_the_body_is_set() {
     sim.expect_text("2.9 W/KG");
     sim.checkpoint("settings: FTP with watts per kilogram");
     sim.wait_for("SAVED", seconds(5)).unwrap();
-    go_home(&mut sim);
-
-    sim.start_ride();
-    sim.ride_at(30.0, 0.0, 140.0, 90.0);
-    sim.advance(minutes(10));
-    sim.stop_ride();
-    // Keytel, male 30 y 75 kg at 140 bpm for ten minutes: 129.5 kcal.
-    let kcal = summary_kcal(&mut sim);
-    assert!((129..=130).contains(&kcal), "{kcal} kcal");
-    sim.checkpoint("heart rate only, body set: calories on the summary");
     go_home(&mut sim);
 
     sim.power_loss();
@@ -1472,9 +1382,8 @@ fn manual_laps(sim: &mut Sim) {
     sim.ride_at(24.0, 150.0, 130.0, 85.0);
     sim.advance(minutes(3));
     sim.stop_ride();
-    // The summary counts the three laps, the open one included.
-    sim.summary_page("4/4");
-    sim.expect_field("LAPS", "3");
+    // The saved ride counts the three laps, the open one included.
+    assert_eq!(saved_session(sim)[&26], 3, "FIT laps");
     let laps = fit_laps(sim);
     assert_eq!(laps.len(), 3);
     for (lap, km, km_h, watts, bpm) in [(1, 2.2, 33.0, 250.0, 150.0), (2, 1.2, 24.0, 150.0, 130.0)]
@@ -1588,8 +1497,7 @@ fn auto_lap_at_start_closes_a_lap_each_time_round_a_loop() {
     for centimetres in &distances[..3] {
         assert!((199_000..=207_000).contains(centimetres), "{distances:?}");
     }
-    sim.summary_page("4/4");
-    sim.expect_field("LAPS", "4");
+    assert_eq!(saved_session(&mut sim)[&26], 4, "FIT laps");
 }
 
 #[test]
@@ -1598,8 +1506,7 @@ fn auto_lap_at_start_counts_each_loop_once_through_gps_jitter() {
     sim.advance(minutes(12) + seconds(30));
     sim.stop_ride();
     assert_eq!(position_laps(&mut sim), 3);
-    sim.summary_page("4/4");
-    sim.expect_field("LAPS", "4");
+    assert_eq!(saved_session(&mut sim)[&26], 4, "FIT laps");
 }
 
 /// Laps found against true loops, and how far from the start the rider was
@@ -1672,8 +1579,7 @@ fn a_second_lap_press_within_three_seconds_is_ignored() {
     sim.advance(seconds(3));
     sim.lap(2);
     sim.stop_ride();
-    sim.summary_page("4/4");
-    sim.expect_field("LAPS", "3");
+    assert_eq!(saved_session(&mut sim)[&26], 3, "FIT laps");
 }
 
 #[test]
@@ -1690,33 +1596,33 @@ fn ending_a_ride_needs_a_pause_first() {
     // Recording, TopLeft laps however often it is pressed.
     for _ in 0..3 {
         sim.press(Role::Back);
-        sim.expect_no_text("END RIDE?");
+        sim.expect_no_text("End ride?");
     }
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=recording"), "{status}");
 
     // Paused, the whole screen says so; TopLeft asks, BACK keeps riding.
     sim.pause_ride();
-    sim.expect_text("RIDE TIME");
+    sim.expect_text("Ride time");
     sim.checkpoint("paused");
     sim.press(Role::Back);
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     assert_eq!(sim.vana_page(), "end_ride");
     sim.checkpoint("end ride?");
     // The question waits; nothing ends the ride but an answer.
     sim.advance(seconds(10));
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=paused"), "{status}");
     sim.press(Role::Back);
-    sim.expect_text("PAUSED");
-    sim.expect_no_text("END RIDE?");
-    // Asked again and answered with ACT: saved, then the summary.
+    sim.expect_text("Paused");
+    sim.expect_no_text("End ride?");
+    // Asked again and answered with ACT: saved, then Ride done.
     sim.press(Role::Back);
     sim.press(Role::Act);
-    sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
-    assert_eq!(sim.vana_page(), "summary");
-    sim.checkpoint("ride saved summary");
+    sim.wait_for("Ride saved", seconds(5)).unwrap();
+    assert_eq!(sim.vana_page(), "ride_done");
+    sim.checkpoint("ride done");
     assert_eq!(sim.rides()[0].kinds().last(), Some(&Kind::Finish));
     sim.done();
 }
@@ -1733,11 +1639,11 @@ fn ending_a_ride_right_after_a_lap_shows_the_prompt() {
     sim.press(Role::Act);
     assert_eq!(sim.ride_state(), "paused");
     sim.press(Role::Back);
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     sim.expect_no_text("LAP 1 ");
     sim.checkpoint("end ride asked over a lap toast");
     sim.press(Role::Act);
-    sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
+    sim.wait_for("Ride saved", seconds(5)).unwrap();
 
     // The helpers cope with a toast too: lap, then stop at once.
     sim.done();
@@ -2343,16 +2249,16 @@ fn traffic_light_stop(sim: &mut Sim) {
     sim.advance(seconds(30));
     assert_eq!(sim.screen().elapsed().as_deref(), Some("0:00:30"));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
-    let latency = sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
+    let latency = sim.wait_for("Auto paused", seconds(15)).unwrap();
     assert!(latency <= seconds(5), "auto-pause took {latency} ms");
     println!("auto-pause latency {latency} ms");
-    let paused = sim.screen().run("AUTO PAUSED").expect("AUTO PAUSED");
+    let paused = sim.screen().run("Auto paused").expect("Auto paused");
     assert_eq!(paused.color, AMBER);
-    sim.expect_text("RIDE TIME");
-    sim.expect_text("RIDE ON TO RESUME");
+    sim.expect_text("Ride time");
+    sim.expect_text("Ride on to resume");
     sim.checkpoint("auto paused at the light");
     sim.advance(seconds(60));
-    sim.expect_text("AUTO PAUSED");
+    sim.expect_text("Auto paused");
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.wait_for("AUTO RESUME", seconds(10)).unwrap();
     assert!(recording(sim));
@@ -2393,9 +2299,9 @@ fn a_manual_pause_does_not_resume_when_the_bike_moves() {
     sim.advance(seconds(10));
     sim.pause_ride();
     sim.advance(seconds(60));
-    assert!(sim.screen().run("PAUSED").is_some());
+    assert!(sim.screen().run("Paused").is_some());
     sim.expect_no_text("AUTO");
-    sim.expect_text("FOR 01:00");
+    sim.expect_text("for 01:00");
     assert!(!recording(&mut sim));
     sim.checkpoint("manual pause while riding");
 }
@@ -2416,7 +2322,7 @@ fn a_manually_paused_rider_who_rides_on_hears_a_reminder_every_half_minute() {
         [0, 0, 10, 0, 0, 10],
         "two reminders in a minute"
     );
-    assert!(sim.screen().run("PAUSED").is_some());
+    assert!(sim.screen().run("Paused").is_some());
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(10));
     let from = sim.device.sim_mut().speaker.played.len();
@@ -2439,13 +2345,13 @@ fn a_speed_sensor_dropout_leaves_auto_pause_to_gps() {
     sim.set_present(device_type::SPEED_CADENCE, SPEED, false);
     sim.advance(minutes(2));
     assert!(recording(&mut sim));
-    sim.expect_no_text("AUTO PAUSED");
+    sim.expect_no_text("Auto paused");
     sim.checkpoint("speed sensor lost, still recording");
     let km = reading(&sim, "DIST KM");
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
-    sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
+    sim.wait_for("Auto paused", seconds(20)).unwrap();
     sim.advance(seconds(30));
-    sim.expect_text("AUTO PAUSED");
+    sim.expect_text("Auto paused");
     sim.ride_at(36.0, 0.0, 0.0, 0.0);
     let latency = sim.wait_for("AUTO RESUME", seconds(15)).unwrap();
     assert!(latency <= seconds(5), "auto-resume took {latency} ms");
@@ -2470,9 +2376,9 @@ fn a_silent_paired_speed_sensor_leaves_auto_pause_to_gps() {
     sim.set_present(device_type::SPEED, SPEED_ONLY, false);
     sim.advance(seconds(10));
     sim.start_ride();
-    sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
+    sim.wait_for("Auto paused", seconds(15)).unwrap();
     sim.advance(seconds(30));
-    sim.expect_text("AUTO PAUSED");
+    sim.expect_text("Auto paused");
     sim.ride_at(36.0, 0.0, 0.0, 0.0);
     let latency = sim.wait_for("AUTO RESUME", seconds(15)).unwrap();
     assert!(latency <= seconds(5), "auto-resume took {latency} ms");
@@ -2513,7 +2419,7 @@ fn slow_steep_climbing_never_auto_pauses() {
     sim.ride_at(3.6, 180.0, 0.0, 40.0);
     sim.advance(minutes(2));
     assert!(recording(&mut sim));
-    sim.expect_no_text("AUTO PAUSED");
+    sim.expect_no_text("Auto paused");
     sim.stop_ride();
     // Only the pause that stop_ride itself presses.
     let pauses = sim.rides()[0]
@@ -2572,7 +2478,7 @@ fn gps_only_traffic_light_stop_auto_pauses_through_jitter() {
         sim.start_ride();
         sim.advance(seconds(60));
         sim.ride_at(0.0, 0.0, 120.0, 0.0);
-        let latency = sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
+        let latency = sim.wait_for("Auto paused", seconds(20)).unwrap();
         println!("GPS doppler={doppler} auto-pause latency {latency} ms");
         assert!(latency <= seconds(8), "auto-pause took {latency} ms");
         if doppler {
@@ -2581,7 +2487,7 @@ fn gps_only_traffic_light_stop_auto_pauses_through_jitter() {
         let km = paused_km(&sim);
         // Two minutes at the light: jitter neither resumes nor adds distance.
         sim.advance(minutes(2));
-        sim.expect_text("AUTO PAUSED");
+        sim.expect_text("Auto paused");
         assert!(!recording(&mut sim));
         assert_eq!(paused_km(&sim), km, "distance crept while standing");
         if !doppler {
@@ -2592,17 +2498,17 @@ fn gps_only_traffic_light_stop_auto_pauses_through_jitter() {
         println!("GPS doppler={doppler} auto-resume latency {latency} ms");
         assert!(latency <= seconds(8), "auto-resume took {latency} ms");
         assert!(recording(&mut sim));
-        // Stopping right after the resume: PAUSED and RIDE SAVED still show.
+        // Stopping right after the resume: Paused and Ride saved still show.
         sim.stop_ride();
     }
 }
 
-/// The ride distance the paused screen shows, as in "0.42 KM".
+/// The ride distance the paused screen shows, as in "0.42 km".
 #[track_caller]
 fn paused_km(sim: &Sim) -> String {
     let text = sim.screen().text();
     text.lines()
-        .find_map(|line| line.strip_suffix(" KM"))
+        .find_map(|line| line.strip_suffix(" km"))
         .unwrap_or_else(|| panic!("no distance; screen:\n{text}"))
         .to_owned()
 }
@@ -2618,7 +2524,7 @@ fn gps_only_tunnel_keeps_recording_without_inventing_distance() {
     // No speed in the tunnel, and no pause: GPS loss is not a stop.
     sim.expect_field("SPD KM/H", "--");
     assert!(recording(&mut sim));
-    sim.expect_no_text("AUTO PAUSED");
+    sim.expect_no_text("Auto paused");
     sim.checkpoint("GPS only: in the tunnel");
     let km = reading(&sim, "DIST KM");
     sim.advance(seconds(20));
@@ -2975,7 +2881,7 @@ fn a_ride_must_end_before_the_device_can_turn_off() {
     sim.pause_ride();
     sim.press(Role::Back);
     sim.expect_no_text("TURN OFF");
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     sim.press(Role::Back);
     sim.resume_ride();
     sim.stop_ride();
@@ -3357,11 +3263,8 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     assert_eq!(status_field(&status, "free_s"), "0", "{status}");
     assert_eq!(status_field(&status, "fallback"), "1", "{status}");
     sim.expect_no_text("INT");
-    let active = sim.screen().elapsed().unwrap();
-    assert!(
-        ("0:00:20"..="0:00:23").contains(&active.as_str()),
-        "{active}"
-    );
+    let active_ms: u64 = status_field(&status, "active_ms").parse().unwrap();
+    assert!((20_000..24_000).contains(&active_ms), "{status}");
 
     // The next ride goes to internal flash, and the screen says so.
     sim.done();
@@ -3543,7 +3446,7 @@ fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
     sim.start_ride();
     sim.advance(seconds(20));
     sim.stop_ride();
-    // The summary shows the saved ride; Home stays put for the next one.
+    // Ride done shows the saved ride; Home stays put for the next one.
     sim.done();
     sim.advance(seconds(2));
     sim.init_bulk();
@@ -3552,7 +3455,7 @@ fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
     let (result, _) = sim.command("RIDE START");
     assert_eq!(result, "ACCEPTED");
     sim.advance(seconds(2));
-    sim.expect_no_text("RIDE SAVED");
+    sim.expect_no_text("Ride saved");
     sim.checkpoint("the MMC fails its first START");
     let (_, status) = sim.command("RIDE STATUS");
     assert_eq!(status_field(&status, "medium"), "bulk", "{status}");
@@ -3622,7 +3525,7 @@ fn status_bar_and_toasts_follow_the_ride_state() {
     sim.pause_ride();
     sim.advance(seconds(3));
     // The paused screen, then the ride pages with PAUSED in the status bar.
-    let paused = sim.screen().run("PAUSED").expect("PAUSED");
+    let paused = sim.screen().run("Paused").expect("Paused");
     assert_eq!((paused.y > 24, paused.color), (true, AMBER));
     sim.checkpoint("paused screen");
     sim.show_ride_pages();
@@ -3634,11 +3537,11 @@ fn status_bar_and_toasts_follow_the_ride_state() {
     sim.checkpoint("paused, ride pages");
 
     sim.press(Role::Back);
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     sim.checkpoint("end ride?");
     sim.press(Role::Act);
-    sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
-    sim.checkpoint("ride saved summary");
+    sim.wait_for("Ride saved", seconds(5)).unwrap();
+    sim.checkpoint("ride done");
     assert!(sim.screen().run("REC").is_none());
 }
 
@@ -3671,7 +3574,7 @@ fn swipes_page_through_the_ride_and_taps_never_control_it() {
     }
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=recording"), "{status}");
-    sim.expect_no_text("END RIDE?");
+    sim.expect_no_text("End ride?");
     sim.checkpoint("still recording after taps");
 }
 
@@ -4098,7 +4001,7 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
 }
 
 #[test]
-fn the_ride_lifecycle_walks_from_home_to_the_summary() {
+fn the_ride_lifecycle_walks_from_home_to_ride_done() {
     let mut sim = rider();
     sim.set_battery(80, false);
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
@@ -4124,24 +4027,24 @@ fn the_ride_lifecycle_walks_from_home_to_the_summary() {
     // Pause fills the screen and counts the pause.
     sim.pause_ride();
     sim.advance(seconds(12));
-    sim.expect_text("PAUSED");
-    sim.expect_text("FOR 00:12");
+    sim.expect_text("Paused");
+    sim.expect_text("for 00:12");
     sim.checkpoint("paused screen");
-    // MOVE shows the ride pages under PAUSED, and past the last page the
-    // paused screen comes back.
+    // A swipe shows the ride pages under PAUSED, MOVE pages them, and past
+    // the last page the paused screen comes back.
     sim.show_ride_pages();
     sim.checkpoint("paused, ride pages");
     for _ in 0..8 {
-        if sim.screen().contains("RIDE TIME") {
+        if sim.screen().contains("Ride time") {
             break;
         }
         sim.press(Role::Move);
     }
-    sim.expect_text("RIDE TIME");
+    sim.expect_text("Ride time");
 
     // BACK asks; BACK again keeps the ride.
     sim.press(Role::Back);
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     sim.checkpoint("end ride?");
     sim.press(Role::Back);
     assert_eq!(sim.ride_state(), "paused");
@@ -4156,71 +4059,22 @@ fn the_ride_lifecycle_walks_from_home_to_the_summary() {
     );
     sim.advance(minutes(1));
 
-    // Now end it: the summary shows the ride over three pages.
+    // Now end it: Ride done, and the saved ride keeps its totals.
     sim.stop_ride();
-    assert_eq!(sim.vana_page(), "summary");
-    sim.expect_text("RIDE SAVED");
+    assert_eq!(sim.vana_page(), "ride_done");
+    sim.expect_text("Ride saved");
+    sim.checkpoint("ride done");
+    let session = saved_session(&mut sim);
     // The second before 220 W was set rides at the lead-in power; where it
     // falls in the sampling second moves the average by a watt.
-    let average = sim.screen().field("AVG W");
     assert!(
-        matches!(average.as_deref(), Some("219" | "220")),
-        "AVG W {average:?}"
+        (219..=220).contains(&session[&20]),
+        "FIT avg power {session:?}"
     );
-    sim.checkpoint("summary: ride saved");
-    sim.swipe_next();
-    // The first second of a ride may still read the power before it.
-    let watts: u32 = sim.screen().field("NP W").unwrap().parse().unwrap();
-    assert!(watts.abs_diff(220) <= 1, "NP W {watts}");
-    sim.checkpoint("summary: effort and zones");
-    sim.press(Role::Move);
-    sim.expect_text("DESCENT M");
-    sim.press(Role::Move);
-    sim.expect_text("BEST POWER W");
-    sim.expect_field("LAPS", "2");
-    sim.checkpoint("summary: best power, climbs and laps");
+    assert!(session[&34].abs_diff(220) <= 1, "FIT NP {session:?}");
+    assert_eq!(session[&26], 2, "FIT laps");
     sim.done();
     sim.checkpoint("home after the ride");
-}
-
-#[test]
-fn a_ride_whose_twenty_minute_best_beats_the_ftp_offers_it() {
-    let mut sim = Sim::new();
-    sim.need(Need::Barometer);
-    sim.fit_bulk(Presence::Ready);
-    let mut sim = equip(sim.boot());
-    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    sim.ride_at(30.0, 200.0, 140.0, 90.0);
-    sim.start_ride();
-    sim.advance(minutes(22));
-    sim.stop_ride();
-    for _ in 0..4 {
-        if sim.screen().contains("RIDE SAVED") {
-            break;
-        }
-        sim.press(Role::Move);
-    }
-    sim.expect_text("RIDE SAVED");
-    sim.expect_no_text("FTP");
-    sim.done();
-
-    sim.ride_at(32.0, 260.0, 150.0, 92.0);
-    sim.start_ride();
-    sim.advance(minutes(25));
-    sim.stop_ride();
-    // Backwards from the first page never lands on the FTP offer.
-    sim.swipe_previous();
-    sim.expect_text("BEST POWER W");
-    sim.expect_no_text("FTP 24");
-    sim.press(Role::Move);
-    sim.expect_text("FTP 24");
-    sim.expect_text("NOW 215 W");
-    sim.checkpoint("summary: FTP offer");
-    sim.press(Role::Act);
-    assert!(sim.on_home(), "{}", sim.screen().text());
-    sim.expect_text("SAVED");
-    assert!(sim.command("PROFILE").1.contains("ftp=247"));
-    sim.checkpoint("home: FTP saved");
 }
 
 #[test]
@@ -4233,34 +4087,49 @@ fn rolling_off_from_home_starts_and_stopping_auto_pauses() {
     sim.checkpoint("auto start from home");
     sim.advance(minutes(1));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
-    sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
-    sim.expect_text("RIDE ON TO RESUME");
+    sim.wait_for("Auto paused", seconds(15)).unwrap();
+    sim.expect_text("Ride on to resume");
     sim.checkpoint("auto paused screen");
     sim.ride_at(20.0, 0.0, 0.0, 80.0);
-    sim.wait_gone("AUTO PAUSED", seconds(15)).unwrap();
-    sim.expect_no_text("RIDE TIME");
+    sim.wait_gone("Auto paused", seconds(15)).unwrap();
+    sim.expect_no_text("Ride time");
     assert!(recording(&mut sim));
     sim.checkpoint("auto resumed onto the ride pages");
 }
 
-/// A ride started from the host while the summary shows takes the rider
-/// to its controls, so the buttons can pause and end it.
+/// Riding on from Ride done starts a new free ride by itself.
 #[test]
-fn a_ride_started_remotely_from_the_summary_shows_its_controls() {
+fn riding_on_from_ride_done_starts_a_new_ride() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(20.0, 0.0, 0.0, 80.0);
+    sim.wait_for("AUTO START", seconds(10)).unwrap();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+    assert_eq!(sim.vana_page(), "ride_done");
+    sim.ride_at(20.0, 0.0, 0.0, 80.0);
+    sim.wait_for("AUTO START", seconds(15)).unwrap();
+    assert_eq!(sim.vana_page(), "ride");
+    assert!(recording(&mut sim));
+    sim.checkpoint("riding on from ride done starts a ride");
+}
+
+/// A ride started from the host while Ride done shows takes the rider to
+/// its controls, so the buttons can pause and end it.
+#[test]
+fn a_ride_started_remotely_from_ride_done_shows_its_controls() {
     let mut sim = rider();
     sim.start_ride();
     sim.advance(seconds(20));
     sim.stop_ride();
-    assert_eq!(sim.vana_page(), "summary");
-    sim.summary_page("3/3");
+    assert_eq!(sim.vana_page(), "ride_done");
     assert_eq!(sim.command("RIDE START").0, "ACCEPTED");
     sim.advance(seconds(2));
     assert_eq!(sim.vana_page(), "ride");
     sim.pause_ride();
     sim.stop_ride();
     assert_eq!(sim.rides().len(), 2);
-    // The new summary opens at its first page.
-    assert_eq!(sim.screen().page().as_deref(), Some("1/3"));
+    assert_eq!(sim.vana_page(), "ride_done");
 }
 
 /// Swipe Settings to the section that shows `label`.
@@ -4733,7 +4602,7 @@ fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_t
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(30));
     assert!(recording(&mut sim), "a stop does not pause");
-    sim.expect_no_text("AUTO PAUSED");
+    sim.expect_no_text("Auto paused");
     sim.checkpoint("stopped, still recording");
     assert_eq!(played_since(&sim, from), Vec::<u8>::new(), "muted");
 }
@@ -4811,10 +4680,6 @@ fn laps_are_kept_with_the_ride_in_its_fit_file() {
     sim.checkpoint("a lap press");
     sim.advance(minutes(2) + seconds(30));
     sim.stop_ride();
-    sim.swipe_next();
-    sim.swipe_next();
-    sim.swipe_next();
-    sim.expect_field("LAPS", "3");
     sim.done();
 
     let media = sim.ride_media();
@@ -4863,11 +4728,6 @@ fn a_lap_just_before_the_finish_is_kept_with_the_ride() {
     sim.lap(1);
     sim.pause_ride();
     sim.stop_ride();
-    sim.swipe_next();
-    sim.swipe_next();
-    sim.swipe_next();
-    let live = sim.screen().field("LAPS").unwrap();
-    sim.checkpoint("the summary counts the last lap");
     sim.done();
 
     let ride = sim.rides().pop().unwrap();
@@ -4877,14 +4737,11 @@ fn a_lap_just_before_the_finish_is_kept_with_the_ride() {
             .fit(&models::C606.product, Some(1_789_000_000_000))
             .unwrap(),
     );
-    sim.note(
-        NoteKind::Check,
-        format!("laps: summary {live}, FIT {}", fit.len()),
-    );
+    sim.note(NoteKind::Check, format!("laps: FIT {}", fit.len()));
     assert_eq!(
-        (live.as_str(), fit.as_slice()),
-        ("2", [0, 7].as_slice()),
-        "summary, FIT lap triggers (manual, session end)"
+        fit.as_slice(),
+        [0, 7].as_slice(),
+        "FIT lap triggers (manual, session end)"
     );
     assert_eq!(
         marks,
@@ -4910,10 +4767,6 @@ fn a_lap_pressed_just_before_the_start_keeps_both_laps() {
     sim.advance(seconds(30));
     sim.pause_ride();
     sim.stop_ride();
-    sim.swipe_next();
-    sim.swipe_next();
-    sim.swipe_next();
-    let live = sim.screen().field("LAPS").unwrap();
     sim.done();
 
     let ride = sim.rides().pop().unwrap();
@@ -4930,14 +4783,14 @@ fn a_lap_pressed_just_before_the_start_keeps_both_laps() {
     sim.note(
         NoteKind::Check,
         format!(
-            "second lap toast {second} ms after the first; laps: summary {live}, \
-             FIT {fit:?}, journal {marks:?}"
+            "second lap toast {second} ms after the first; laps: FIT {fit:?}, \
+             journal {marks:?}"
         ),
     );
     assert_eq!(
-        (live.as_str(), fit.as_slice()),
-        ("3", [0, 3, 7].as_slice()),
-        "summary, FIT lap triggers (manual, position start, session end)"
+        fit.as_slice(),
+        [0, 3, 7].as_slice(),
+        "FIT lap triggers (manual, position start, session end)"
     );
     let starts: Vec<_> = marks.iter().map(|&(_, lap)| lap).collect();
     assert_eq!(
@@ -5417,8 +5270,8 @@ fn map_page_draws_the_ride_track_heading_up_and_keeps_it_when_still() {
     sim.checkpoint("the map mid ride, heading up");
 
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
-    sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
-    sim.press(Role::Move);
+    sim.wait_for("Auto paused", seconds(20)).unwrap();
+    sim.swipe_next();
     let moving = ridden_track_pixels(&sim);
     sim.advance(seconds(20));
     expect_map(&sim);
@@ -5794,7 +5647,7 @@ fn an_auto_pause_before_following_keeps_the_direction_in_sight() {
         "the ride page, not the paused screen:\n{}",
         sim.screen().text()
     );
-    sim.expect_no_text("RIDE TIME");
+    sim.expect_no_text("Ride time");
     sim.expect_text("AROUND");
     sim.expect_text("AUTO PAUSED");
     sim.checkpoint("auto paused before following, turn around in sight");
@@ -5804,21 +5657,21 @@ fn an_auto_pause_before_following_keeps_the_direction_in_sight() {
     assert_eq!(map_badge(&sim), ["TURN", "AROUND"]);
     sim.checkpoint("auto paused before following, on the map");
     sim.press(Role::Move);
-    sim.expect_text("RIDE TIME");
+    sim.expect_text("Ride time");
     assert_eq!(sim.vana_page(), "ride");
-    sim.press(Role::Move);
-    sim.expect_no_text("RIDE TIME");
+    sim.swipe_next();
+    sim.expect_no_text("Ride time");
     sim.press(Role::Back);
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     sim.press(Role::Back);
-    sim.expect_no_text("END RIDE?");
+    sim.expect_no_text("End ride?");
 
     sim.ride_at(24.0, 180.0, 0.0, 85.0);
     sim.press(Role::Act);
     sim.wait_for("RESUMED", seconds(3)).unwrap();
     sim.advance(seconds(5));
     sim.pause_ride();
-    sim.expect_text("RIDE TIME");
+    sim.expect_text("Ride time");
 }
 
 /// A course with a right-angle turn after 600 m, a gentle bend 45 degrees
@@ -6638,6 +6491,8 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
     assert!((error_before + 2.9).abs() < 0.2, "{error_before:.2} %");
     sim.checkpoint("ride 1: still on the old size after learning");
     sim.stop_ride();
+    // Stopped, so Ride done does not start the next ride.
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.wait_for("WHEEL SET 22", seconds(5)).unwrap();
     sim.checkpoint("ride 1 over: the rider is told once");
     // The learned size depends on where the ride's GPS windows fall, so a
@@ -6665,6 +6520,7 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
     leave_settings(&mut sim);
 
     // Ride 2 measures with the learned size.
+    sim.ride_at(28.0, 0.0, 140.0, 85.0);
     sim.start_ride();
     let start = sim.world().distance_m;
     sim.advance(minutes(20));
@@ -6777,6 +6633,8 @@ fn a_manual_wheel_size_is_kept_across_rides_and_power_loss() {
         wheel_fields(&mut sim).contains("windows=0"),
         "no learning while manual"
     );
+    // Stopped, so Ride done does not start the next ride.
+    sim.ride_at(0.0, 0.0, 140.0, 0.0);
     sim.stop_ride();
     sim.advance(seconds(6));
     sim.expect_no_text("WHEEL SET");

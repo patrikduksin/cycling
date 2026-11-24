@@ -34,7 +34,7 @@ fn with_phone_open() -> Runtime {
     runtime
 }
 
-fn at_summary() -> Runtime {
+fn at_done() -> Runtime {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -62,7 +62,7 @@ fn at_summary() -> Runtime {
             step(&mut runtime, at + pass * 20);
         }
     }
-    assert_eq!(runtime.navigation.page(), Page::Summary);
+    assert_eq!(runtime.navigation.page(), Page::Done);
     runtime
 }
 
@@ -87,7 +87,7 @@ fn violating(rule: Rule) -> Runtime {
                 unsaved: 0,
             };
         }
-        Rule::SummaryWhileRiding => runtime = recording(at_summary()),
+        Rule::DoneWhileRiding => runtime = recording(at_done()),
         Rule::HostTokenOwned => runtime
             .ride
             .set_host(crate::ride::current::Request::Pending(9)),
@@ -167,34 +167,7 @@ fn consistent_runtimes_hold() {
 }
 
 #[test]
-fn a_ride_from_start_to_summary_holds_after_every_step() {
-    let runtime = at_summary();
+fn a_ride_from_start_to_done_holds_after_every_step() {
+    let runtime = at_done();
     assert_eq!(runtime.ride.internal().status(), Status::Saved);
-}
-
-#[test]
-fn a_test_sheet_covers_the_summary_offer_until_it_is_answered() {
-    use crate::workout::ftp::Source;
-    let mut runtime = at_summary();
-    let current = runtime.preferences.profile.ftp_watts;
-    runtime
-        .training
-        .ftp
-        .set(Source::RideSummary, Some(current + 100));
-    runtime
-        .navigation
-        .go(To::SummaryPage(crate::screens::ride::summary::pages(
-            runtime.has_elevation(),
-        )));
-    assert!(runtime.offer_shown());
-    runtime
-        .training
-        .ftp
-        .set(Source::WorkoutTest, Some(current + 10));
-    assert!(!runtime.offer_shown());
-    assert_eq!(runtime.ftp_sheet(), Some((current + 10, current)));
-    runtime.input_received(press(Role::Back), 100_000, 100_000, &mut Radio::new());
-    assert_eq!(runtime.ftp_sheet(), None);
-    assert!(runtime.offer_shown());
-    assert_eq!(runtime.preferences.profile.ftp_watts, current);
 }

@@ -120,6 +120,10 @@ impl Data for View<'_> {
         self.sensor_pages()
     }
 
+    fn done(&self) -> Option<&crate::screens::done::Done> {
+        self.done()
+    }
+
     fn entry(&self, list: ListKind, index: u16) -> Option<Entry<'_>> {
         match list {
             ListKind::Workouts => self.picker().entry(usize::from(index)),

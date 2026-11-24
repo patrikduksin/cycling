@@ -92,7 +92,7 @@ fn a_paused_ride_draws_twice_a_second_on_every_page() {
     expect_pace(&mut sim, "paused", ANIMATED);
     sim.show_ride_pages();
     let mut pages = 0;
-    while !sim.screen().contains("RIDE TIME") {
+    while !sim.screen().contains("Ride time") {
         let page = sim.ride_page_name().unwrap_or_default();
         expect_pace(&mut sim, &format!("paused, ride page {page}"), ANIMATED);
         sim.press(Role::Move);

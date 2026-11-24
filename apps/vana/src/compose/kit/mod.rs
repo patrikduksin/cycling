@@ -17,17 +17,20 @@ pub mod chart;
 pub mod facts;
 pub mod field;
 pub mod item;
+pub mod picture;
 pub mod profile;
 pub mod road_field;
 pub mod rule;
+pub mod stat;
 pub mod step;
 pub mod symbol;
 pub mod text;
 pub mod top_line;
 
 use super::node::{Node, Size};
-use super::registry::{FIELD, RULE};
+use super::registry::{FACTS, FIELD, ITEM, RULE, SPACE, SYMBOL, TEXT};
 use crate::screens::scaled::Scaled;
+use crate::screens::theme::LAYOUT;
 
 /// A spec table: an enum whose ids are the setting bytes a tree stores,
 /// each mapped to its spec, and the `Arg` that decodes it.
@@ -89,6 +92,46 @@ pub const fn rule() -> Node {
 /// A ride-grid field that shares its row's or column's room.
 pub const fn field(field: field::Field) -> Node {
     Node::leaf(FIELD, field as u8, Size::grow(1))
+}
+
+pub const fn space(units: u8) -> Node {
+    Node::leaf(SPACE, 0, Size::units(units))
+}
+
+/// A phone-style screen, top to bottom: its state on a disc, a title and a
+/// subtitle centred under it, a card of facts, and two buttons at the foot,
+/// the first over MOVE and the second over ACT.
+pub const fn phone(
+    state: symbol::Mark,
+    title: text::Say,
+    subtitle: text::Say,
+    facts: facts::Card,
+    buttons: [item::Button; 2],
+) -> [Node; 20] {
+    let space = &LAYOUT.space;
+    let content = Size::CONTENT;
+    [
+        Node::col(11, Size::grow(1)),
+        self::space(space.lead),
+        Node::leaf(SYMBOL, state as u8, content),
+        self::space(space.gap),
+        Node::leaf(TEXT, title as u8, content),
+        self::space(space.gap),
+        Node::leaf(TEXT, subtitle as u8, content),
+        self::space(space.pad + space.gap),
+        Node::row(3, content),
+        self::space(space.pad),
+        Node::leaf(FACTS, facts as u8, Size::grow(1)),
+        self::space(space.pad),
+        Node::leaf(SPACE, 0, Size::grow(1)),
+        Node::row(5, content),
+        self::space(space.gap),
+        Node::leaf(ITEM, buttons[0] as u8, Size::grow(1)),
+        self::space(space.gap),
+        Node::leaf(ITEM, buttons[1] as u8, Size::grow(1)),
+        self::space(space.gap),
+        self::space(space.gap),
+    ]
 }
 
 /// A grid of `rows` of cells as one column that takes `size`: each row

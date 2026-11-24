@@ -71,7 +71,8 @@ fn pace(seen: &Seen) -> Pace {
         | Page::EndRide
         | Page::DiscardRide
         | Page::LoseRides
-        | Page::Summary => true,
+        | Page::Summary
+        | Page::Done => true,
         Page::Boot | Page::Format => false,
     };
     if still && !seen.busy {
@@ -222,7 +223,7 @@ impl<M: ReadWrite + ?Sized> ReadWrite for Touched<'_, M> {
 mod tests {
     use super::*;
 
-    const STILL_PAGES: [Page; 9] = [
+    const STILL_PAGES: [Page; 10] = [
         Page::Home,
         Page::Sensors,
         Page::Settings,
@@ -232,6 +233,7 @@ mod tests {
         Page::DiscardRide,
         Page::LoseRides,
         Page::Summary,
+        Page::Done,
     ];
     const BUSY_PAGES: [Page; 1] = [Page::Boot];
 

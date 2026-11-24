@@ -91,6 +91,10 @@ pub trait Data {
     fn page(&self) -> PageData<'_> {
         PageData::None
     }
+    /// What Ride done shows, while it shows.
+    fn done(&self) -> Option<&crate::screens::done::Done> {
+        None
+    }
     /// The swipe-down sheet's brightness, look and sensors, while it shows.
     fn sheet(&self) -> Option<&crate::screens::sheet::Facts> {
         None
@@ -115,11 +119,12 @@ pub struct Status {
     pub battery: Option<Battery>,
 }
 
-/// What a tile reads, for a trace's shown line: a metric, or whatever the
-/// workout step targets.
+/// What a tile reads, for a trace's shown line: a metric, a card's
+/// metrics, or whatever the workout step targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reads {
     Metric(Metric),
+    Card(crate::compose::kit::facts::Card),
     Target,
 }
 

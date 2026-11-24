@@ -25,6 +25,7 @@ mod lose_rides;
 mod power;
 mod question;
 mod ride_climb;
+mod ride_done;
 mod ride_end;
 mod ride_main;
 mod ride_map;
@@ -80,6 +81,7 @@ pub enum ScreenId {
     PowerMeter,
     ForgetSensor,
     ControlSheet,
+    RideDone,
 }
 
 /// Which of its screens a page shows where it has more than one: its own,
@@ -130,6 +132,7 @@ impl ScreenId {
         Self::PowerMeter,
         Self::ForgetSensor,
         Self::ControlSheet,
+        Self::RideDone,
     ];
 
     pub const fn of(
@@ -157,6 +160,7 @@ impl ScreenId {
                 RidePage::Map => Self::RideMap,
             },
             Page::EndRide => Self::RideEnd,
+            Page::Done => Self::RideDone,
             Page::DiscardRide if matches!(asks, Asks::Wait) => Self::Discarding,
             Page::DiscardRide => Self::Discard,
             Page::Summary => match summary {
@@ -205,6 +209,9 @@ impl ScreenId {
                 | Self::SensorDetail
                 | Self::PowerMeter
                 | Self::ForgetSensor
+                | Self::RidePaused
+                | Self::RideEnd
+                | Self::RideDone
         )
     }
 
@@ -291,6 +298,8 @@ impl ScreenId {
             Self::ForgetSensor => sensors::FORGET,
 
             Self::ControlSheet => control_sheet::BUILTIN,
+
+            Self::RideDone => ride_done::BUILTIN,
         }
     }
 }

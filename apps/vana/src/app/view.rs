@@ -122,6 +122,7 @@ impl Runtime {
                 self.compose(radar_paired, now);
                 self.refresh_map(radar_paired, now);
                 self.refresh_chart();
+                self.refresh_done();
             }
             Shows::Sheet(sheet) => self.composition.show(
                 sheet.screen(),

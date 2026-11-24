@@ -161,25 +161,24 @@ impl Sim {
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }
 
-    /// The page VANA shows, such as "summary".
+    /// The page VANA shows, such as "ride_done".
     pub fn vana_page(&self) -> &'static str {
         self.device.sdk.page().name()
     }
 
     pub fn pause_ride(&mut self) {
         self.press(Role::Act);
-        // A lap toast may cover the status row for up to two seconds.
-        self.wait_for("PAUSED", seconds(3)).unwrap();
+        self.wait_for("Paused", seconds(3)).unwrap();
     }
 
-    /// From the paused screen, MOVE to the ride page shown before the pause.
+    /// From the paused screen, swipe to the ride page shown before the pause.
     #[track_caller]
     pub fn show_ride_pages(&mut self) {
-        if self.screen().contains("RIDE TIME") {
-            self.press(Role::Move);
+        if self.screen().contains("Ride time") {
+            self.swipe_next();
         }
         assert!(
-            !self.screen().contains("RIDE TIME"),
+            !self.screen().contains("Ride time"),
             "{}",
             self.screen().text()
         );
@@ -315,36 +314,32 @@ impl Sim {
             .collect()
     }
 
-    /// Pause if still recording (only a paused ride ends), then TopLeft asks
-    /// "End ride?" and BottomRight answers it; wait for RIDE SAVED on the
-    /// summary. Ends on the summary.
+    /// Pause if still recording (only a paused ride ends), then BACK asks
+    /// "End ride?" and ACT answers it; Ride done opens at once, and this
+    /// waits for the ride's last samples to be written. Ends on Ride done.
     pub fn stop_ride(&mut self) {
         if self.ride_state() == "recording" {
             self.pause_ride();
         }
         self.press(Role::Back);
-        self.expect_text("END RIDE?");
+        self.expect_text("End ride?");
         self.press(Role::Act);
-        self.wait_for("RIDE SAVED", seconds(5)).unwrap();
-    }
-
-    /// Pause if still recording, then TopLeft asks "End ride?", BottomLeft
-    /// "Discard ride?" and BottomRight discards it. Ends on Home.
-    #[track_caller]
-    pub fn discard_ride(&mut self) {
-        if self.ride_state() == "recording" {
-            self.pause_ride();
+        self.wait_until(seconds(5), |screen| {
+            screen.contains("saved") || screen.contains("Sync to save")
+        })
+        .unwrap();
+        for _ in 0..50 {
+            let (_, status) = self.command("RIDE STATUS");
+            let state = status_field(&status, "state").unwrap_or_default();
+            if state != "paused" && status_field(&status, "pending") == Some("0") {
+                return;
+            }
+            self.advance(100);
         }
-        self.press(Role::Back);
-        self.expect_text("END RIDE?");
-        self.press(Role::Move);
-        self.expect_text("DISCARD RIDE?");
-        self.press(Role::Act);
-        self.wait_for("RIDE DISCARDED", seconds(5)).unwrap();
-        assert!(self.on_home(), "{}", self.screen().text());
+        panic!("the ride never finished saving");
     }
 
-    /// Finish the summary with BottomRight and land on Home.
+    /// Leave Ride done with ACT and land on Home.
     #[track_caller]
     pub fn done(&mut self) {
         self.press(Role::Act);
@@ -377,14 +372,17 @@ impl Sim {
         self.seen().page.map(|(_, page)| page)
     }
 
-    /// BottomLeft until the trace sees the ride page `name`, such as "ride/map".
+    /// BottomLeft until the trace sees the ride page `name`, such as
+    /// "ride/map". On the paused screen BottomLeft asks End ride?, so a
+    /// swipe moves on from there.
     #[track_caller]
     pub fn ride_page(&mut self, name: &str) {
         for _ in 0..8 {
-            if self.ride_page_name().as_deref() == Some(name) {
-                return;
+            match self.ride_page_name() {
+                Some(page) if page == name => return,
+                Some(page) if page == "ride/paused" => self.swipe_next(),
+                _ => self.press(Role::Move),
             }
-            self.press(Role::Move);
         }
         panic!(
             "no ride page {name}, on {:?}; screen:\n{}",
@@ -404,21 +402,6 @@ impl Sim {
                 return;
             }
         }
-    }
-
-    /// BottomLeft until the summary's page dots read `indicator`, such as "2/4".
-    #[track_caller]
-    pub fn summary_page(&mut self, indicator: &str) {
-        for _ in 0..8 {
-            if self.screen().page().as_deref() == Some(indicator) {
-                return;
-            }
-            self.press(Role::Move);
-        }
-        panic!(
-            "no summary page {indicator}; screen:\n{}",
-            self.screen().text()
-        );
     }
 
     #[track_caller]

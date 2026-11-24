@@ -150,8 +150,7 @@ enum Go {
     OpenRide,
     BackToRide,
     EndRide,
-    DiscardRide,
-    Summary,
+    Done,
     Home,
     /// Home, after a discarded ride was saved.
     Discarded,
@@ -236,22 +235,18 @@ fn press(page: Page, seen: Seen, button: Role, held: bool) -> Step {
         (Page::Ride, _) if seen.pending => STAY,
         (Page::Ride, ACT) => match seen.ride {
             Status::Recording => submit(Action::Pause),
-            Status::Paused if seen.auto_paused => effect(Effect::TakeOverPause),
             Status::Paused => submit(Action::Resume),
             _ if startable => submit(Action::Start),
             _ => STAY,
         },
-        (Page::Ride, BACK) => match seen.ride {
-            Status::Recording => effect(Effect::Lap),
-            Status::Paused => Step {
-                go: Some(Go::EndRide),
-                note: Some(RideMessage::Clear),
-                effect: Effect::TakeOverPause,
-                submit: None,
-            },
-            _ => STAY,
+        (Page::Ride, BACK) if seen.ride == Status::Recording => effect(Effect::Lap),
+        (Page::Ride, BACK | MOVE) if seen.ride == Status::Paused => Step {
+            go: Some(Go::EndRide),
+            note: Some(RideMessage::Clear),
+            effect: Effect::TakeOverPause,
+            submit: None,
         },
-        (Page::EndRide, BACK) => Step {
+        (Page::EndRide, BACK | MOVE) => Step {
             go: Some(Go::BackToRide),
             note: Some(RideMessage::Clear),
             ..STAY
@@ -259,13 +254,12 @@ fn press(page: Page, seen: Seen, button: Role, held: bool) -> Step {
         (Page::EndRide, ACT) if !seen.pending && seen.ride == Status::Paused => {
             submit(Action::Finish)
         }
-        (Page::EndRide, MOVE) if seen.can_discard => go(Go::DiscardRide),
         (Page::DiscardRide, _) if seen.pending => STAY,
         (Page::DiscardRide, BACK) => go(Go::EndRide),
         (Page::DiscardRide, ACT) if seen.can_discard && seen.ride == Status::Paused => {
             submit(Action::Finish)
         }
-        (Page::Summary, ACT | BACK) if !held && !saving => go(Go::Home),
+        (Page::Done, _) if !held && !saving => go(Go::Home),
         _ => STAY,
     }
 }
@@ -280,8 +274,13 @@ fn answered(page: Page, action: Action, accepted: bool, origin: Origin) -> Step 
         (Page::Home, Action::Start, false) if matches!(origin, Origin::Rider { .. }) => {
             effect(Effect::NotReadyToast)
         }
+        (Page::Done, Action::Start, true) => Step {
+            go: Some(Go::OpenRide),
+            note: Some(RideMessage::Clear),
+            ..STAY
+        },
         (Page::EndRide, Action::Finish, true) => Step {
-            go: Some(Go::Summary),
+            go: Some(Go::Done),
             note: Some(RideMessage::Clear),
             ..STAY
         },
@@ -302,12 +301,10 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
     let go = match page {
         Page::DiscardRide if matches!(seen.discard, Discard::Saved { .. }) => Some(Go::Discarded),
         Page::DiscardRide if seen.discard == Discard::Failed => Some(Go::BackToRide),
-        Page::Ride | Page::EndRide | Page::DiscardRide | Page::Summary if saved => {
-            Some(Go::Summary)
-        }
+        Page::Ride | Page::EndRide | Page::DiscardRide if saved => Some(Go::Done),
         Page::EndRide | Page::DiscardRide if seen.ride != Status::Paused => Some(Go::BackToRide),
-        Page::Summary if finish_failed => Some(Go::BackToRide),
-        Page::Summary if seen.ride == Status::Recording => Some(Go::OpenRide),
+        Page::Done if finish_failed => Some(Go::BackToRide),
+        Page::Summary | Page::Done if seen.ride == Status::Recording => Some(Go::OpenRide),
         Page::Boot
         | Page::Format
         | Page::Home
@@ -317,6 +314,7 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
         | Page::DiscardRide
         | Page::LoseRides
         | Page::Summary
+        | Page::Done
         | Page::Settings
         | Page::Workouts => None,
     };
@@ -374,14 +372,10 @@ impl Runtime {
                 self.notices.clear_lap_toast();
                 self.navigation.go(To::Page(Page::EndRide));
             }
-            Some(Go::DiscardRide) => self.navigation.go(To::Page(Page::DiscardRide)),
-            Some(Go::Summary) => {
-                // Opening the summary is the finish; the save completing
-                // under it is not a second one.
-                if self.navigation.page() != Page::Summary {
-                    self.recovery.finish(now);
-                }
-                self.navigation.go(To::Summary);
+            Some(Go::Done) => {
+                self.recovery.finish(now);
+                self.done = self.ride_done();
+                self.navigation.go(To::Page(Page::Done));
             }
             Some(Go::Home) => self.ride_left(),
             Some(Go::Discarded) => {
@@ -495,13 +489,6 @@ mod tests {
         };
         check(&[
             (
-                Page::EndRide,
-                card(Paused),
-                press(MOVE),
-                go(Go::DiscardRide),
-            ),
-            (Page::EndRide, seen(Paused), press(MOVE), STAY),
-            (
                 Page::DiscardRide,
                 card(Paused),
                 press(BACK),
@@ -543,12 +530,11 @@ mod tests {
             ),
             (Page::DiscardRide, failed, since(Paused), go(Go::BackToRide)),
             (Page::DiscardRide, asked, since(Paused), STAY),
-            // The host saved the ride as any other: its summary.
             (
                 Page::DiscardRide,
                 card(Saved),
                 since(Paused),
-                both(Go::Summary, RideMessage::Clear),
+                both(Go::Done, RideMessage::Clear),
             ),
             (
                 Page::DiscardRide,
@@ -637,12 +623,7 @@ mod tests {
                 submit(Action::Pause),
             ),
             (Page::Ride, seen(Paused), press(ACT), submit(Action::Resume)),
-            (
-                Page::Ride,
-                auto_paused,
-                press(ACT),
-                effect(Effect::TakeOverPause),
-            ),
+            (Page::Ride, auto_paused, press(ACT), submit(Action::Resume)),
             (Page::Ride, seen(Saved), press(ACT), submit(Action::Start)),
             (
                 Page::Ride,
@@ -651,6 +632,9 @@ mod tests {
                 effect(Effect::Lap),
             ),
             (Page::Ride, seen(Paused), press(BACK), ask),
+            (Page::Ride, seen(Paused), press(MOVE), ask),
+            (Page::Ride, auto_paused, press(MOVE), ask),
+            (Page::Ride, seen(Recording), press(MOVE), STAY),
             (Page::Ride, seen(Saved), press(BACK), go(Go::Home)),
             (Page::Ride, pending(Recording), press(ACT), STAY),
             (Page::Ride, pending(Paused), press(BACK), STAY),
@@ -666,14 +650,20 @@ mod tests {
                 press(BACK),
                 both(Go::BackToRide, RideMessage::Clear),
             ),
-            (Page::EndRide, seen(Paused), press(MOVE), STAY),
+            (
+                Page::EndRide,
+                seen(Paused),
+                press(MOVE),
+                both(Go::BackToRide, RideMessage::Clear),
+            ),
             (Page::EndRide, pending(Paused), press(ACT), STAY),
             (Page::EndRide, seen(Recording), press(ACT), STAY),
-            (Page::Summary, seen(Saved), press(ACT), go(Go::Home)),
-            (Page::Summary, seen(Saved), press(BACK), go(Go::Home)),
-            (Page::Summary, seen(Saved), held, STAY),
-            (Page::Summary, pending(Paused), press(ACT), STAY),
-            (Page::Summary, seen(Error), press(ACT), go(Go::Home)),
+            (Page::Done, seen(Saved), press(ACT), go(Go::Home)),
+            (Page::Done, seen(Saved), press(BACK), go(Go::Home)),
+            (Page::Done, seen(Saved), press(MOVE), go(Go::Home)),
+            (Page::Done, seen(Saved), held, STAY),
+            (Page::Done, pending(Paused), press(ACT), STAY),
+            (Page::Done, seen(Error), press(ACT), go(Go::Home)),
         ]);
     }
 
@@ -699,7 +689,7 @@ mod tests {
                 Page::EndRide,
                 pending(Paused),
                 answer(Action::Finish, true, RIDER),
-                both(Go::Summary, clear),
+                both(Go::Done, clear),
             ),
             (
                 Page::EndRide,
@@ -730,6 +720,12 @@ mod tests {
                 seen(Ready),
                 answer(Action::Start, false, start),
                 note(refused),
+            ),
+            (
+                Page::Done,
+                seen(Recording),
+                answer(Action::Start, true, start),
+                both(Go::OpenRide, clear),
             ),
         ]);
     }
@@ -792,33 +788,24 @@ mod tests {
                 since(Paused),
                 changed(Go::BackToRide),
             ),
-            (
-                Page::EndRide,
-                seen(Saved),
-                since(Paused),
-                changed(Go::Summary),
-            ),
+            (Page::EndRide, seen(Saved), since(Paused), changed(Go::Done)),
             (Page::EndRide, seen(Paused), since(Paused), STAY),
+            (Page::Ride, seen(Saved), since(Recording), changed(Go::Done)),
             (
-                Page::Ride,
-                seen(Saved),
-                since(Recording),
-                changed(Go::Summary),
-            ),
-            (
-                Page::Summary,
+                Page::Done,
                 seen(Saved),
                 since(Paused),
-                changed(Go::Summary),
+                note(RideMessage::Clear),
             ),
-            (Page::Summary, seen(Saved), since(Saved), STAY),
-            (Page::Summary, pending(Paused), since(Paused), STAY),
-            (Page::Summary, seen(Error), since(Error), STAY),
+            (Page::Done, seen(Saved), since(Saved), STAY),
+            (Page::Done, pending(Paused), since(Paused), STAY),
+            (Page::Done, seen(Error), since(Error), STAY),
+            (Page::Done, seen(Paused), since(Paused), go(Go::BackToRide)),
             (
-                Page::Summary,
-                seen(Paused),
-                since(Paused),
-                go(Go::BackToRide),
+                Page::Done,
+                seen(Recording),
+                since(Ready),
+                changed(Go::OpenRide),
             ),
             (
                 Page::Home,

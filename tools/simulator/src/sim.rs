@@ -637,7 +637,7 @@ impl Sim {
             })
     }
 
-    fn wait_until(
+    pub(crate) fn wait_until(
         &mut self,
         timeout_ms: u64,
         done: impl Fn(&Screen) -> bool,

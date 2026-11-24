@@ -8,6 +8,7 @@ use vana::screens::chrome::{
 };
 use vana::screens::look::light;
 use vana::screens::sign::{ARRIVED_FILL, OFF_FILL, TURN_FILL};
+use vana::screens::workout::Page;
 
 fn reach(name: &str) -> Sim {
     let scene = SCENES.iter().find(|scene| scene.name == name).unwrap();
@@ -61,6 +62,17 @@ fn paint(sim: &mut Sim, light: bool) -> Option<Painted> {
     })
 }
 
+/// Screens drawn from the kit in their theme's own colours rather than the
+/// dark colours mapped through the look.
+fn kit_screen(sim: &mut Sim) -> bool {
+    let paused = sim.ride_state() == "paused";
+    matches!(
+        sim.ride_page_name().as_deref(),
+        Some("ride/main" | "ride/climb" | "ride/workout")
+    ) || matches!(sim.device.sdk.page(), Page::EndRide | Page::Done)
+        || sim.device.sdk.page() == Page::Ride && paused
+}
+
 fn channels(pixel: u16) -> [u8; 3] {
     let (r, g, b) = (pixel >> 11, pixel >> 5 & 0x3f, pixel & 0x1f);
     [r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2].map(|c| c as u8)
@@ -105,13 +117,7 @@ fn every_screen_paints_its_colours_through_the_light_look() {
     for scene in SCENES.iter().filter(|scene| !scene.name.contains("light")) {
         let name = scene.name;
         let mut sim = (scene.reach)();
-        // Kit pages draw in their theme's own colours, not the dark
-        // colours mapped through the look.
-        let kit = matches!(
-            sim.ride_page_name().as_deref(),
-            Some("ride/main" | "ride/climb" | "ride/workout")
-        );
-        if kit || sim.vana_page() == "sensors" {
+        if kit_screen(&mut sim) || sim.vana_page() == "sensors" {
             continue;
         }
         let Some(shown) = paint(&mut sim, true) else {

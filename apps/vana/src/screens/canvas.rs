@@ -224,7 +224,7 @@ fn play_width(rect: Rect, y: usize) -> Option<usize> {
     (gy < rows).then(|| ((wide * (rows - (2 * gy - (rows - 1)).abs()) / rows) as usize).max(1))
 }
 
-fn paint_bar(row: &mut Row, rect: Rect, radius: usize, color: u16) {
+pub(crate) fn paint_bar(row: &mut Row, rect: Rect, radius: usize, color: u16) {
     if !(rect.top..rect.bottom).contains(&row.y()) {
         return;
     }

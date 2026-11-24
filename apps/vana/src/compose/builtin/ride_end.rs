@@ -1,52 +1,43 @@
-//! END RIDE?, which BACK opens from the paused screen: the question, the
-//! ride it is about, and what the answer does. ACT saves and ends the ride,
-//! BACK returns to the paused ride, and MOVE asks DISCARD RIDE? where a ride
-//! can be discarded.
-use super::{Builtin, Choices};
+//! End ride?, which MOVE or BACK opens from the paused screen, phone style:
+//! the stop on a red disc, the question and that the ride will be saved,
+//! the ride as a card, and BACK over MOVE and END over ACT. ACT saves and
+//! ends the ride; MOVE or BACK returns to the paused ride. Two different
+//! keys, so a double press cannot end a ride.
+use super::Builtin;
 use crate::compose::input::{Action, Button, Buttons};
-use crate::compose::node::{Node, Size};
-use crate::compose::registry::{RIDE_LINE, SPACE};
-use crate::compose::tiles::ride_line::Says;
+use crate::compose::kit::facts::Card;
+use crate::compose::kit::item::Button as Item;
+use crate::compose::kit::phone;
+use crate::compose::kit::symbol::Mark;
+use crate::compose::kit::text::Say;
 use crate::screens::cue::Icon;
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| TREE.into_iter().collect(),
+    tree: |_| {
+        phone(
+            Mark::Stopping,
+            Say::EndRide,
+            Say::WillSave,
+            Card::Ride,
+            [Item::Back, Item::Save],
+        )
+        .into_iter()
+        .collect()
+    },
     buttons: Buttons {
         act: Some(Button {
             action: Action::Ride(Role::Act),
-            cue: Some(Icon::Check),
+            cue: Some(Icon::Stop),
         }),
         back: Some(Button {
             action: Action::Ride(Role::Back),
-            cue: Some(Icon::Back),
+            cue: None,
         }),
         move_: Some(Button {
             action: Action::Ride(Role::Move),
-            cue: Some(Icon::Trash),
+            cue: Some(Icon::Back),
         }),
         held: None,
     },
 };
-
-const fn line(says: Says) -> Node {
-    Node::leaf(RIDE_LINE, says.byte(), Size::CONTENT)
-}
-
-const fn space(units: u8) -> Node {
-    Node::leaf(SPACE, 0, Size::units(units))
-}
-
-/// The question and the ride it is about read as one block, centred down
-/// the screen so the cues' corners stay clear of it.
-const TREE: [Node; 9] = [
-    Node::col(1, Size::grow(1)),
-    Node::col(7, Size::CONTENT),
-    line(Says::EndRide),
-    space(28),
-    line(Says::RideTime),
-    space(10),
-    line(Says::RideKm),
-    space(28),
-    line(Says::Saved),
-];

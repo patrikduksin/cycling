@@ -175,6 +175,10 @@ pub struct Space {
     pub marker: u8,
     /// The fewest rows a chart keeps.
     pub chart: u8,
+    /// Above a phone-style screen's state disc.
+    pub lead: u8,
+    /// The small disc beside a title.
+    pub small_disc: u8,
 }
 
 /// Corner radii in scaled units.

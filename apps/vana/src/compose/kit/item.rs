@@ -37,10 +37,31 @@ specs! {
     /// A button. Ids: home and sheet 0–63, pause, end and done 64–127,
     /// sensors 128–191.
     pub enum Button: Spec {
-        Resume = 64 => Spec {
+        End = 64 => Spec {
+            label: "END",
+            symbol: Some(Symbol::Stop),
+            tone: Tone::Bad,
+            solid: false,
+            action: Action::Ride(Role::Move),
+        },
+        Resume = 65 => Spec {
             label: "RESUME",
-            symbol: None,
+            symbol: Some(Symbol::Play),
             tone: Tone::Good,
+            solid: true,
+            action: Action::Ride(Role::Act),
+        },
+        Back = 66 => Spec {
+            label: "BACK",
+            symbol: Some(Symbol::Chevron),
+            tone: Tone::Text,
+            solid: false,
+            action: Action::Ride(Role::Move),
+        },
+        Save = 67 => Spec {
+            label: "END",
+            symbol: Some(Symbol::Check),
+            tone: Tone::Bad,
             solid: true,
             action: Action::Ride(Role::Act),
         },

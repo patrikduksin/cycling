@@ -22,11 +22,13 @@ fn ride(sim: &mut Sim, watts: f64, secs: u64) {
     sim.start_ride();
     sim.ride_at(30.0, watts, 0.0, 90.0);
     sim.advance(seconds(secs));
+    // Stopped, so rolling on does not start the next ride.
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.pause_ride();
     sim.press(Role::Back);
-    sim.expect_text("END RIDE?");
+    sim.expect_text("End ride?");
     sim.press(Role::Act);
-    sim.wait_for("SYNC TO SAVE", seconds(5)).unwrap();
+    sim.wait_for("Sync to save", seconds(5)).unwrap();
     sim.done();
 }
 

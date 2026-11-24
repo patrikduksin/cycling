@@ -2,8 +2,7 @@
 //! fact, its label on the left and its value on the right, a rule between
 //! rows.
 use super::{px, specs};
-use crate::compose::data::Data;
-use crate::compose::data::Metric;
+use crate::compose::data::{Data, Metric, Reads};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
@@ -61,6 +60,10 @@ fn value(fact: &Fact, reading: Option<i32>) -> Text<24> {
 impl Tile for Facts {
     type Arg = Card;
     const NAME: &'static str = "facts";
+
+    fn reads(card: Card) -> Option<Reads> {
+        Some(Reads::Card(card))
+    }
 
     fn forms(card: Card, at: &Scaled) -> Forms {
         let rows = card.spec().rows;

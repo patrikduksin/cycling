@@ -39,7 +39,7 @@ impl Runtime {
         if self.ride.pending() || self.ride.moving() {
             return;
         }
-        let starts = matches!(self.navigation.page(), Page::Ride | Page::Home);
+        let starts = matches!(self.navigation.page(), Page::Ride | Page::Home | Page::Done);
         let motion = self.readings.motion;
         let automatic = self.preferences.options.auto_pause;
         if let Some(call) = self.ride.auto_update(now, motion, starts, automatic) {
@@ -105,11 +105,16 @@ impl Runtime {
                 End::Finished(saved(medium))
             }
         };
+        let finished = ended.iter().any(Option::is_some);
         let settled = settle::settle(ended.map(|ended| ended.map(end)), bulk);
         if let Some(claimed) = settled.claimed {
             self.training.ftp.set(Source::RideSummary, claimed.ftp);
         }
         self.ride.after_settle(&settled, now);
+        // The ride saved its workout's record: the next ride is free.
+        if finished {
+            self.leave_workout();
+        }
         // Stamp milestones after the synchronous writes, so their cost shows:
         // storage once neither journal scans, recording once the ride does.
         let done = clock().max(now);

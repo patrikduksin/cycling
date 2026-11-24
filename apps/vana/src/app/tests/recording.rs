@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::navigation::To;
 use crate::ride::log::Status;
+use crate::screens::done::Kept;
 use crate::screens::ride::{Deck, RidePage};
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, POWER, SPEED};
@@ -236,30 +237,30 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
         "the second lap is debounced"
     );
 
-    // Paused, TopLeft asks "End ride?"; BACK keeps the ride paused.
     pause(&mut runtime, &mut journal, &mut radio, 4600);
-    runtime.input_received(press(Role::Back), 5000, 5000, &mut radio);
-    assert!(runtime.navigation.page() == Page::EndRide);
-    runtime.input_received(press(Role::Back), 5400, 5400, &mut radio);
-    assert!(runtime.navigation.page() == Page::Ride);
-    runtime.input_received(press(Role::Back), 5800, 5800, &mut radio);
+    for (at, ask, back) in [
+        (5000, Role::Back, Role::Back),
+        (5800, Role::Move, Role::Move),
+    ] {
+        runtime.input_received(press(ask), at, at, &mut radio);
+        assert!(runtime.navigation.page() == Page::EndRide);
+        runtime.input_received(press(back), at + 400, at + 400, &mut radio);
+        assert!(runtime.navigation.page() == Page::Ride);
+    }
+    runtime.input_received(press(Role::Back), 6600, 6600, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 60_000);
     assert!(runtime.navigation.page() == Page::EndRide);
     assert_eq!(runtime.ride.internal().status(), Status::Paused);
-    // ACT answers: the ride saves and its summary opens.
     runtime.input_received(press(Role::Act), 60_400, 60_400, &mut radio);
-    assert!(runtime.navigation.page() == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Done);
+    runtime.refresh_done();
+    assert_eq!(runtime.done.kept(), Kept::Saving, "queued, not yet saved");
     settle(&mut runtime, &mut journal, &mut radio, 60_400);
     assert_eq!(runtime.ride.internal().status(), Status::Saved);
-    assert!(runtime.navigation.page() == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Done);
+    runtime.refresh_done();
+    assert_eq!(runtime.done.kept(), Kept::Saved);
 
-    // The summary pages wrap; ACT finishes, to Home.
-    assert_eq!(runtime.navigation.summary_page(), 0);
-    runtime.input_received(press(Role::Move), 63_000, 63_000, &mut radio);
-    assert_eq!(runtime.navigation.summary_page(), 1);
-    runtime.input_received(press(Role::Move), 63_400, 63_400, &mut radio);
-    runtime.input_received(press(Role::Move), 63_800, 63_800, &mut radio);
-    assert_eq!(runtime.navigation.summary_page(), 0);
     runtime.input_received(press(Role::Act), 64_200, 64_200, &mut radio);
     assert!(runtime.navigation.page() == Page::Home);
 }
@@ -398,7 +399,7 @@ fn a_host_resume_while_asking_returns_to_the_ride_before_the_next_frame() {
 }
 
 #[test]
-fn a_host_finish_while_asking_opens_the_summary_before_the_next_frame() {
+fn a_host_finish_while_asking_opens_ride_done_before_the_next_frame() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -411,9 +412,29 @@ fn a_host_finish_while_asking_opens_the_summary_before_the_next_frame() {
     settle(&mut runtime, &mut journal, &mut radio, 2600);
     let (_, status) = host(&mut runtime, &mut journal, 5000, "RIDE STATUS");
     assert!(status.starts_with("state=saved "), "{status}");
-    assert!(status.contains(" page=summary "), "{status}");
+    assert!(status.contains(" page=ride_done "), "{status}");
     runtime.input_received(press(Role::Act), 5000, 5000, &mut radio);
     assert!(runtime.navigation.page() == Page::Home);
+}
+
+#[test]
+fn ending_a_workout_ride_consumes_the_workout_so_the_next_ride_is_free() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.training.selected = runtime.training.library.ids().next();
+    ask_to_end(&mut runtime, &mut journal, &mut radio);
+    assert!(runtime.training.player.is_some(), "the workout runs");
+    runtime.input_received(press(Role::Act), 2800, 2800, &mut radio);
+    assert!(runtime.navigation.page() == Page::Done);
+    assert!(
+        runtime.training.player.is_some(),
+        "kept for the ride's record"
+    );
+    settle(&mut runtime, &mut journal, &mut radio, 2800);
+    assert_eq!(runtime.ride.internal().status(), Status::Saved);
+    assert!(runtime.training.selected.is_none());
+    assert!(runtime.training.player.is_none());
 }
 
 #[test]
@@ -459,7 +480,7 @@ fn no_ride_starts_while_the_format_question_is_up() {
 }
 
 #[test]
-fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leave() {
+fn a_failed_finish_read_by_the_host_stays_on_ride_done_and_lets_the_rider_leave() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -469,14 +490,14 @@ fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leav
     };
     ask_to_end(&mut runtime, &mut store, &mut radio);
     runtime.input_received(press(Role::Act), 2800, 2800, &mut radio);
-    assert!(runtime.navigation.page() == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Done);
     store.fail = true;
     for step in 0..20 {
         tick(&mut runtime, &mut store, &mut radio, 2800 + step * 100);
     }
     let (_, status) = host(&mut runtime, &mut store, 5000, "RIDE STATUS");
     assert!(status.starts_with("state=error "), "{status}");
-    assert!(status.contains(" page=summary "), "{status}");
+    assert!(status.contains(" page=ride_done "), "{status}");
     // The failed finish is the rider's: the host's read neither reports nor
     // clears it.
     assert!(status.ends_with(" pending=0"), "{status}");
@@ -486,7 +507,8 @@ fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leav
     ));
     let mut screen = super::presentation::Screen::new();
     assert!(screen.present(&mut runtime, &radio, 5000));
-    assert!(runtime.navigation.page() == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Done);
+    assert_eq!(runtime.done.kept(), Kept::Failed);
     runtime.input_received(press(Role::Act), 5400, 5400, &mut radio);
     assert!(runtime.navigation.page() == Page::Home);
 }
@@ -507,7 +529,7 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
         !runtime.navigation.pause_hidden(),
         "the paused screen shows"
     );
-    runtime.input_received(press(Role::Move), 2600, 2600, &mut radio);
+    runtime.next_ride_page();
     assert!(runtime.navigation.pause_hidden());
     assert_eq!(
         runtime.navigation.ride_page(),
@@ -525,8 +547,8 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     );
     // Paging on goes round every page again, starting at the first.
     let mut seen = std::vec::Vec::new();
-    for at in (5000..9000).step_by(400).take(4) {
-        runtime.input_received(press(Role::Move), at, at, &mut radio);
+    for _ in 0..4 {
+        runtime.next_ride_page();
         let navigation = &runtime.navigation;
         seen.push(navigation.pause_hidden().then_some(navigation.ride_page()));
     }
@@ -1375,7 +1397,7 @@ fn muted_cues_keep_the_reminder_quiet() {
 }
 
 #[test]
-fn acting_on_an_auto_pause_makes_it_manual_and_the_next_press_resumes() {
+fn act_resumes_an_auto_pause_and_asking_to_end_holds_it() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -1390,16 +1412,19 @@ fn acting_on_an_auto_pause_makes_it_manual_and_the_next_press_resumes() {
         true,
     );
     runtime.input_received(press(Role::Act), at, at, &mut radio);
-    at = roll(
-        (&mut runtime, &mut journal, &mut radio),
-        &mut wheel,
-        at,
-        25,
-        false,
-    );
-    assert!(runtime.ride.auto().paused());
+    let mut stop = |runtime: &mut Runtime, journal: &mut Journal, radio: &mut Radio, at| {
+        let at = roll((runtime, journal, radio), &mut wheel, at, 25, false);
+        assert!(runtime.ride.auto().paused());
+        at
+    };
+    at = stop(&mut runtime, &mut journal, &mut radio, at);
     runtime.input_received(press(Role::Act), at, at, &mut radio);
-    at = roll(
+    tick(&mut runtime, &mut journal, &mut radio, at);
+    assert_eq!(runtime.ride.internal().status(), Status::Recording);
+    at = stop(&mut runtime, &mut journal, &mut radio, at + 100);
+    runtime.input_received(press(Role::Move), at, at, &mut radio);
+    assert!(runtime.navigation.page() == Page::EndRide);
+    roll(
         (&mut runtime, &mut journal, &mut radio),
         &mut wheel,
         at,
@@ -1411,15 +1436,6 @@ fn acting_on_an_auto_pause_makes_it_manual_and_the_next_press_resumes() {
         Status::Paused,
         "now manual"
     );
-    runtime.input_received(press(Role::Act), at, at, &mut radio);
-    roll(
-        (&mut runtime, &mut journal, &mut radio),
-        &mut wheel,
-        at,
-        1,
-        true,
-    );
-    assert_eq!(runtime.ride.internal().status(), Status::Recording);
 }
 
 #[test]

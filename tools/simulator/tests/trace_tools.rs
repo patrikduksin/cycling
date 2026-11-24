@@ -43,9 +43,7 @@ fn power_dropout_after_descent(sim: &mut Sim) {
     sim.set_present(device_type::POWER, POWER, true);
     sim.advance(seconds(15));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
-    sim.advance(seconds(6));
-    sim.pause_ride();
-    sim.advance(seconds(3));
+    sim.advance(seconds(9));
     sim.stop_ride();
 }
 

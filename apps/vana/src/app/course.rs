@@ -455,6 +455,12 @@ pub(super) fn upload(track: &mut RideTrack) -> (&mut Course, Finding<'_>) {
     (track.course, finding)
 }
 
+pub(super) fn crumbs<'a>(track: &'a Option<&'static mut RideTrack>) -> &'a [Crumb] {
+    track
+        .as_deref()
+        .map_or(&[], |state| state.breadcrumb.crumbs())
+}
+
 pub(super) fn refresh_map(
     track: &mut Option<&'static mut RideTrack>,
     now: u64,

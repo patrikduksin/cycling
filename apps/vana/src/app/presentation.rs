@@ -414,6 +414,7 @@ impl Runtime {
                 };
             }
             Page::Ride => {}
+            Page::Done => view.show_done(&self.done),
             Page::Home => {
                 view.set_home(self.home(gps_fix, now));
             }

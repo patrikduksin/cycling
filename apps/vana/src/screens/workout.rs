@@ -35,6 +35,8 @@ pub enum Page {
     DiscardRide,
     /// Saving, then the saved ride's summary.
     Summary,
+    /// The saved ride as a treat, until a key, a tap or riding on.
+    Done,
     Settings,
     /// The workout picker.
     Workouts,
@@ -54,6 +56,7 @@ impl Page {
             Self::EndRide => "end_ride",
             Self::DiscardRide => "discard_ride",
             Self::Summary => "summary",
+            Self::Done => "ride_done",
             Self::Settings => "settings",
             Self::Workouts => "workouts",
             Self::LoseRides => "lose_rides",
@@ -119,6 +122,7 @@ pub(super) enum Extra<'a> {
     },
     /// The sensor pages.
     Sensors(&'a super::sensors::Menu),
+    Done(&'a super::done::Done),
 }
 
 /// Settings' lines: the status, then a value and a note for each of a
@@ -151,6 +155,7 @@ impl<'a> Extra<'a> {
         after -> &After = Self::Summary { after, .. } => after;
         elevation -> Option<&'a ride::ElevationChart> = Self::Summary { elevation, .. } => *elevation;
         sensors -> &'a super::sensors::Menu = Self::Sensors(menu) => *menu;
+        done -> &'a super::done::Done = Self::Done(done) => *done;
     }
 }
 
@@ -197,6 +202,7 @@ enum Painted<'v> {
     Settings,
     Workouts,
     Summary(Option<&'v ride::ElevationChart>),
+    Done(&'v super::done::Done),
 }
 
 impl<'v> Painted<'v> {
@@ -222,6 +228,7 @@ impl Extra<'_> {
             Self::Home(_) => Painted::None,
             Self::Workouts(_) => Painted::Workouts,
             Self::Sensors(_) => Painted::None,
+            Self::Done(done) => Painted::Done(done),
             Self::Summary {
                 after: _,
                 elevation,
@@ -300,7 +307,12 @@ impl<'v> Scene<'v> {
             return;
         }
         match self.kind {
-            Kind::PageUnderBar => self.paint_canvas(row),
+            Kind::PageUnderBar => {
+                if let (Painted::Done(done), Some(theme)) = (self.painted, self.theme) {
+                    done.paint(&mut row.plain(), theme);
+                }
+                self.paint_canvas(row);
+            }
             Kind::Ride(page) => ride::paint(self, page, row),
             Kind::Summary { elevation, .. } => {
                 if let Some(chart) = self.elevation_chart().filter(|_| elevation) {
@@ -928,6 +940,14 @@ impl<'a> View<'a> {
         self.body = Body::Canvas(canvas);
     }
 
+    pub fn show_done(&mut self, done: &'a super::done::Done) {
+        self.extra = Extra::Done(done);
+    }
+
+    pub(super) fn done(&self) -> Option<&'a super::done::Done> {
+        self.extra.done()
+    }
+
     /// Show the sensor page `menu` is on.
     pub fn show_sensors(&mut self, menu: &'a super::sensors::Menu) {
         self.extra = Extra::Sensors(menu);
@@ -1092,7 +1112,12 @@ impl<'a> View<'a> {
 
     fn full_screen(&self) -> bool {
         match self.page {
-            Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => true,
+            Page::Boot
+            | Page::Format
+            | Page::EndRide
+            | Page::DiscardRide
+            | Page::Done
+            | Page::LoseRides => true,
             Page::Summary => summary::question_shown(self.after()),
             Page::Sensors => !self.bar_has_room(),
             _ => self.paused_screen_shown(),
@@ -1285,19 +1310,7 @@ impl<'a> View<'a> {
         {
             self.badge = summary::badge(&after, heading, &self.device.scaled);
         }
-        laid.controls()
-            .shown(laid.focus())
-            .filter(|cue| self.offers(cue))
-            .collect()
-    }
-
-    fn offers(&self, cue: &Cue) -> bool {
-        match self.page {
-            Page::EndRide => {
-                cue.role != device_api::input::Role::Move || self.discard == Discard::Offered
-            }
-            _ => true,
-        }
+        laid.controls().shown(laid.focus()).collect()
     }
 }
 

@@ -18,6 +18,7 @@ pub mod load;
 pub mod log;
 pub mod medium;
 pub mod metrics;
+pub mod power_trace;
 pub mod reclaim;
 pub mod recorder;
 pub mod recovery;

@@ -1,8 +1,9 @@
 //! A horizontal bar: an effort's zones, each lit segment in its own zone's
 //! colour up to the zone it sits in, a level, lit from the left up to a
-//! metric's share of its full scale, or a workout step's target band.
+//! metric's share of its full scale, a workout step's target band, or the
+//! ride's time in each zone.
 use super::{band, px, specs};
-use crate::compose::data::{Data, Effort, Metric, Reads};
+use crate::compose::data::{Data, Effort, Metric, Reads, Shares};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
@@ -16,6 +17,8 @@ pub struct Bar;
 pub enum Shows {
     /// One segment a zone.
     Zones(Effort),
+    /// The ride's time in each zone, a segment as wide as its share.
+    Time(Effort),
     /// The metric's reading out of `full`, lit in `tone`.
     Level {
         metric: Metric,
@@ -39,7 +42,7 @@ impl Spec {
 
     const fn shapes(&self) -> u8 {
         match self.shows {
-            Shows::Zones(effort) => effort.zones(),
+            Shows::Zones(effort) | Shows::Time(effort) => effort.zones(),
             Shows::Level { .. } => 1,
             Shows::Target => band::SHAPES,
         }
@@ -48,11 +51,12 @@ impl Spec {
 
 specs! {
     /// A bar. Ids: Stats and Climb 0–63, Workout 64–127, home and sheet
-    /// 128–191.
+    /// 128–191, done 192–255.
     pub enum Gauge: Spec {
         PowerZones = 0 => Spec { name: "POWER ZONES", shows: Shows::Zones(Effort::Power) },
         HeartZones = 1 => Spec { name: "HEART ZONES", shows: Shows::Zones(Effort::Heart) },
         Step = 64 => Spec { name: "STEP TARGET", shows: Shows::Target },
+        PowerTime = 192 => Spec { name: "POWER TIME", shows: Shows::Time(Effort::Power) },
     }
 }
 
@@ -67,6 +71,7 @@ impl Tile for Bar {
         match gauge.spec().shows {
             Shows::Zones(Effort::Power) => Some(Reads::Metric(Metric::Power)),
             Shows::Zones(Effort::Heart) => Some(Reads::Metric(Metric::Heart)),
+            Shows::Time(_) => None,
             Shows::Level { metric, .. } => Some(Reads::Metric(metric)),
             Shows::Target => Some(Reads::Target),
         }
@@ -116,6 +121,31 @@ impl Tile for Bar {
                         },
                         radius,
                         color,
+                    });
+                }
+            }
+            Shows::Time(effort) => {
+                let Some(Shares(ends)) = data.zone_time(effort) else {
+                    return;
+                };
+                let seam = px(at, SEAM_UNITS);
+                let mut start = 0;
+                for (zone, &end) in ends.iter().take(usize::from(effort.zones())).enumerate() {
+                    let (from, to) = (start, usize::from(end));
+                    start = to;
+                    let width = rect.width() * (to - from) / usize::from(Shares::WHOLE);
+                    let left = rect.left + rect.width() * from / usize::from(Shares::WHOLE);
+                    if width <= seam {
+                        continue;
+                    }
+                    out.shape(Shape::Bar {
+                        rect: Rect {
+                            left,
+                            right: left + width - seam,
+                            ..rect
+                        },
+                        radius,
+                        color: theme.zone(zone as u8 + 1),
                     });
                 }
             }

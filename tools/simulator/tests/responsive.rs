@@ -256,59 +256,26 @@ fn the_climb_page_draws_on_both_test_panels() {
 }
 
 #[test]
-fn the_paused_end_and_summary_screens_draw_on_both_test_panels() {
+fn the_paused_end_and_done_screens_draw_on_both_test_panels() {
     for model in [WIDE, SMALL] {
         let mut twin = riding(model, world);
         twin.advance(seconds(60));
         twin.guide(Sim::pause_ride);
-        shows(&twin.sim, &["PAUSED", "FOR", "RIDE TIME", "KM"]);
+        shows(&twin.sim, &["Paused", "km", "END", "RESUME"]);
         twin.sim.checkpoint(&format!("paused on {}", model.name));
         twin.guide(|sim| {
             sim.press(Role::Back);
-            sim.expect_text("END RIDE?");
+            sim.expect_text("End ride?");
         });
-        shows(&twin.sim, &["END RIDE?", "KM", "YOUR RIDE WILL BE SAVED"]);
+        shows(&twin.sim, &["End ride?", "km", "BACK", "END"]);
         twin.sim.checkpoint(&format!("end ride on {}", model.name));
         twin.guide(|sim| {
             sim.press(Role::Act);
-            sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
+            sim.wait_for("Ride saved", seconds(5)).unwrap();
         });
-        twin.sim.checkpoint(&format!("summary on {}", model.name));
-        assert!(lit(&twin.sim) > 2_000, "{} summary", model.name);
-    }
-}
-
-#[test]
-fn the_summary_pages_and_a_saved_ride_draw_on_both_test_panels() {
-    for model in [WIDE, SMALL] {
-        let name = model.name;
-        let mut twin = riding(model, hilly);
-        twin.both(|sim| sim.ride_at(20.0, 260.0, 150.0, 85.0));
-        while twin.sim.world().distance_m < 1800.0 {
-            twin.advance(seconds(5));
-        }
-        twin.guide(Sim::stop_ride);
-        shows(&twin.sim, &["RIDE SAVED", "TIME", "DIST KM", "AVG BPM"]);
-        twin.sim.checkpoint(&format!("summary overview on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Move);
-            sim.expect_text("NP W");
-        });
-        shows(&twin.sim, &["NP W", "KCAL", "PWR", "HR"]);
-        twin.sim.checkpoint(&format!("summary effort on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Move);
-            sim.expect_text("DESCENT M");
-        });
-        shows(&twin.sim, &["ASCENT M", "DESCENT M", "MIN M", "MAX M"]);
-        twin.sim.checkpoint(&format!("summary elevation on {name}"));
-        twin.guide(|sim| {
-            sim.press(Role::Move);
-            sim.expect_text("BEST POWER W");
-        });
-        shows(&twin.sim, &["BEST POWER W", "CLIMBS", "LAPS"]);
-        twin.sim
-            .checkpoint(&format!("summary best power on {name}"));
+        shows(&twin.sim, &["Ride saved"]);
+        twin.sim.checkpoint(&format!("ride done on {}", model.name));
+        assert!(lit(&twin.sim) > 2_000, "{} ride done", model.name);
     }
 }
 

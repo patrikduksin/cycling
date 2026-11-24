@@ -44,7 +44,6 @@ pub(super) enum To {
     Edit { field: usize, wheel_origin: Wheel },
     EditDone,
     Ride,
-    Summary,
     Home,
     RidePage(RidePage),
     LeavePause { wrapped_to: RidePage },
@@ -183,10 +182,6 @@ impl Navigation {
                 self.ride_page = self.first_page;
                 self.climb = Follow::Idle;
                 self.pause_hidden = false;
-            }
-            To::Summary => {
-                self.summary_page = 0;
-                self.page = Page::Summary;
             }
             To::Home => {
                 self.ride_page = RidePage::Main;
@@ -421,7 +416,7 @@ impl Navigation {
                 self.chime = Some(Cue::Pause);
                 return;
             }
-            (_, Status::Saved) if riding && self.page == Page::Summary => {
+            (_, Status::Saved) if riding && self.page == Page::Done => {
                 self.chime = Some(Cue::Saved);
                 return;
             }

@@ -1,6 +1,6 @@
 mod arrow;
 mod pose;
-mod raster;
+pub(crate) mod raster;
 mod roads;
 
 use crate::ride::breadcrumb::Crumb;

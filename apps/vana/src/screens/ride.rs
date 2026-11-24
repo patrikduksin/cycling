@@ -214,13 +214,15 @@ fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
         let Some(What::Leaf { component, arg }) = node.what() else {
             continue;
         };
+        let mut note = |metric: crate::compose::data::Metric| {
+            if let Some(name) = metric.shown().filter(|name| !read.contains(name)) {
+                let _ = read.push(name);
+            }
+        };
         match crate::compose::registry::tile(component).reads(arg) {
             Some(Reads::Target) => return None,
-            Some(Reads::Metric(metric)) => {
-                if let Some(name) = metric.shown().filter(|name| !read.contains(name)) {
-                    let _ = read.push(name);
-                }
-            }
+            Some(Reads::Metric(metric)) => note(metric),
+            Some(Reads::Card(card)) => card.spec().rows.iter().for_each(|fact| note(fact.metric)),
             None => {}
         }
     }
@@ -889,11 +891,12 @@ mod tests {
                 assert_eq!(cues.len(), 2, "resume and end");
                 let canvas = view.canvas();
                 let what = std::format!("paused on {:?}", device.scaled.panel);
-                for shown in ["FOR 99:59:59", "99:59:59", "1000.0 KM", "RIDE TIME"] {
+                for shown in ["99:59:59", "Ride time", "Distance", "END", "RESUME"] {
                     assert!(canvas.shows(shown), "{what}: {shown}");
                 }
-                assert_eq!(canvas.shows("RIDE ON TO RESUME"), auto, "{what}");
-                assert_eq!(canvas.shows("AUTO PAUSED"), auto, "{what}");
+                assert_eq!(canvas.shows("for 99:59:59"), !auto, "{what}");
+                assert_eq!(canvas.shows("Ride on to resume"), auto, "{what}");
+                assert_eq!(canvas.shows("Auto paused"), auto, "{what}");
                 for run in &canvas.runs {
                     let rect = crate::screens::chrome::Rect {
                         left: run.columns().start,
@@ -911,29 +914,21 @@ mod tests {
     }
 
     #[test]
-    fn end_ride_offers_the_trash_only_where_a_ride_can_be_discarded() {
+    fn end_ride_puts_back_over_move_and_end_over_act() {
         use crate::screens::cue::Icon;
-        use crate::screens::workout::Discard;
-        for (discard, icons) in [
-            (Discard::Unavailable, &[Icon::Check, Icon::Back][..]),
-            (
-                Discard::Offered,
-                &[Icon::Check, Icon::Back, Icon::Trash][..],
-            ),
-        ] {
-            let mut view = View::new(Page::EndRide, 0, None);
-            view.discard = discard;
-            let mut view = prepared(view);
-            let scene = view.prepare();
-            scene.check_layout();
-            let mut shown: std::vec::Vec<Icon> = scene.cues().iter().map(|cue| cue.icon).collect();
-            shown.sort_by_key(|icon| *icon as u8);
-            let mut icons = icons.to_vec();
-            icons.sort_by_key(|icon| *icon as u8);
-            assert_eq!(shown, icons, "{discard:?}");
-            for line in ["END RIDE?", "YOUR RIDE WILL BE SAVED", "0:00:00", "0.00 KM"] {
-                assert!(view.canvas().shows(line), "{line}");
-            }
+        use device_api::input::Role;
+        let view = View::new(Page::EndRide, 0, None);
+        let mut view = prepared(view);
+        let scene = view.prepare();
+        scene.check_layout();
+        let shown: std::vec::Vec<(Role, Icon)> = scene
+            .cues()
+            .iter()
+            .map(|cue| (cue.role, cue.icon))
+            .collect();
+        assert_eq!(shown, [(Role::Act, Icon::Stop), (Role::Move, Icon::Back)]);
+        for line in ["End ride?", "It will be saved", "0:00:00", "BACK", "END"] {
+            assert!(view.canvas().shows(line), "{line}");
         }
     }
 

@@ -4,11 +4,11 @@
 //! screens updates its hash here and shows the new screen in its sim-compare.
 use shell_simulator::bench::{SCENES, hash, measure};
 
-const HASHES: [(&str, u64); 25] = [
+const HASHES: [(&str, u64); 24] = [
     ("home", 0x9b65_c3d8_8917_03c8),
     ("ride main + radar", 0x1dcd_5a09_16e2_7ae2),
     ("climb", 0xe292_a776_61df_eae8),
-    ("summary", 0x5a0e_ebe1_49e6_6dc5),
+    ("ride done", 0x150a_ebcc_0966_90a5),
     ("sensors list", 0x328d_b813_7dee_22a5),
     ("workouts", 0x7832_b3fd_9df0_0bc3),
     ("ride stats", 0xb1e5_83a4_9246_782b),
@@ -20,11 +20,10 @@ const HASHES: [(&str, u64); 25] = [
     ("map santiago 25 km/h", 0x8656_8472_e442_d64e),
     ("map santiago 50 km/h", 0x6c6a_1533_1183_136f),
     ("map santiago 90 km/h", 0x98cd_079a_0e28_4cea),
-    ("paused", 0x60ff_a180_4e97_e5b5),
-    ("end ride", 0x4505_1d0a_644b_2896),
+    ("paused", 0x762c_8bfe_f4f3_593d),
+    ("end ride", 0x842f_6fb4_9c1e_aad9),
     ("settings", 0x4f04_dc7f_2016_6b9e),
     ("sensor detail", 0xb3e2_caaf_1260_c5e9),
-    ("summary page 2", 0x2bea_3638_de11_ae79),
     ("boot", 0x8099_3d2c_de83_6750),
     ("settings editing", 0x020e_1ae4_9ad4_27b3),
     ("main with workout band", 0x74bd_c70d_3585_bc6d),

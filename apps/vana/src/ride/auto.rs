@@ -210,7 +210,7 @@ impl Auto {
                 rules.start_after,
                 Call::Remind,
             ),
-            Status::Ready if ready && automatic => (
+            Status::Ready | Status::Saved if ready && automatic => (
                 speed.is_some_and(|speed| speed >= rules.start_at),
                 rules.start_after,
                 Call::Do(Decision::Start),
@@ -346,6 +346,14 @@ mod tests {
             (Status::Ready, false, STOPPED, None),
             (Status::Ready, false, UNKNOWN, None),
             (Status::Ready, false, Motion::Lost, None),
+            // Saved, after a ride: the next one starts as from Ready.
+            (
+                Status::Saved,
+                false,
+                RIDING,
+                Some((Call::Do(Start), WHEEL.start_after)),
+            ),
+            (Status::Saved, false, STOPPED, None),
         ];
         for &(status, by_auto, wheel, expected) in rows {
             let mut auto = Auto::default();
@@ -357,7 +365,6 @@ mod tests {
         }
         // Other states never decide anything.
         for status in [
-            Status::Saved,
             Status::Recovered,
             Status::Full,
             Status::Error,

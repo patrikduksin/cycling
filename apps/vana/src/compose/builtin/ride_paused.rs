@@ -1,20 +1,30 @@
-//! While a ride is paused the whole screen says so: the pause mark, PAUSED
-//! or AUTO PAUSED and for how long, then the ride so far, and the hint to
-//! ride on while auto-paused, whose room stays when it does not show. ACT
-//! resumes, or holds an auto-pause; BACK asks END RIDE?; MOVE shows the
-//! ride pages.
-use super::{Builtin, Choices};
-use crate::compose::data::Metric;
-use crate::compose::input::{Action, Button, Buttons, Go};
-use crate::compose::node::{Node, Size};
-use crate::compose::registry::{PAUSE, RIDE_CELL, RIDE_LINE, SPACE};
-use crate::compose::tiles::ride_cell::Celled;
-use crate::compose::tiles::ride_line::Says;
+//! While a ride is paused the whole screen says so, phone style: the pause
+//! on an amber disc, Paused and for how long, or Auto paused and that riding
+//! on resumes, the ride so far as a card, and END over MOVE and RESUME over
+//! ACT. MOVE and BACK ask End ride?, ACT resumes; a swipe shows the ride
+//! pages.
+use super::Builtin;
+use crate::compose::input::{Action, Button, Buttons};
+use crate::compose::kit::facts::Card;
+use crate::compose::kit::item::Button as Item;
+use crate::compose::kit::phone;
+use crate::compose::kit::symbol::Mark;
+use crate::compose::kit::text::Say;
 use crate::screens::cue::Icon;
 use device_api::input::Role;
 
 pub const BUILTIN: &Builtin = &Builtin {
-    tree: |_: &Choices| TREE.into_iter().collect(),
+    tree: |_| {
+        phone(
+            Mark::Paused,
+            Say::Paused,
+            Say::PausedFor,
+            Card::Ride,
+            [Item::End, Item::Resume],
+        )
+        .into_iter()
+        .collect()
+    },
     buttons: Buttons {
         act: Some(Button {
             action: Action::Ride(Role::Act),
@@ -22,44 +32,12 @@ pub const BUILTIN: &Builtin = &Builtin {
         }),
         back: Some(Button {
             action: Action::Ride(Role::Back),
-            cue: Some(Icon::Stop),
+            cue: None,
         }),
         move_: Some(Button {
-            action: Action::Go(Go::Next),
-            cue: None,
+            action: Action::Ride(Role::Move),
+            cue: Some(Icon::Stop),
         }),
         held: None,
     },
 };
-
-const fn line(says: Says) -> Node {
-    Node::leaf(RIDE_LINE, says.byte(), Size::CONTENT)
-}
-
-const fn space(units: u8) -> Node {
-    Node::leaf(SPACE, 0, Size::units(units))
-}
-
-const RIDE_TIME: Celled = Celled {
-    metric: Metric::Elapsed,
-    large: true,
-    centre: true,
-};
-
-/// The pause, the ride so far and the hint read as one block, centred down
-/// the screen so the cues' corners stay clear of it.
-const TREE: [Node; 13] = [
-    Node::col(1, Size::grow(1)),
-    Node::col(11, Size::CONTENT),
-    Node::leaf(PAUSE, 0, Size::CONTENT),
-    space(10),
-    line(Says::Paused),
-    space(8),
-    line(Says::PausedFor),
-    space(24),
-    Node::leaf(RIDE_CELL, RIDE_TIME.byte(), Size::CONTENT),
-    space(10),
-    line(Says::RideKm),
-    space(24),
-    line(Says::Resume),
-];

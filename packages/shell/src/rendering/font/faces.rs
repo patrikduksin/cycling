@@ -9001,7 +9001,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 0,
         h: 0,
-        advance: 4,
+        advance: 3,
     }, // ' '
     Glyph {
         offset: 0,
@@ -9009,7 +9009,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 3,
         h: 9,
-        advance: 4,
+        advance: 3,
     }, // '!'
     Glyph {
         offset: 18,
@@ -9017,7 +9017,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 5,
         h: 4,
-        advance: 6,
+        advance: 5,
     }, // '"'
     Glyph {
         offset: 30,
@@ -9025,7 +9025,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '#'
     Glyph {
         offset: 66,
@@ -9033,7 +9033,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 0,
         w: 7,
         h: 12,
-        advance: 8,
+        advance: 7,
     }, // '$'
     Glyph {
         offset: 114,
@@ -9041,7 +9041,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 11,
         h: 9,
-        advance: 12,
+        advance: 11,
     }, // '%'
     Glyph {
         offset: 168,
@@ -9049,7 +9049,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // '&'
     Glyph {
         offset: 204,
@@ -9057,7 +9057,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 3,
         h: 4,
-        advance: 4,
+        advance: 3,
     }, // "'"
     Glyph {
         offset: 212,
@@ -9065,7 +9065,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 3,
         h: 11,
-        advance: 5,
+        advance: 4,
     }, // '('
     Glyph {
         offset: 234,
@@ -9073,7 +9073,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 4,
         h: 11,
-        advance: 5,
+        advance: 4,
     }, // ')'
     Glyph {
         offset: 256,
@@ -9081,7 +9081,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 5,
         h: 5,
-        advance: 6,
+        advance: 5,
     }, // '*'
     Glyph {
         offset: 271,
@@ -9089,7 +9089,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 4,
         w: 7,
         h: 6,
-        advance: 8,
+        advance: 7,
     }, // '+'
     Glyph {
         offset: 295,
@@ -9097,7 +9097,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 8,
         w: 3,
         h: 4,
-        advance: 4,
+        advance: 3,
     }, // ','
     Glyph {
         offset: 303,
@@ -9105,7 +9105,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 6,
         w: 5,
         h: 2,
-        advance: 6,
+        advance: 5,
     }, // '-'
     Glyph {
         offset: 309,
@@ -9113,7 +9113,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 8,
         w: 3,
         h: 3,
-        advance: 4,
+        advance: 3,
     }, // '.'
     Glyph {
         offset: 315,
@@ -9121,7 +9121,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 1,
         w: 5,
         h: 10,
-        advance: 5,
+        advance: 4,
     }, // '/'
     Glyph {
         offset: 345,
@@ -9129,7 +9129,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '0'
     Glyph {
         offset: 381,
@@ -9137,7 +9137,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 6,
         h: 8,
-        advance: 8,
+        advance: 7,
     }, // '1'
     Glyph {
         offset: 405,
@@ -9145,7 +9145,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 8,
-        advance: 8,
+        advance: 7,
     }, // '2'
     Glyph {
         offset: 437,
@@ -9153,7 +9153,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '3'
     Glyph {
         offset: 473,
@@ -9161,7 +9161,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '4'
     Glyph {
         offset: 509,
@@ -9169,7 +9169,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '5'
     Glyph {
         offset: 545,
@@ -9177,7 +9177,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '6'
     Glyph {
         offset: 581,
@@ -9185,7 +9185,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '7'
     Glyph {
         offset: 617,
@@ -9193,7 +9193,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '8'
     Glyph {
         offset: 653,
@@ -9201,7 +9201,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // '9'
     Glyph {
         offset: 689,
@@ -9209,7 +9209,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 4,
         w: 3,
         h: 7,
-        advance: 4,
+        advance: 3,
     }, // ':'
     Glyph {
         offset: 703,
@@ -9217,7 +9217,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 4,
         w: 3,
         h: 8,
-        advance: 4,
+        advance: 3,
     }, // ';'
     Glyph {
         offset: 719,
@@ -9225,7 +9225,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 4,
         w: 7,
         h: 6,
-        advance: 8,
+        advance: 7,
     }, // '<'
     Glyph {
         offset: 743,
@@ -9233,7 +9233,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 5,
         w: 7,
         h: 4,
-        advance: 8,
+        advance: 7,
     }, // '='
     Glyph {
         offset: 759,
@@ -9241,7 +9241,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 4,
         w: 7,
         h: 6,
-        advance: 8,
+        advance: 7,
     }, // '>'
     Glyph {
         offset: 783,
@@ -9249,7 +9249,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 6,
         h: 9,
-        advance: 6,
+        advance: 5,
     }, // '?'
     Glyph {
         offset: 810,
@@ -9257,7 +9257,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 10,
         h: 10,
-        advance: 11,
+        advance: 10,
     }, // '@'
     Glyph {
         offset: 860,
@@ -9265,7 +9265,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 9,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'A'
     Glyph {
         offset: 905,
@@ -9273,7 +9273,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 8,
-        advance: 9,
+        advance: 8,
     }, // 'B'
     Glyph {
         offset: 937,
@@ -9281,7 +9281,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'C'
     Glyph {
         offset: 973,
@@ -9289,7 +9289,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 8,
-        advance: 10,
+        advance: 9,
     }, // 'D'
     Glyph {
         offset: 1005,
@@ -9297,7 +9297,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 8,
-        advance: 8,
+        advance: 7,
     }, // 'E'
     Glyph {
         offset: 1037,
@@ -9305,7 +9305,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 7,
+        advance: 6,
     }, // 'F'
     Glyph {
         offset: 1073,
@@ -9313,7 +9313,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'G'
     Glyph {
         offset: 1109,
@@ -9321,7 +9321,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 10,
+        advance: 9,
     }, // 'H'
     Glyph {
         offset: 1145,
@@ -9329,7 +9329,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 3,
         h: 9,
-        advance: 4,
+        advance: 3,
     }, // 'I'
     Glyph {
         offset: 1163,
@@ -9337,7 +9337,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 5,
         h: 9,
-        advance: 5,
+        advance: 4,
     }, // 'J'
     Glyph {
         offset: 1190,
@@ -9345,7 +9345,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'K'
     Glyph {
         offset: 1226,
@@ -9353,7 +9353,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 8,
-        advance: 7,
+        advance: 6,
     }, // 'L'
     Glyph {
         offset: 1258,
@@ -9361,7 +9361,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 9,
         h: 9,
-        advance: 11,
+        advance: 10,
     }, // 'M'
     Glyph {
         offset: 1303,
@@ -9369,7 +9369,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'N'
     Glyph {
         offset: 1339,
@@ -9377,7 +9377,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 9,
         h: 9,
-        advance: 10,
+        advance: 9,
     }, // 'O'
     Glyph {
         offset: 1384,
@@ -9385,7 +9385,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // 'P'
     Glyph {
         offset: 1420,
@@ -9393,7 +9393,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 9,
         h: 11,
-        advance: 10,
+        advance: 9,
     }, // 'Q'
     Glyph {
         offset: 1475,
@@ -9401,7 +9401,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'R'
     Glyph {
         offset: 1511,
@@ -9409,7 +9409,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // 'S'
     Glyph {
         offset: 1547,
@@ -9417,7 +9417,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // 'T'
     Glyph {
         offset: 1583,
@@ -9425,7 +9425,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'U'
     Glyph {
         offset: 1619,
@@ -9433,7 +9433,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'V'
     Glyph {
         offset: 1655,
@@ -9441,7 +9441,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 12,
         h: 9,
-        advance: 13,
+        advance: 12,
     }, // 'W'
     Glyph {
         offset: 1709,
@@ -9449,7 +9449,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 8,
         h: 9,
-        advance: 9,
+        advance: 8,
     }, // 'X'
     Glyph {
         offset: 1745,
@@ -9457,7 +9457,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 9,
-        advance: 8,
+        advance: 7,
     }, // 'Y'
     Glyph {
         offset: 1781,
@@ -9465,7 +9465,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 7,
         h: 8,
-        advance: 8,
+        advance: 7,
     }, // 'Z'
     Glyph {
         offset: 1813,
@@ -9473,7 +9473,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 4,
         h: 10,
-        advance: 5,
+        advance: 4,
     }, // '['
     Glyph {
         offset: 1833,
@@ -9481,7 +9481,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 1,
         w: 5,
         h: 10,
-        advance: 5,
+        advance: 4,
     }, // '\\'
     Glyph {
         offset: 1863,
@@ -9489,7 +9489,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 2,
         w: 3,
         h: 10,
-        advance: 5,
+        advance: 4,
     }, // ']'
     Glyph {
         offset: 1883,
@@ -9497,7 +9497,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 3,
         w: 6,
         h: 6,
-        advance: 8,
+        advance: 7,
     }, // '^'
     Glyph {
         offset: 1901,
@@ -9505,7 +9505,7 @@ static TAG_GLYPHS: [Glyph; 64] = [
         y: 10,
         w: 6,
         h: 1,
-        advance: 7,
+        advance: 6,
     }, // '_'
 ];
 static TAG_BITS: [u8; 1904] = [

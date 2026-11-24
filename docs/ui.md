@@ -52,10 +52,8 @@ rebuilt keep the rules in the rest of this document.
   an action. `bar` shows zone segments or a level. `facts` is an
   inset-grouped list. `kit::grid` lays out rows of cells with rules between
   them that line up. Chart, slider, sheet, toast and cue come with the
-  screens that need them, in the same pattern.
-- **Faces.** `TAG` (800, 11 px capitals), `NOTE` (700, 13 px), `LABEL` (800,
-  15 px) and `HEADING` (800, 21 px) have lowercase. `DIGITS_40`, `DIGITS_26`
-  and `DIGITS_15` (700) are tabular numbers.
+  screens that need them, in the same pattern. The kit's faces are under
+  Type scale below.
 
 ## Principles
 

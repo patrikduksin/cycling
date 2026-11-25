@@ -296,8 +296,13 @@ TASKS = [
         f'{DEV}harness.stress companion .local/tests/companion-stress-$(date +%s)',
     ),
     task(
+        'pair',
+        'Pair a phone: make a new link key over USB, save its URL for ble-http and print it as a QR code (--show)',
+        f'{DEV}connectivity.pair',
+    ),
+    task(
         'ble-http',
-        'Send HTTP requests over the C606 Bluetooth sync channel as the phone does: ble-http GET /api/status [...]',
+        'Send HTTP requests over the paired, encrypted Bluetooth link as the phone does: ble-http GET /api/status',
         f'{SYSTEM_PYTHON}connectivity.ble_http',
     ),
     task(

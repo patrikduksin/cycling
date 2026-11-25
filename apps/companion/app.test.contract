@@ -1,9 +1,39 @@
-test "opens on the device tab, not connected"
+test "opens on the device tab, not paired"
   expect state nav.tab == "device"
+  expect tree has "pair-how"
+  expect tree has "paste-link"
+  expect tree missing "connect"
+  expect tree missing "unpair"
+  expect tree missing "battery"
+
+test "paired, not connected: Connect and Forget This Bike Computer"
+  answer source pairing with {"paired": true, "id": "c6060001"}
+  answer source unpair with {"ok": true, "text": "Forgot the bike computer"}
+  answer source link with {"state": "idle", "detail": "", "name": "", "psm": 0}
+  clock data
   expect text "state" == "Not Connected"
   expect tree has "connect"
-  expect tree missing "battery"
-  expect tree missing "ftp"
+  expect tree missing "paste-link"
+  expect text "paired-id" == "Paired with bike computer c6060001."
+  tap "unpair"
+  clock settle
+  tap "unpair-cancel"
+  clock settle
+  tap "unpair"
+  clock settle
+  tap "unpair-confirm"
+  clock data
+  expect text "paired-id" == "Paired with bike computer c6060001."
+
+test "a pasted pairing link pairs"
+  answer source pair with {"ok": true, "text": "Paired"}
+  tap "paste-link"
+  clock settle
+  type "pasted" "vanaride://pair?id=c6060001&k=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+  expect state pasted == "vanaride://pair?id=c6060001&k=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+  tap "paste-confirm"
+  clock data
+  expect state pasted == ""
 
 test "each tab opens its screen"
   tap "tab-wifi"
@@ -13,9 +43,10 @@ test "each tab opens its screen"
   expect state nav.tab == "workouts"
   expect tree missing "today"
   tap "tab-device"
-  expect tree has "connect"
+  expect tree has "paste-link"
 
 test "connected: the bike computer and athlete rows"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "VANA, PSM 129, 840 ms", "name": "VANA", "psm": 129}
   answer source bike with {"battery": "82%", "firmware": "0.4.1", "storage": "38 h of recording left", "ftp": "210 W", "lthr": "176 bpm"}
   clock data
@@ -30,6 +61,7 @@ test "connected: the bike computer and athlete rows"
 
 test "connected: today's workout and the rides"
   time-zone "Europe/Berlin"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source today with {"planned": true, "name": "Sweet spot 3x12", "detail": "45 min · 12 steps"}
   answer source rides with {"indexing": false, "rides": [{"id": "f12-17", "title": "Tue 24 Nov, 07:12", "subtitle": "1:42:10 · 48.3 km", "power": true, "heart": false, "date": "Tue 24 Nov 2026", "start": "07:12", "moving": "1:42:10", "distance": "48.3 km", "speed": "28.4 km/h", "recorded": "GPS, Power", "file": "vana-2026-11-24-0712-ride17.fit"}, {"id": "i0-16", "title": "Ride 16", "subtitle": "15:05", "power": false, "heart": true, "date": "Unknown", "start": "Unknown", "moving": "15:05", "distance": "Not recorded", "speed": "Not recorded", "recorded": "Heart rate", "file": "vana-ride16.fit"}]}
@@ -46,6 +78,7 @@ test "connected: today's workout and the rides"
   expect tree missing "no-rides"
 
 test "connected: no workout and no rides yet"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source today with {"planned": false, "name": "No workout today", "detail": ""}
   answer source rides with {"indexing": false, "rides": []}
@@ -56,6 +89,7 @@ test "connected: no workout and no rides yet"
   expect text "no-rides" == "No rides yet"
 
 test "a ride pushes its detail, and Share FIT downloads it"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source today with {"planned": false, "name": "No workout today", "detail": ""}
   answer source rides with {"indexing": false, "rides": [{"id": "f12-17", "title": "Tue 24 Nov, 07:12", "subtitle": "1:42:10 · 48.3 km", "power": true, "heart": false, "date": "Tue 24 Nov 2026", "start": "07:12", "moving": "1:42:10", "distance": "48.3 km", "speed": "28.4 km/h", "recorded": "GPS, Power", "file": "vana-2026-11-24-0712-ride17.fit"}]}
@@ -82,6 +116,7 @@ test "Wi-Fi not connected says so"
   expect tree missing "networks-note"
 
 test "Wi-Fi: the current network and the scan"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
@@ -98,6 +133,7 @@ test "Wi-Fi: the current network and the scan"
   expect tree missing "scanning"
 
 test "Wi-Fi: a wrong password asks again"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
@@ -120,6 +156,7 @@ test "Wi-Fi: a wrong password asks again"
   clock settle
 
 test "Wi-Fi: joined with no internet says so"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
@@ -135,6 +172,7 @@ test "Wi-Fi: joined with no internet says so"
   expect text "networks-note" == "Joined, no internet"
 
 test "Wi-Fi: a failed join tells why"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
@@ -152,6 +190,7 @@ test "Wi-Fi: a failed join tells why"
   clock settle
 
 test "Wi-Fi: forget asks first"
+  answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}

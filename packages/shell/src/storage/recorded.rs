@@ -1,6 +1,6 @@
 //! How the settings capability reaches a trace: the encoding of what its
 //! methods take and give, and the hook that replaces the saved Wi-Fi
-//! password in a redacting log.
+//! password and the pairing in a redacting log.
 use super::{Error, Loaded, SettingsRedact};
 use crate::preferences::{AppPreferences, Settings, Source};
 use core::ops::DerefMut;
@@ -80,12 +80,15 @@ impl Wire<'_> for AppPreferences {
     }
 }
 
-/// The settings record as the shell persists it, its Wi-Fi password
-/// replaced when `redacting`.
+/// The settings record as the shell persists it, its Wi-Fi password and
+/// pairing replaced when `redacting`.
 pub fn encoded(settings: &Settings, redacting: bool) -> [u8; crate::preferences::LENGTH] {
     let mut settings = *settings;
     if redacting && let Some(wifi) = &mut settings.wifi {
         wifi.password = redact::wifi_password(wifi.password);
+    }
+    if redacting && let Some(pairing) = &mut settings.pairing {
+        *pairing = redact::PAIRING;
     }
     settings.encode()
 }

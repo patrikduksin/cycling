@@ -284,10 +284,11 @@ impl Runtime {
         "OK"
     }
 
-    /// `PHONE` reports the phone session; `PHONE START [HOME|BLE]` opens one
-    /// on the access point, the home network or Bluetooth; `PHONE STOP`
-    /// closes it. The reply carries the session's password and token: the
-    /// terminal is the owner's.
+    /// `PHONE` reports the phone session and pairing; `PHONE START [HOME]`
+    /// opens one on the access point or the home network; `PHONE STOP`
+    /// closes it; `PHONE PAIR` pairs a new phone (`phone::pairing`). The
+    /// replies carry the session's password and token and the pairing's key:
+    /// the terminal is the owner's.
     fn phone_command(
         &mut self,
         operation: Option<&str>,
@@ -298,8 +299,8 @@ impl Runtime {
             (None, None) => {}
             (Some("START"), None) => self.open_phone(super::PhoneMode::AccessPoint),
             (Some("START"), Some("HOME")) => self.open_phone(super::PhoneMode::Home),
-            (Some("START"), Some("BLE")) => self.open_phone(super::PhoneMode::Bluetooth),
             (Some("STOP"), None) => self.close_phone(),
+            (Some("PAIR"), None) => return self.pair_command(output),
             _ => return "INVALID",
         }
         let result = match self.phone_status() {
@@ -331,7 +332,7 @@ impl Runtime {
                 self.phone_closed().map_or("none", |closed| closed.name())
             ),
         };
-        if result.is_err() {
+        if result.and_then(|()| self.write_paired(output)).is_err() {
             return "OUTPUT";
         }
         if operation.is_some() {

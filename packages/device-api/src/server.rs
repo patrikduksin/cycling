@@ -63,9 +63,27 @@ pub enum Listen {
     /// TCP on the access point and the home network.
     Network,
     /// A phone's Bluetooth channel and nothing else: every request the server
-    /// presents while it listens here came over that channel. The device
-    /// advertises the channel only while it listens here.
+    /// presents while it listens here came over that channel, sealed with the
+    /// pairing's key. The device advertises the channel only while it listens
+    /// here and holds a pairing.
     Bluetooth,
+}
+
+/// The one phone this device is paired with: the id it advertises, so the
+/// phone tells its own device apart, and the key that seals the link. A new
+/// pairing replaces the old, so the phone before it stops working.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Pairing {
+    pub id: [u8; 4],
+    pub key: [u8; 32],
+}
+
+impl core::fmt::Debug for Pairing {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pairing")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The phone's Bluetooth link, while the server listens on Bluetooth.

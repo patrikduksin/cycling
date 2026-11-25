@@ -1,10 +1,13 @@
 //! BLE: one sensor as central (discovery, bounded notification bytes), and
 //! beside it the phone's sync channel as peripheral.
 //!
-//! The phone link advertises the sync service only while the application
-//! listens on Bluetooth. The phone reads the L2CAP PSM from the service and
-//! opens a channel that `exchange::serve_channel` serves. It runs on its own
-//! connection beside the sensor's, so opening it costs the rider no sensor.
+//! The phone link advertises the sync service, about once a second, only
+//! while the device holds a pairing and the application listens on
+//! Bluetooth; the scan response carries the pairing's id, so the phone tells
+//! its own device apart. The phone reads the L2CAP PSM from the service and
+//! opens a channel that `exchange::serve_channel` seals and serves. It runs
+//! on its own connection beside the sensor's, so opening it costs the rider
+//! no sensor. A new pairing ends the link the old one made.
 
 use bt_hci::cmd::le::LeSetAdvEnable;
 use bt_hci::cmd::le::LeSetScanEnable;
@@ -45,7 +48,7 @@ use device_api::connectivity::Text;
 use device_api::observation::Availability;
 use device_api::observation::Error;
 use device_api::power::PeripheralState;
-use device_api::server::{Listen, PhoneLink};
+use device_api::server::{Listen, Pairing, PhoneLink};
 
 type BleController = ExternalController<BleConnector<'static>, 10>;
 type BleStack<'s> = Stack<'s, BleController, DefaultPacketPool>;
@@ -103,11 +106,16 @@ const SYNC_PSM: u16 = 0x0081;
 const SYNC_SERVICE_LE: [u8; 16] = [
     0x06, 0xc6, 0x06, 0xc6, 0x06, 0xc6, 0x6b, 0x6e, 0x69, 0x4c, 0x01, 0x00, 0x41, 0x4e, 0x41, 0x56,
 ];
+/// Advertising this slowly costs little power and still finds the phone
+/// within seconds: one of the intervals Apple's accessory guidelines name.
+const PHONE_INTERVAL: Duration = Duration::from_micros(1_022_500);
 /// Channel memory in external RAM: an SDU (at least the channel MTU, which
-/// the packet pool caps), a request head, and body and response pieces.
+/// the packet pool caps), one of the phone's sealed frames, a request head,
+/// and body and response pieces.
 const SDU: usize = 256;
 const PIECE: usize = 512;
-const CHANNEL_MEMORY: usize = SDU + firmware_services::http::MAX_HEAD + PIECE + PIECE + SDU;
+const CHANNEL_MEMORY: usize =
+    SDU + exchange::FRAME_MAX + firmware_services::http::MAX_HEAD + PIECE + PIECE + SDU;
 /// The peripheral role holds no advertiser and no connection.
 static ROLE_QUIET: AtomicBool = AtomicBool::new(true);
 static SCAN_REPORTS: AtomicU32 = AtomicU32::new(0);
@@ -761,15 +769,17 @@ where
     true
 }
 
-/// The phone link is wanted while the application listens on Bluetooth and
-/// the radio is not suspended.
-fn wanted() -> bool {
-    CONTROL.with(|c| c.ready() && !c.suspended()) && exchange::listening() == Listen::Bluetooth
+/// The pairing the phone link is wanted for: the device holds one, the
+/// application listens on Bluetooth and the radio is not suspended.
+fn wanted() -> Option<Pairing> {
+    let on =
+        CONTROL.with(|c| c.ready() && !c.suspended()) && exchange::listening() == Listen::Bluetooth;
+    exchange::pairing().filter(|_| on)
 }
 
-/// Returns once the phone link is no longer wanted.
-async fn unwanted() {
-    while wanted() {
+/// Returns once the phone link is no longer wanted for `pairing`.
+async fn unwanted(pairing: Pairing) {
+    while wanted() == Some(pairing) {
         Timer::after_millis(200).await;
     }
 }
@@ -784,19 +794,19 @@ async fn peripheral_role(stack: &BleStack<'_>, server: &Server<'_>) {
     );
     let mut memory = crate::drivers::psram::zeroed(CHANNEL_MEMORY);
     loop {
-        if !wanted() {
+        let Some(pairing) = wanted() else {
             exchange::set_link(PhoneLink::Off);
             ROLE_QUIET.store(true, Ordering::Relaxed);
             Timer::after_millis(200).await;
             continue;
-        }
+        };
         ROLE_QUIET.store(false, Ordering::Relaxed);
         let result = match memory.as_deref_mut() {
-            Some(memory) => phone_link(stack, &mut peripheral, server, memory).await,
+            Some(memory) => phone_link(stack, &mut peripheral, server, memory, pairing).await,
             None => {
                 log::warn!(target: "ble", "CYCLING_BLE phone no external RAM for the channel");
                 exchange::set_link(PhoneLink::Failed);
-                unwanted().await;
+                unwanted(pairing).await;
                 Ok(())
             }
         };
@@ -809,13 +819,15 @@ async fn peripheral_role(stack: &BleStack<'_>, server: &Server<'_>) {
     }
 }
 
-/// Advertise the sync service as `VANA`, then serve one phone's connection
-/// and its channel until the link ends or the phone link is unwanted.
+/// Advertise the sync service as `VANA` with the pairing's id, then serve
+/// one phone's connection and its channel until the link ends or the phone
+/// link is unwanted for `pairing`.
 async fn phone_link<'a>(
     stack: &'a BleStack<'_>,
     peripheral: &mut BlePeripheral<'a>,
     server: &Server<'_>,
     memory: &mut [u8],
+    pairing: Pairing,
 ) -> Result<(), ()> {
     let mut adv_data = [0; 31];
     let adv_len = AdStructure::encode_slice(
@@ -826,15 +838,30 @@ async fn phone_link<'a>(
         &mut adv_data,
     )
     .map_err(drop)?;
+    // Service data for a 128-bit UUID: the sync service, then the id.
+    let mut service_data = [0; 20];
+    service_data[..16].copy_from_slice(&SYNC_SERVICE_LE);
+    service_data[16..].copy_from_slice(&pairing.id);
     let mut scan_data = [0; 31];
     let scan_len = AdStructure::encode_slice(
-        &[AdStructure::CompleteLocalName(PHONE_NAME)],
+        &[
+            AdStructure::CompleteLocalName(PHONE_NAME),
+            AdStructure::Unknown {
+                ty: 0x21,
+                data: &service_data,
+            },
+        ],
         &mut scan_data,
     )
     .map_err(drop)?;
+    let parameters = AdvertisementParameters {
+        interval_min: PHONE_INTERVAL,
+        interval_max: PHONE_INTERVAL,
+        ..Default::default()
+    };
     let advertiser = peripheral
         .advertise(
-            &Default::default(),
+            &parameters,
             Advertisement::ConnectableScannableUndirected {
                 adv_data: &adv_data[..adv_len],
                 scan_data: &scan_data[..scan_len],
@@ -844,7 +871,7 @@ async fn phone_link<'a>(
         .map_err(drop)?;
     exchange::set_link(PhoneLink::Advertising);
     log::info!(target: "ble", "CYCLING_BLE phone_advertising");
-    let connection = match select(advertiser.accept(), unwanted()).await {
+    let connection = match select(advertiser.accept(), unwanted(pairing)).await {
         Either::First(result) => result
             .map_err(drop)?
             .with_attribute_server(server)
@@ -857,9 +884,9 @@ async fn phone_link<'a>(
     let listener = L2capChannel::listen(stack, connection.raw());
     // One future for the channel's whole life, polled beside the GATT loop and
     // never restarted: dropping it mid-send would cut a response short.
-    let mut sync = core::pin::pin!(serve_sync(stack, &listener, memory));
+    let mut sync = core::pin::pin!(serve_sync(stack, &listener, memory, &pairing.key));
     loop {
-        match select3(connection.next(), unwanted(), sync.as_mut()).await {
+        match select3(connection.next(), unwanted(pairing), sync.as_mut()).await {
             Either3::First(GattConnectionEvent::Disconnected { reason }) => {
                 exchange::set_link(PhoneLink::Off);
                 log::info!(target: "ble", "CYCLING_BLE phone_disconnected reason={:?}", reason);
@@ -939,6 +966,7 @@ async fn serve_sync<'a>(
     stack: &'a BleStack<'_>,
     listener: &L2capChannelListener<'a, BleController, DefaultPacketPool>,
     memory: &mut [u8],
+    key: &[u8; 32],
 ) -> core::convert::Infallible {
     loop {
         let channel = match listener.accept(&L2capChannelConfig::default()).await {
@@ -958,21 +986,30 @@ async fn serve_sync<'a>(
         );
         let (writer, reader) = channel.split();
         let (sdu, rest) = memory.split_at_mut(SDU);
+        let (frame, rest) = rest.split_at_mut(exchange::FRAME_MAX);
         let (head, rest) = rest.split_at_mut(firmware_services::http::MAX_HEAD);
         let (into, out) = rest.split_at_mut(PIECE);
-        exchange::serve_channel(
+        let rng = esp_hal::rng::Rng::new();
+        let mut hello = [0; crate::drivers::seal::HELLO];
+        for word in hello.chunks_mut(4) {
+            word.copy_from_slice(&rng.random().to_le_bytes());
+        }
+        let ended = exchange::serve_channel(
             Incoming { reader, stack },
             Outgoing { writer, stack },
             piece,
             exchange::ChannelBuffers {
                 sdu,
+                frame,
                 head,
                 into,
                 out,
             },
+            key,
+            hello,
         )
         .await;
-        log::info!(target: "ble", "CYCLING_BLE sync_closed");
+        log::info!(target: "ble", "CYCLING_BLE sync_closed ended={:?}", ended);
     }
 }
 

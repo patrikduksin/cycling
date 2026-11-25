@@ -11,10 +11,11 @@
 //! stops and the station returns to the home network.
 //!
 //! A Bluetooth session has no access point, password or token: the device
-//! advertises its sync service while the session is open, and the phone's
-//! channel is read-only: every `GET` and a Wi-Fi scan, which changes no
-//! setting, are served and every other request is refused with 403. The
-//! session also ends when the phone's link drops.
+//! opens one itself whenever it is paired with a phone (`pairing`) and no
+//! ride records, and advertises its sync service while it is open. The
+//! phone's channel is sealed with the pairing's key, so every route is
+//! served on it, writes included. The session also ends when the phone's
+//! link drops, and opens again a moment later.
 //!
 //! The device serves the pre-gzipped web client, small JSON and FIT files
 //! streamed from the ride journal through `ride::fit`, two passes per file so
@@ -60,6 +61,7 @@ use firmware_services::fit::{Counter, Sink};
 use firmware_services::http::{Head, query_value};
 use firmware_services::why;
 
+mod pairing;
 mod screens;
 mod wifi;
 
@@ -70,6 +72,9 @@ const SSID_PREFIX: &str = "VANA-";
 const SSID_ALPHABET: &[u8] = b"0123456789ABCDEF";
 /// A session without requests ends after this long.
 pub const IDLE_MS: u64 = 10 * 60 * 1000;
+/// A Bluetooth session opens again no sooner than this after one ended, so
+/// the link it ended drops before the device advertises again.
+pub const REOPEN_MS: u64 = 1_500;
 /// Slots read per service step while indexing or sizing a file.
 const READS_PER_STEP: usize = 48;
 /// Pieces of an upload's body read per service step.
@@ -89,7 +94,8 @@ pub enum Mode {
     AccessPoint,
     /// The home network the station is on.
     Home,
-    /// The VANA iPhone app's Bluetooth channel, read-only.
+    /// The paired VANA iPhone app's sealed Bluetooth channel, which the
+    /// device opens itself.
     Bluetooth,
 }
 
@@ -282,6 +288,12 @@ pub(super) struct Phone {
     work: Option<&'static mut Work>,
     /// A network the phone asked to join, kept past the session it may end.
     join: wifi::Join,
+    /// The phone pairing the shell holds, and a new one waiting to be saved.
+    pairing: pairing::Pairings,
+    /// No Bluetooth session opens before this.
+    reopen_at: u64,
+    /// The radio cannot serve a phone: no Bluetooth session this boot.
+    no_bluetooth: bool,
 }
 
 #[cfg(not(target_os = "none"))]
@@ -303,13 +315,20 @@ impl why::State for Phone {
         out.field("stopping", &self.stopping);
         out.field("last_id", &self.last_id);
         out.field("clear", &self.clear);
+        out.field("paired", &self.pairing.saved().map(|pairing| pairing.id));
+        out.field("reopen_at", &self.reopen_at);
+        out.field("no_bluetooth", &self.no_bluetooth);
     }
 }
 
 impl Phone {
-    /// A session is open, or the next service step opens or ends one.
+    /// A session serves a phone, or the next service step opens or ends
+    /// one. A Bluetooth session waiting for its phone is not busy.
     pub(super) fn busy(&self) -> bool {
-        self.session.is_some() || self.wanted.is_some() || self.stopping
+        let serving = self.session.as_ref().is_some_and(|session| {
+            session.status.mode != Mode::Bluetooth || session.status.link == PhoneLink::Connected
+        });
+        serving || self.wanted.is_some() || self.stopping
     }
 
     fn w(&mut self) -> &mut Work {
@@ -400,15 +419,6 @@ fn queue(text: &mut heapless::Vec<u8, TEXT>, status: u16, body: &str) {
     }
 }
 
-/// What a Bluetooth session serves until the phone is paired: reads, and a
-/// Wi-Fi scan.
-fn bluetooth_allows(method: Method, path: &str) -> bool {
-    matches!(
-        (method, path),
-        (Method::Get, _) | (Method::Post, "/api/wifi/scan")
-    )
-}
-
 /// Put the head of a JSON response before the body `text` holds after
 /// `HEAD_GAP`.
 fn frame(text: &mut heapless::Vec<u8, TEXT>, status: u16) {
@@ -489,9 +499,13 @@ impl Runtime {
         self.phone.closed
     }
 
-    fn end_session(&mut self, why: Closed) {
+    fn end_session(&mut self, why: Closed, now: u64) {
         if let Some(session) = self.phone.session.take() {
             why!("phone.closed", why, started = session.started);
+            if session.status.mode == Mode::Bluetooth {
+                self.phone.reopen_at = now.saturating_add(REOPEN_MS);
+                self.phone.no_bluetooth |= why == Closed::Radio;
+            }
             self.phone.stopping = session.started;
             self.phone.closed = Some(why);
             self.phone.w().job = Job::Idle;
@@ -557,12 +571,26 @@ impl Runtime {
         // built once.
         let (store, bulk) = (&mut Touched::new(store), &mut Touched::new(bulk));
         match self.phone.wanted.take() {
-            Some(Some(mode)) => self.begin_session(mode, ap, now),
-            Some(None) => self.end_session(Closed::Rider),
+            Some(Some(mode)) => {
+                if self
+                    .phone_status()
+                    .is_some_and(|s| s.mode == Mode::Bluetooth)
+                {
+                    self.end_session(Closed::Rider, now);
+                }
+                self.begin_session(mode, ap, now);
+            }
+            Some(None) => self.end_session(Closed::Rider, now),
             None => {}
         }
+        self.draw_seed(ap);
+        if self.bluetooth_due(now) {
+            self.begin_session(Mode::Bluetooth, ap, now);
+        }
         if let Some(session) = &self.phone.session {
-            let idle = now.saturating_sub(session.last_request_ms) > IDLE_MS;
+            let waiting = session.status.mode == Mode::Bluetooth
+                && session.status.link != PhoneLink::Connected;
+            let idle = !waiting && now.saturating_sub(session.last_request_ms) > IDLE_MS;
             // The page's own Clear rides keeps the session, which reports
             // how it ended.
             let clearing = self.phone.clear.is_some_and(
@@ -574,14 +602,14 @@ impl Runtime {
                     recording = self.ride.recording(),
                     clearing
                 );
-                self.end_session(Closed::Ride);
+                self.end_session(Closed::Ride, now);
             } else if idle {
                 why!(
                     "phone.idle",
                     idle_ms = now.saturating_sub(session.last_request_ms),
                     limit_ms = IDLE_MS
                 );
-                self.end_session(Closed::Idle);
+                self.end_session(Closed::Idle, now);
             }
         }
         let Some(session) = self.phone.session.as_mut() else {
@@ -608,14 +636,14 @@ impl Runtime {
                 }
                 session.status.address = reach.access_point;
                 if session.started && state == AccessPointState::Failed {
-                    self.end_session(Closed::Radio);
+                    self.end_session(Closed::Radio, now);
                     return;
                 }
             }
             Mode::Home => {
                 session.status.address = reach.station;
                 if reach.station.is_none() {
-                    self.end_session(Closed::Offline);
+                    self.end_session(Closed::Offline, now);
                     return;
                 }
             }
@@ -623,14 +651,17 @@ impl Runtime {
                 let before = session.status.link;
                 let link = server.link();
                 session.status.link = link;
+                if link != PhoneLink::Connected {
+                    session.last_request_ms = now;
+                }
                 if matches!(link, PhoneLink::Failed | PhoneLink::Unsupported) {
                     why!("phone.no_bluetooth", link);
-                    self.end_session(Closed::Radio);
+                    self.end_session(Closed::Radio, now);
                     return;
                 }
                 if before == PhoneLink::Connected && link != PhoneLink::Connected {
                     why!("phone.link_lost", before, link);
-                    self.end_session(Closed::Link);
+                    self.end_session(Closed::Link, now);
                     return;
                 }
             }
@@ -774,9 +805,6 @@ impl Runtime {
             .as_ref()
             .is_some_and(|session| session.status.mode == Mode::Bluetooth);
         match (request.method, path) {
-            _ if bluetooth && !bluetooth_allows(request.method, path) => {
-                self.reply(id, 403, Some(r#"{"error":"read_only"}"#));
-            }
             (Method::Get | Method::Head, "/" | "/index.html") => {
                 self.phone.w().text.clear();
                 let fresh = query_value(&request.query, "t").is_some() && self.authorized(request);

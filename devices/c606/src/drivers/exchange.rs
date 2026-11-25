@@ -8,12 +8,14 @@
 //! sees as `request()` changing.
 //!
 //! Two transports feed it: TCP connections (`http`), one request each, and a
-//! phone's Bluetooth channel (`serve_channel`), request after request. The
-//! application says which one it listens to, and a request is claimed only
-//! from that one, so a Bluetooth session never answers the network.
+//! phone's Bluetooth channel (`serve_channel`), request after request, sealed
+//! with the pairing's key (`seal`). The application says which one it listens
+//! to, and a request is claimed only from that one, so a Bluetooth session
+//! never answers the network.
+use crate::drivers::seal::{Direction, HELLO, Link, TAG};
 use core::cell::{Cell, RefCell};
 use critical_section::Mutex;
-use device_api::server::{Listen, PhoneLink, Request};
+use device_api::server::{Listen, Pairing, PhoneLink, Request};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use firmware_services::http::{Head, Parse, parse};
 
@@ -27,9 +29,13 @@ const QUEUE_MS: u64 = 15_000;
 pub const HEAD_MS: u64 = 5_000;
 /// The peer and the application must move a byte within this time.
 const STALL_MS: u64 = 10_000;
+/// The most bytes a phone's sealed frame may carry, its tag included.
+pub const FRAME_MAX: usize = 1024;
 
 struct Exchange {
     listening: Listen,
+    /// The saved pairing, which the device hands the Bluetooth driver.
+    pairing: Option<Pairing>,
     /// Written by the Bluetooth driver, read by the application.
     link: PhoneLink,
     request: Option<Request>,
@@ -45,6 +51,7 @@ struct Exchange {
 
 static EXCHANGE: Mutex<RefCell<Exchange>> = Mutex::new(RefCell::new(Exchange {
     listening: Listen::Off,
+    pairing: None,
     link: PhoneLink::Off,
     request: None,
     next_id: 1,
@@ -82,6 +89,18 @@ pub fn install(
 /// Where the application listens.
 pub fn listening() -> Listen {
     with(|e| e.listening)
+}
+
+/// The pairing the phone's channel is sealed with; none keeps the device
+/// from advertising.
+pub fn pairing() -> Option<Pairing> {
+    with(|e| e.pairing)
+}
+
+/// The device hands over the saved pairing, once per pass.
+#[inline(never)]
+pub fn set_pairing(pairing: &Option<Pairing>) {
+    with(|e| e.pairing = *pairing);
 }
 
 /// The Bluetooth driver reports the phone's link.
@@ -343,7 +362,7 @@ struct Bytes<'a, R> {
     len: usize,
 }
 
-impl<R: ReceiveSdu> Rx for Bytes<'_, R> {
+impl<R: ReceiveSdu> Bytes<'_, R> {
     async fn read(&mut self, out: &mut [u8]) -> Option<usize> {
         while self.at == self.len {
             self.len = self.rx.receive(self.sdu).await?.min(self.sdu.len());
@@ -354,45 +373,99 @@ impl<R: ReceiveSdu> Rx for Bytes<'_, R> {
         self.at += n;
         Some(n)
     }
-}
 
-impl<R: ReceiveSdu> Bytes<'_, R> {
-    /// Pass over `count` bytes, such as a refused request's body.
-    async fn skip(&mut self, mut count: u32, scratch: &mut [u8]) -> Option<()> {
-        while count > 0 {
-            let wanted = (count as usize).min(scratch.len());
-            let n = with_timeout(
-                Duration::from_millis(STALL_MS),
-                self.read(&mut scratch[..wanted]),
-            )
-            .await
-            .ok()??;
-            count -= n as u32;
+    async fn exact(&mut self, out: &mut [u8]) -> Option<()> {
+        let mut at = 0;
+        while at < out.len() {
+            at += self.read(&mut out[at..]).await?;
         }
         Some(())
     }
+
+    /// The next frame, `u16` little-endian length and that many bytes, into
+    /// the front of `frame`; `None` once the channel closed or for a frame
+    /// longer than `frame`.
+    async fn frame(&mut self, frame: &mut [u8]) -> Option<usize> {
+        let mut length = [0; 2];
+        self.exact(&mut length).await?;
+        let length = usize::from(u16::from_le_bytes(length));
+        self.exact(frame.get_mut(..length)?).await?;
+        Some(length)
+    }
 }
 
-/// Responses as frames: `u16` little-endian length, then that many bytes; a
-/// frame of length zero ends a response. Each SDU carries one frame.
-struct Frames<'a, S> {
+/// The phone's requests: its sealed frames, opened in order.
+struct Opened<'a, R> {
+    bytes: Bytes<'a, R>,
+    open: Direction,
+    /// One sealed frame, then its plaintext.
+    frame: &'a mut [u8],
+    at: usize,
+    len: usize,
+    /// A frame failed to authenticate.
+    refused: bool,
+}
+
+impl<R: ReceiveSdu> Rx for Opened<'_, R> {
+    async fn read(&mut self, out: &mut [u8]) -> Option<usize> {
+        while self.at == self.len {
+            let sealed = self.bytes.frame(self.frame).await?;
+            let Some(len) = self.open.open(&mut self.frame[..sealed]) else {
+                self.refused = true;
+                return None;
+            };
+            (self.at, self.len) = (0, len);
+        }
+        let n = out.len().min(self.len - self.at);
+        out[..n].copy_from_slice(&self.frame[self.at..self.at + n]);
+        self.at += n;
+        Some(n)
+    }
+}
+
+/// Pass over `count` bytes, such as a refused request's body.
+async fn skip(rx: &mut impl Rx, mut count: u32, scratch: &mut [u8]) -> Option<()> {
+    while count > 0 {
+        let wanted = (count as usize).min(scratch.len());
+        let n = with_timeout(
+            Duration::from_millis(STALL_MS),
+            rx.read(&mut scratch[..wanted]),
+        )
+        .await
+        .ok()??;
+        count -= n as u32;
+    }
+    Some(())
+}
+
+/// Responses as sealed frames, one per SDU; a frame with no plaintext, its
+/// tag alone, ends a response.
+struct Sealed<'a, S> {
     tx: S,
+    seal: Direction,
     frame: &'a mut [u8],
 }
 
-impl<S: SendSdu> Tx for Frames<'_, S> {
+impl<S: SendSdu> Sealed<'_, S> {
+    async fn send(&mut self, plaintext: usize) -> bool {
+        let length = self.seal.seal(&mut self.frame[2..], plaintext);
+        self.frame[..2].copy_from_slice(&(length as u16).to_le_bytes());
+        self.tx.send(&self.frame[..2 + length]).await
+    }
+}
+
+impl<S: SendSdu> Tx for Sealed<'_, S> {
     async fn write(&mut self, bytes: &[u8]) -> bool {
-        for part in bytes.chunks(self.frame.len() - 2) {
-            self.frame[..2].copy_from_slice(&(part.len() as u16).to_le_bytes());
+        for part in bytes.chunks(self.frame.len() - 2 - TAG) {
             self.frame[2..2 + part.len()].copy_from_slice(part);
-            if !self.tx.send(&self.frame[..2 + part.len()]).await {
+            if !self.send(part.len()).await {
                 return false;
             }
         }
         true
     }
     async fn end(&mut self) -> bool {
-        self.tx.send(&[0, 0]).await
+        self.send(0).await
     }
 }
 
@@ -400,34 +473,93 @@ impl<S: SendSdu> Tx for Frames<'_, S> {
 pub(crate) struct ChannelBuffers<'a> {
     /// At least the SDU size this side accepts.
     pub sdu: &'a mut [u8],
+    /// `FRAME_MAX` bytes: one of the phone's sealed frames.
+    pub frame: &'a mut [u8],
     pub head: &'a mut [u8],
     pub into: &'a mut [u8],
     pub out: &'a mut [u8],
 }
 
-/// Serve a phone's channel, request after request, until it closes, the
-/// session stops listening on Bluetooth, or a response cannot complete.
-/// `piece` is the largest SDU both sides take.
+/// How a channel ended, for the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// The phone closed it, or the session or a response ended it.
+    Closed,
+    /// No hello in time, or not one.
+    Hello,
+    /// A frame failed to authenticate: another key, or tampered.
+    Refused,
+}
+
+/// Serve a phone's channel: the handshake, then request after request until
+/// it closes, a frame fails to authenticate, the session stops listening on
+/// Bluetooth, or a response cannot complete. `piece` is the largest SDU both
+/// sides take, `key` the pairing's and `hello` this side's random nonce.
 pub(crate) async fn serve_channel(
     rx: impl ReceiveSdu,
-    tx: impl SendSdu,
+    mut tx: impl SendSdu,
     piece: usize,
     buffers: ChannelBuffers<'_>,
-) {
+    key: &[u8; 32],
+    hello: [u8; HELLO],
+) -> Ended {
     let ChannelBuffers {
         sdu,
+        frame,
         head,
         into,
         out,
     } = buffers;
-    let (frame, out) = out.split_at_mut(piece.clamp(3, out.len() / 2));
-    let mut rx = Bytes {
+    if listening() != Listen::Bluetooth {
+        return Ended::Closed;
+    }
+    let mut bytes = Bytes {
         rx,
         sdu,
         at: 0,
         len: 0,
     };
-    let mut tx = Frames { tx, frame };
+    let phone = with_timeout(Duration::from_millis(HEAD_MS), bytes.frame(frame)).await;
+    let Ok(Some(HELLO)) = phone else {
+        return Ended::Hello;
+    };
+    let phone: [u8; HELLO] = frame[..HELLO].try_into().expect("a hello's length");
+    let mut reply = [0; 2 + HELLO];
+    reply[..2].copy_from_slice(&(HELLO as u16).to_le_bytes());
+    reply[2..].copy_from_slice(&hello);
+    if !tx.send(&reply).await {
+        return Ended::Closed;
+    }
+    let Link { incoming, outgoing } = Link::new(key, &phone, &hello);
+    let (sealing, out) = out.split_at_mut(piece.clamp(3 + TAG, out.len() / 2));
+    let mut rx = Opened {
+        bytes,
+        open: incoming,
+        frame,
+        at: 0,
+        len: 0,
+        refused: false,
+    };
+    let mut tx = Sealed {
+        tx,
+        seal: outgoing,
+        frame: sealing,
+    };
+    serve_requests(&mut rx, &mut tx, head, into, out).await;
+    if rx.refused {
+        Ended::Refused
+    } else {
+        Ended::Closed
+    }
+}
+
+async fn serve_requests(
+    rx: &mut impl Rx,
+    tx: &mut impl Tx,
+    head: &mut [u8],
+    into: &mut [u8],
+    out: &mut [u8],
+) {
     let mut used = 0;
     while listening() == Listen::Bluetooth {
         if used == 0 {
@@ -440,14 +572,14 @@ pub(crate) async fn serve_channel(
         }
         let parsed = with_timeout(
             Duration::from_millis(HEAD_MS),
-            read_head(&mut rx, head, &mut used),
+            read_head(rx, head, &mut used),
         )
         .await;
         let (request, length) = match parsed {
             Ok(Some(Parse::Request { request, head })) => (request, head),
             Ok(Some(Parse::Refuse(status))) => {
                 // Where this request ends is unknown: close the channel.
-                refuse(&mut tx, status).await;
+                refuse(tx, status).await;
                 return;
             }
             _ => return,
@@ -455,16 +587,16 @@ pub(crate) async fn serve_channel(
         let declared = request.body;
         let body = (used - length).min(declared as usize);
         let owed = match claim(request, &head[length..length + body], Listen::Bluetooth).await {
-            Some(claim) => match respond(&mut rx, &mut tx, claim, into, out).await {
+            Some(claim) => match respond(rx, tx, claim, into, out).await {
                 Some(owed) => owed,
                 None => return,
             },
             None => {
-                refuse(&mut tx, 503).await;
+                refuse(tx, 503).await;
                 declared - body as u32
             }
         };
-        if rx.skip(owed, into).await.is_none() {
+        if skip(rx, owed, into).await.is_none() {
             return;
         }
         // Bytes after this request start the next one.
@@ -487,13 +619,29 @@ mod tests {
     /// Tests share the one exchange.
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    const KEY: [u8; 32] = [0x4b; 32];
+    const PHONE_HELLO: [u8; HELLO] = [0x70; HELLO];
+    const DEVICE_HELLO: [u8; HELLO] = [0xd0; HELLO];
+    /// Plaintext bytes in each of the phone's frames.
+    const PHONE_FRAME: usize = 100;
+
+    /// The phone's half of the link: what it seals and opens, and how many
+    /// frames each way.
+    struct Phone {
+        seal: Direction,
+        open: Direction,
+        sealed: u64,
+        opened: u64,
+    }
+
     /// Both ends of a fake L2CAP channel: SDUs the phone sent that are not
-    /// read yet, and SDUs the device sent.
+    /// read yet, SDUs the device sent, and the phone once it shook hands.
     #[derive(Default)]
     struct Wire {
         incoming: VecDeque<Vec<u8>>,
         sent: Vec<Vec<u8>>,
         closed: bool,
+        phone: Option<Phone>,
     }
 
     #[derive(Clone, Default)]
@@ -525,15 +673,63 @@ mod tests {
     }
 
     impl Channel {
-        /// The phone writes `bytes` in SDUs of at most `piece`.
-        fn write(&self, bytes: &[u8], piece: usize) {
-            let mut wire = self.0.borrow_mut();
-            wire.incoming
-                .extend(bytes.chunks(piece).map(<[u8]>::to_vec));
+        /// The phone's side of the handshake, with `key`.
+        async fn shake_hands(&self, key: &[u8; 32]) {
+            let mut hello = std::vec![HELLO as u8, 0];
+            hello.extend_from_slice(&PHONE_HELLO);
+            self.0.borrow_mut().incoming.push_back(hello);
+            let reply = loop {
+                if let Some(reply) = self.0.borrow_mut().sent.pop() {
+                    break reply;
+                }
+                Timer::after_millis(1).await;
+            };
+            assert_eq!(reply[..2], [HELLO as u8, 0], "a plain hello");
+            assert_eq!(reply[2..], DEVICE_HELLO);
+            let Link { incoming, outgoing } = Link::new(key, &PHONE_HELLO, &DEVICE_HELLO);
+            self.0.borrow_mut().phone = Some(Phone {
+                seal: incoming,
+                open: outgoing,
+                sealed: 0,
+                opened: 0,
+            });
         }
 
-        /// Wait for the next whole response; panics on a malformed frame or
-        /// an SDU longer than `piece`.
+        fn phone<R>(&self, f: impl FnOnce(&mut Phone) -> R) -> R {
+            f(self.0.borrow_mut().phone.as_mut().expect("the handshake"))
+        }
+
+        /// One sealed frame of `plaintext`, framed.
+        fn seal(&self, plaintext: &[u8]) -> Vec<u8> {
+            self.phone(|phone| {
+                let mut frame = plaintext.to_vec();
+                frame.resize(plaintext.len() + TAG, 0);
+                let length = phone.seal.seal(&mut frame, plaintext.len());
+                phone.sealed += 1;
+                let mut framed = (length as u16).to_le_bytes().to_vec();
+                framed.extend_from_slice(&frame);
+                framed
+            })
+        }
+
+        /// The phone seals `bytes` in frames and writes them in SDUs of at
+        /// most `piece`, so a frame may span SDUs and an SDU hold frames.
+        fn write(&self, bytes: &[u8], piece: usize) {
+            let stream: Vec<u8> = bytes
+                .chunks(PHONE_FRAME)
+                .flat_map(|part| self.seal(part))
+                .collect();
+            self.write_raw(&stream, piece);
+        }
+
+        fn write_raw(&self, stream: &[u8], piece: usize) {
+            let mut wire = self.0.borrow_mut();
+            wire.incoming
+                .extend(stream.chunks(piece).map(<[u8]>::to_vec));
+        }
+
+        /// Wait for the next whole response; panics on a frame that does not
+        /// open, or one that is not an SDU of its own of at most `piece`.
         async fn response(&self, piece: usize) -> String {
             loop {
                 if let Some(response) = self.take_response(piece) {
@@ -544,14 +740,21 @@ mod tests {
         }
 
         fn take_response(&self, piece: usize) -> Option<String> {
-            let sent = &mut self.0.borrow_mut().sent;
-            let end = sent.iter().position(|sdu| sdu == &[0, 0])?;
+            let wire = &mut *self.0.borrow_mut();
+            // The end frame carries its tag alone.
+            let end = wire
+                .sent
+                .iter()
+                .position(|sdu| sdu[..2] == (TAG as u16).to_le_bytes())?;
+            let phone = wire.phone.as_mut().expect("the handshake");
             let mut bytes = Vec::new();
-            for sdu in sent.drain(..=end).take(end) {
+            for mut sdu in wire.sent.drain(..=end) {
                 assert!(sdu.len() <= piece, "an SDU of {} bytes", sdu.len());
                 let length = u16::from_le_bytes([sdu[0], sdu[1]]) as usize;
                 assert_eq!(sdu.len(), 2 + length, "one frame per SDU");
-                bytes.extend_from_slice(&sdu[2..]);
+                let plain = phone.open.open(&mut sdu[2..]).expect("a frame that opens");
+                phone.opened += 1;
+                bytes.extend_from_slice(&sdu[2..2 + plain]);
             }
             Some(String::from_utf8(bytes).unwrap())
         }
@@ -602,26 +805,50 @@ mod tests {
     fn buffers() -> ChannelBuffers<'static> {
         ChannelBuffers {
             sdu: leak(512),
+            frame: leak(FRAME_MAX),
             head: leak(firmware_services::http::MAX_HEAD),
             into: leak(512),
             out: leak(512 + 256),
         }
     }
 
-    /// Serve `channel` with an SDU limit of `piece` while `phone` runs.
-    fn run(channel: &Channel, piece: usize, phone: impl Future<Output = ()>) {
+    /// Serve `channel` with an SDU limit of `piece` while `phone` runs, after
+    /// it shook hands with `key`; how the channel ended.
+    fn run_with(
+        channel: &Channel,
+        piece: usize,
+        key: [u8; 32],
+        phone: impl Future<Output = ()>,
+    ) -> Ended {
         install(|| Some(leak(BUFFER)), || Some(leak(INBOX)));
         Server.listen(Listen::Bluetooth);
-        let device = serve_channel(channel.clone(), channel.clone(), piece, buffers());
+        let device = serve_channel(
+            channel.clone(),
+            channel.clone(),
+            piece,
+            buffers(),
+            &KEY,
+            DEVICE_HELLO,
+        );
         let phone = async {
+            channel.shake_hands(&key).await;
             phone.await;
             channel.0.borrow_mut().closed = true;
         };
-        embassy_futures::block_on(embassy_futures::select::select(
-            embassy_futures::join::join(device, phone),
-            application(),
-        ));
+        let embassy_futures::select::Either::First((ended, ())) =
+            embassy_futures::block_on(embassy_futures::select::select(
+                embassy_futures::join::join(device, phone),
+                application(),
+            ))
+        else {
+            unreachable!("the application serves until the channel ends");
+        };
         assert!(Server.request().is_none(), "the exchange is free again");
+        ended
+    }
+
+    fn run(channel: &Channel, piece: usize, phone: impl Future<Output = ()>) -> Ended {
+        run_with(channel, piece, KEY, phone)
     }
 
     fn get(path: &str) -> Vec<u8> {
@@ -636,20 +863,21 @@ mod tests {
     fn a_request_split_across_sdus_is_answered_in_frames_and_the_channel_takes_the_next() {
         let _serial = SERIAL.lock();
         let channel = Channel::default();
-        run(&channel, 23, async {
+        let ended = run(&channel, 40, async {
             channel.write(&get("/api/status"), 7);
-            let first = channel.response(23).await;
+            let first = channel.response(40).await;
             assert!(first.starts_with("HTTP/1.1 200 OK\r\n"), "{first}");
             let body = body_of(&first);
             assert!(body.starts_with("Get /api/status "), "{body}");
             assert_eq!(body.len(), 300 + "Get /api/status  ".len());
             channel.write(&get("/api/workouts"), 61);
-            let second = channel.response(23).await;
+            let second = channel.response(40).await;
             assert!(
                 body_of(&second).starts_with("Get /api/workouts "),
                 "{second}"
             );
         });
+        assert_eq!(ended, Ended::Closed);
     }
 
     #[test]
@@ -658,12 +886,13 @@ mod tests {
         let channel = Channel::default();
         run(&channel, 122, async {
             let mut bytes =
-                b"PUT /api/workouts HTTP/1.1\r\nContent-Length: 10\r\n\r\n0123456789".to_vec();
+                b"PUT /api/wifi HTTP/1.1\r\nContent-Length: 35\r\n\r\n{\"ssid\":\"home\",\"password\":\"secret\"}"
+                    .to_vec();
             bytes.extend_from_slice(&get("/api/status"));
             channel.write(&bytes, 9);
             let put = channel.response(122).await;
             assert!(
-                body_of(&put).starts_with("Put /api/workouts 0123456789 "),
+                body_of(&put).starts_with(r#"Put /api/wifi {"ssid":"home","password":"secret"} "#),
                 "{put}"
             );
             let next = channel.response(122).await;
@@ -687,18 +916,91 @@ mod tests {
         });
     }
 
+    /// Each side counts its own frames from 0: the phone's request takes
+    /// several frames, and the device's first answer still opens at 0.
+    #[test]
+    fn each_direction_counts_its_own_frames() {
+        let _serial = SERIAL.lock();
+        let channel = Channel::default();
+        run(&channel, 64, async {
+            let long = format!("/api/{}", "s".repeat(80));
+            channel.write(&get(&long), 30);
+            let (sealed, opened) = channel.phone(|phone| (phone.sealed, phone.opened));
+            assert_eq!((sealed, opened), (2, 0));
+            channel.response(64).await;
+            let opened = channel.phone(|phone| phone.opened);
+            assert!(opened > 2, "{opened} frames from the device");
+            channel.write(&get("/api/status"), 30);
+            channel.response(64).await;
+            assert_eq!(channel.phone(|phone| phone.sealed), 3);
+        });
+    }
+
+    #[test]
+    fn a_tampered_frame_closes_the_channel_unanswered() {
+        let _serial = SERIAL.lock();
+        let channel = Channel::default();
+        let ended = run(&channel, 64, async {
+            channel.write(&get("/api/status"), 64);
+            channel.response(64).await;
+            let mut frame = channel.seal(&get("/api/wifi"));
+            frame[5] ^= 0x20;
+            channel.write_raw(&frame, 64);
+            while !channel.0.borrow().incoming.is_empty() {
+                Timer::after_millis(1).await;
+            }
+            Timer::after_millis(50).await;
+            assert!(channel.0.borrow().sent.is_empty(), "nothing answered");
+        });
+        assert_eq!(ended, Ended::Refused);
+    }
+
+    #[test]
+    fn a_phone_with_another_key_is_refused_at_its_first_request() {
+        let _serial = SERIAL.lock();
+        let channel = Channel::default();
+        let ended = run_with(&channel, 64, [0x4c; 32], async {
+            channel.write(&get("/api/status"), 64);
+            Timer::after_millis(50).await;
+            assert!(channel.0.borrow().sent.is_empty(), "nothing answered");
+        });
+        assert_eq!(ended, Ended::Refused);
+    }
+
+    #[test]
+    fn a_channel_without_a_hello_is_closed() {
+        let _serial = SERIAL.lock();
+        install(|| Some(leak(BUFFER)), || Some(leak(INBOX)));
+        Server.listen(Listen::Bluetooth);
+        let channel = Channel::default();
+        channel.write_raw(&get("/api/status"), 64);
+        channel.0.borrow_mut().closed = true;
+        let ended = embassy_futures::block_on(serve_channel(
+            channel.clone(),
+            channel.clone(),
+            64,
+            buffers(),
+            &KEY,
+            DEVICE_HELLO,
+        ));
+        assert_eq!(ended, Ended::Hello);
+        assert!(channel.0.borrow().sent.is_empty());
+    }
+
     #[test]
     fn a_channel_is_not_served_while_the_session_listens_elsewhere() {
         let _serial = SERIAL.lock();
         install(|| Some(leak(BUFFER)), || Some(leak(INBOX)));
         Server.listen(Listen::Network);
         let channel = Channel::default();
-        channel.write(&get("/api/status"), 64);
+        channel.write_raw(&get("/api/status"), 64);
         embassy_futures::block_on(serve_channel(
             channel.clone(),
             channel.clone(),
             64,
             buffers(),
+            &KEY,
+            DEVICE_HELLO,
         ));
         assert!(channel.0.borrow().sent.is_empty());
     }

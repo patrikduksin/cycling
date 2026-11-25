@@ -1,8 +1,9 @@
 //! The secrets a trace can hold. A trace that does not redact records the
 //! password of a `WIFI CONFIG` command, of the request it makes of the radio
-//! and of the settings the shell loads and saves, and the token a phone
-//! sends with each request, so a replay hands VANA what it read. A
-//! redacting trace holds none: see `firmware_services::trace::redact`.
+//! and of the settings the shell loads and saves, the phone pairing in those
+//! settings, and the token a phone sends with each request, so a replay
+//! hands VANA what it read. A redacting trace holds none: see
+//! `firmware_services::trace::redact`.
 use crate::trace::timeline::session_clock;
 use crate::trace::world::World;
 use crate::twin::script::declared;
@@ -45,8 +46,7 @@ fn secret(event: &Event<'_>) -> Option<&'static str> {
                     requested_password(call).then_some("a Wi-Fi password in a radio request")
                 }
                 Some(("Settings", name @ ("load" | "save" | "save_connectivity"))) => {
-                    settings_password(call, name == "load")
-                        .then_some("a Wi-Fi password in the shell's settings")
+                    settings_secret(call, name == "load")
                 }
                 _ => match crate::trace::world::read(call) {
                     Some(World::ServerRequest(Some(request)))
@@ -85,17 +85,24 @@ fn requested_password(call: &Call<'_>) -> bool {
     r.read().is_some() && config.is_some_and(|(_, password, _)| kept(password.bytes()))
 }
 
-fn settings_password(call: &Call<'_>, load: bool) -> bool {
+fn settings_secret(call: &Call<'_>, load: bool) -> Option<&'static str> {
     let mut r = Reader::new(call.body, call.now_ms);
     if load && r.byte() != 0 {
-        return false;
+        return None;
     }
     let bytes = <&[u8]>::take(&mut r);
     let (settings, _) = firmware_shell::preferences::decode(Some(bytes));
-    r.read().is_some()
-        && settings
-            .wifi
-            .is_some_and(|wifi| kept(wifi.password.bytes()))
+    r.read()?;
+    if settings
+        .wifi
+        .is_some_and(|wifi| kept(wifi.password.bytes()))
+    {
+        return Some("a Wi-Fi password in the shell's settings");
+    }
+    settings
+        .pairing
+        .is_some_and(|pairing| pairing != redact::PAIRING)
+        .then_some("a phone pairing in the shell's settings")
 }
 
 /// `line` as a timeline shows it: a `WIFI CONFIG` keeps its network and

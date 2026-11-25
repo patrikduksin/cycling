@@ -173,17 +173,39 @@ fn wifi_routes_need_the_session_token() {
 }
 
 #[test]
-fn over_bluetooth_a_phone_scans_and_cannot_join() {
+fn a_paired_phone_scans_and_joins_over_bluetooth_and_the_trace_replays() {
     let mut sim = phone_near_networks();
     sim.disconnect_phone();
-    let (status, reply) = sim.command("PHONE START BLE");
-    assert_eq!(status, "ACCEPTED", "PHONE START BLE: {reply}");
-    sim.advance(seconds(1));
+    let (status, reply) = sim.command("PHONE PAIR");
+    assert_eq!(status, "ACCEPTED", "PHONE PAIR: {reply}");
+    let id = reply
+        .strip_prefix("id=")
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(
+        reply.contains(&format!("url=vanaride://pair?id={id}&k=")),
+        "{reply}"
+    );
+    sim.advance(seconds(3));
+    let (status, reply) = sim.command("PHONE");
+    assert_eq!(status, "OK");
+    assert!(reply.starts_with("state=open mode=bluetooth"), "{reply}");
+    assert!(reply.ends_with(&format!(" paired={id}")), "{reply}");
     let (status, scan) = request(&mut sim, Method::Post, "/api/wifi/scan", "");
     assert_eq!(status, 202, "{scan}");
     let scanned = settled(&mut sim);
     assert_eq!(scanned["networks"][0]["ssid"], "café", "{scanned}");
-    let (status, refused) = join(&mut sim, "home", PASSWORD);
-    assert_eq!((status, &refused["error"]), (403, &json!("read_only")));
-    assert_eq!(wifi(&mut sim)["configured"], Value::Null);
+    let (status, _) = join(&mut sim, "home", PASSWORD);
+    assert_eq!(status, 202);
+    let joined = settled(&mut sim);
+    assert_eq!(joined["configured"], "home", "{joined}");
+
+    let capture = sim.capture();
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
 }

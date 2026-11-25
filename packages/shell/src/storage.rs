@@ -44,7 +44,8 @@ pub trait Settings {
     /// temporary display preferences are not persisted along with them.
     #[request]
     fn save_app(&mut self, app: crate::preferences::AppPreferences) -> Result<Record, Error>;
-    /// Replace only the stored Wi-Fi, BLE and BLE profile settings, from `current`.
+    /// Replace only the stored Wi-Fi, BLE, BLE profile and pairing settings,
+    /// from `current`.
     #[request(redact)]
     fn save_connectivity(&mut self, current: crate::preferences::Settings)
     -> Result<Record, Error>;
@@ -125,6 +126,7 @@ impl<B: OwnedFlash> Settings for Store<B> {
         settings.wifi = current.wifi;
         settings.ble = current.ble;
         settings.ble_profile = current.ble_profile;
+        settings.pairing = current.pairing;
         self.save(settings)
     }
 

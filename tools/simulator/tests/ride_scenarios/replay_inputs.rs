@@ -166,6 +166,43 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     assert!(placeholder.is_none(), "the session closed for the ride");
 }
 
+fn a_phone_paired(redacting: bool) -> Vec<u8> {
+    let mut sim = hashed();
+    if redacting {
+        sim.device.redact_secrets();
+    }
+    let mut sim = sim.boot();
+    sim.advance(seconds(1));
+    let (status, out) = sim.command("PHONE PAIR");
+    assert_eq!(status, "ACCEPTED", "{out}");
+    sim.advance(seconds(1));
+    let (_, phone) = sim.command("PHONE");
+    assert!(
+        !phone.contains("paired=pending"),
+        "the pairing saved: {phone}"
+    );
+    sim.capture()
+}
+
+#[test]
+fn a_redacted_phone_pairing_replays_faithfully_and_holds_no_key() {
+    use shell_simulator::trace::secret::secrets;
+    let kept = secrets(&a_phone_paired(false));
+    assert!(
+        kept.iter()
+            .any(|found| found.ends_with("a phone pairing in the shell's settings")),
+        "{kept:?}"
+    );
+    let capture = a_phone_paired(true);
+    assert_eq!(secrets(&capture), [] as [&str; 0]);
+
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{report}");
+    let faithful = report.faithful.clone().expect("a replay that ended");
+    assert_eq!(faithful.ended, None, "{report}");
+}
+
 fn with_the_last_frame_unseen(mut capture: Vec<u8>) -> Vec<u8> {
     use firmware_services::trace::{Event, decode};
     let trace: &'static [u8] = Box::leak(capture.clone().into_boxed_slice());

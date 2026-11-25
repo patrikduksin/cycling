@@ -7,6 +7,9 @@
 //! - an entropy word the phone access point gives, from which VANA makes
 //!   the session's network name, password and token, is recorded as
 //!   [`ENTROPY`];
+//! - a pairing in saved settings becomes [`PAIRING`], its id as well as its
+//!   key: VANA makes both from the same entropy, so a replay pairs with an
+//!   id the recording never had;
 //! - a phone request's session token, and the `t` value of its query,
 //!   become [`TOKEN`] repeated when they are the open session's token and
 //!   [`OTHER`] repeated when they are another.
@@ -19,9 +22,15 @@
 //! differs from the recording; every request is answered as it was.
 
 use device_api::connectivity::Text;
+use device_api::server::Pairing;
 
 /// The entropy word a redacting trace records for the access point's.
 pub const ENTROPY: u64 = 0;
+/// A pairing in the settings a redacting trace records.
+pub const PAIRING: Pairing = Pairing {
+    id: [b'x'; 4],
+    key: [b'x'; 32],
+};
 /// Each byte of the open session's token, redacted.
 pub const TOKEN: u8 = b'*';
 /// Each byte of a token that is not the open session's, redacted.

@@ -8,7 +8,10 @@
       "localNetworking": "Connects to the development server on your computer.",
       "appTransportSecurity": {
         "allowsArbitraryLoads": true
-      }
+      },
+      "urlSchemes": [
+        "vanaride"
+      ]
     }
   },
   "deploy": {

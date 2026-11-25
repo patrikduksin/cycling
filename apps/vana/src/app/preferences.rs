@@ -514,6 +514,7 @@ impl Runtime {
             self.write_preferences(system, now);
         }
         self.save_display(system, now, false);
+        self.save_pairing(system);
     }
 
     /// Apply a backlight edit, and store it once settled or when `flush`.

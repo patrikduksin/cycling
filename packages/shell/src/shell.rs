@@ -579,6 +579,15 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         }
         Ok(())
     }
+    /// Pair with a new phone, in place of the one before.
+    pub fn save_pairing(&mut self, pairing: device_api::server::Pairing) -> bool {
+        let previous = self.settings.pairing.replace(pairing);
+        let saved = self.save_connectivity();
+        if !saved {
+            self.settings.pairing = previous;
+        }
+        saved
+    }
     /// Persist the application's preferences without saving temporary shell
     /// changes; on success they also become the current settings.
     pub fn save_app_preferences(&mut self, app: crate::preferences::AppPreferences) -> bool {

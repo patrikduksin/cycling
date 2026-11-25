@@ -8,7 +8,7 @@ pub const DEFAULT_TIMEZONE_MINUTES: i16 = 0;
 pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
-const VERSION: u8 = 7;
+const VERSION: u8 = 8;
 pub const LENGTH: usize = layout::APP + APP_CAPACITY;
 /// Bytes reserved for the application's own versioned preference record.
 pub const APP_CAPACITY: usize = 96;
@@ -36,7 +36,10 @@ mod layout {
     pub const BLE_ADDRESS: usize = BLE_ADDRESS_KIND + 1;
     pub const BLE_SERVICE: usize = BLE_ADDRESS + 6;
     pub const BLE_CHARACTERISTIC: usize = BLE_SERVICE + 2;
-    pub const APP_LEN: usize = BLE_CHARACTERISTIC + 2;
+    pub const PAIRED: usize = BLE_CHARACTERISTIC + 2;
+    pub const PAIRING_ID: usize = PAIRED + 1;
+    pub const PAIRING_KEY: usize = PAIRING_ID + 4;
+    pub const APP_LEN: usize = PAIRING_KEY + 32;
     pub const APP: usize = APP_LEN + 1;
 }
 
@@ -84,6 +87,8 @@ pub struct Settings {
     pub wifi: Option<device_api::connectivity::WifiConfig>,
     pub ble: Option<device_api::ble_transport::Selection>,
     pub ble_profile: u8,
+    /// The phone this device is paired with.
+    pub pairing: Option<device_api::server::Pairing>,
     /// Application preferences, opaque to the shell.
     pub app: AppPreferences,
 }
@@ -98,6 +103,7 @@ impl Default for Settings {
             wifi: None,
             ble: None,
             ble_profile: 0,
+            pairing: None,
             app: AppPreferences::EMPTY,
         }
     }
@@ -136,6 +142,7 @@ impl Settings {
                 wifi: None,
                 ble: None,
                 ble_profile: 0,
+                pairing: None,
                 app: AppPreferences::EMPTY,
             })
     }
@@ -151,6 +158,7 @@ impl Settings {
             settings.wifi = self.wifi;
             settings.ble = self.ble;
             settings.ble_profile = self.ble_profile;
+            settings.pairing = self.pairing;
             settings.app = self.app;
             settings
         })
@@ -167,6 +175,7 @@ impl Settings {
             settings.wifi = self.wifi;
             settings.ble = self.ble;
             settings.ble_profile = self.ble_profile;
+            settings.pairing = self.pairing;
             settings.app = self.app;
             settings
         })
@@ -183,6 +192,7 @@ impl Settings {
             settings.wifi = self.wifi;
             settings.ble = self.ble;
             settings.ble_profile = self.ble_profile;
+            settings.pairing = self.pairing;
             settings.app = self.app;
             settings
         })
@@ -212,6 +222,11 @@ impl Settings {
             }
             put_u16(&mut output, BLE_SERVICE, ble.service);
             put_u16(&mut output, BLE_CHARACTERISTIC, ble.characteristic);
+        }
+        if let Some(pairing) = self.pairing {
+            output[PAIRED] = 1;
+            output[PAIRING_ID..PAIRING_KEY].copy_from_slice(&pairing.id);
+            output[PAIRING_KEY..APP_LEN].copy_from_slice(&pairing.key);
         }
         put_text(&mut output, APP_LEN, self.app.bytes());
         output
@@ -286,7 +301,7 @@ fn decode_current(payload: &[u8]) -> Option<Settings> {
     }
     match payload[BLE] {
         0 => {
-            if payload[BLE_PROFILE..APP_LEN].iter().any(|b| *b != 0) {
+            if payload[BLE_PROFILE..PAIRED].iter().any(|b| *b != 0) {
                 return None;
             }
         }
@@ -313,6 +328,21 @@ fn decode_current(payload: &[u8]) -> Option<Settings> {
         }
         _ => return None,
     }
+    settings.pairing = match payload[PAIRED] {
+        0 if payload[PAIRING_ID..APP_LEN].iter().all(|b| *b == 0) => None,
+        1 => {
+            let mut pairing = device_api::server::Pairing {
+                id: [0; 4],
+                key: [0; 32],
+            };
+            pairing
+                .id
+                .copy_from_slice(&payload[PAIRING_ID..PAIRING_KEY]);
+            pairing.key.copy_from_slice(&payload[PAIRING_KEY..APP_LEN]);
+            Some(pairing)
+        }
+        _ => return None,
+    };
     settings.app = text(payload, APP_LEN, LENGTH).and_then(AppPreferences::new)?;
     Some(settings)
 }
@@ -424,6 +454,10 @@ pub(crate) mod tests {
             characteristic: 0x2a37,
         });
         settings.ble_profile = 1;
+        settings.pairing = Some(device_api::server::Pairing {
+            id: [0xa1, 0, 0, 0x7f],
+            key: [0x5c; 32],
+        });
         assert_eq!(
             decode(Some(&settings.encode())),
             (settings, Source::Current)
@@ -436,6 +470,7 @@ pub(crate) mod tests {
             assert_eq!(updated.wifi, settings.wifi);
             assert_eq!(updated.ble, settings.ble);
             assert_eq!(updated.ble_profile, 1);
+            assert_eq!(updated.pairing, settings.pairing);
             assert_eq!(decode(Some(&updated.encode())).0, updated);
         }
     }
@@ -443,7 +478,7 @@ pub(crate) mod tests {
     #[test]
     fn corrupt_connectivity_lengths_and_reserved_bytes_are_preserved_as_foreign() {
         let current = Settings::default().encode();
-        for index in [15, 16, 49, 113, 114, 115, 148, 158, 159, 160, 255] {
+        for index in [15, 16, 49, 113, 114, 115, 148, 158, 159, 160, 195, 196, 292] {
             let mut payload = current;
             payload[index] = 255;
             assert_eq!(decode(Some(&payload)).1, Source::Foreign);
@@ -462,8 +497,12 @@ pub(crate) mod tests {
             characteristic: 0x2a37,
         });
         settings.ble_profile = 3;
-        let mut expected = [0u8; 256];
-        expected[..8].copy_from_slice(b"cycling\x07");
+        settings.pairing = Some(device_api::server::Pairing {
+            id: [0xde, 0xad, 0xbe, 0xef],
+            key: [0x42; 32],
+        });
+        let mut expected = [0u8; 293];
+        expected[..8].copy_from_slice(b"cycling\x08");
         expected[8] = 77;
         expected[9..11].copy_from_slice(&[2, 1]);
         expected[11] = 12;
@@ -481,8 +520,11 @@ pub(crate) mod tests {
         expected[149..155].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
         expected[155..157].copy_from_slice(&[0x0d, 0x18]);
         expected[157..159].copy_from_slice(&[0x37, 0x2a]);
-        expected[159] = 3;
-        expected[160..163].copy_from_slice(&[1, 0xd7, 0]);
+        expected[159] = 1;
+        expected[160..164].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        expected[164..196].fill(0x42);
+        expected[196] = 3;
+        expected[197..200].copy_from_slice(&[1, 0xd7, 0]);
         settings.app = AppPreferences::new(&[1, 0xd7, 0]).unwrap();
         assert_eq!(settings.encode(), expected);
         assert_eq!(decode(Some(&expected)), (settings, Source::Current));
@@ -492,9 +534,10 @@ pub(crate) mod tests {
             (58, 1),
             (118, 1),
             (148, 2),
-            (159, 97),
-            (163, 1),
-            (255, 1),
+            (159, 2),
+            (196, 97),
+            (200, 1),
+            (292, 1),
         ] {
             let mut payload = expected;
             payload[index] = value;
@@ -512,6 +555,11 @@ pub(crate) mod tests {
         unnamed[148] = 0;
         unnamed[149..155].fill(0);
         assert_eq!(decode(Some(&unnamed)).1, Source::Foreign);
+        let mut unpaired = expected;
+        unpaired[159] = 0;
+        assert_eq!(decode(Some(&unpaired)).1, Source::Foreign);
+        unpaired[160..196].fill(0);
+        assert_eq!(decode(Some(&unpaired)).0.pairing, None);
     }
 
     #[test]
@@ -597,6 +645,12 @@ pub(crate) mod tests {
             settings.ble_profile = rng.below(256) as u8;
         }
         settings.app = AppPreferences::new(&text(rng, APP_CAPACITY as u64)).unwrap();
+        if rng.below(2) == 0 {
+            settings.pairing = Some(device_api::server::Pairing {
+                id: [rng.below(256) as u8; 4],
+                key: [rng.below(256) as u8; 32],
+            });
+        }
         settings
     }
 

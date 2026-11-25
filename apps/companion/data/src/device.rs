@@ -32,7 +32,6 @@ pub fn response(raw: &str) -> Result<Reply<'_>, String> {
 /// Why the device refused, in the words the phone shows.
 pub fn refusal(status: u16) -> String {
     match status {
-        403 => "Pair this iPhone with the bike computer first".into(),
         409 => "Bike computer is busy".into(),
         s => format!("the bike computer answered {s}"),
     }

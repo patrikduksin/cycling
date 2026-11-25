@@ -474,8 +474,10 @@ sensor is never connected again until it is chosen on NEARBY.
 ## Connect phone
 
 The terminal's `PHONE START` opens a phone session on VANA's own Wi-Fi
-(`PHONE START HOME` on the home network, `PHONE START BLE` for the VANA
-iPhone app over Bluetooth, read-only), and `PHONE STOP` ends it. The
+(`PHONE START HOME` on the home network), and `PHONE STOP` ends it. The
+VANA iPhone app needs no session to be opened: `PHONE PAIR` pairs it, and a
+paired device keeps a Bluetooth session open for it whenever no ride
+records. The
 phone's page lists the rides, downloads them as FIT files and loads a course
 or a workout (see Course and Today's workout). The session also ends
 after 10 minutes without a request from the phone, or when a ride starts. A

@@ -31,6 +31,8 @@ pub mod radio_control;
 #[cfg(feature = "hardware")]
 pub mod sdmmc;
 pub mod sdmmc_probe;
+#[cfg(any(feature = "hardware", test))]
+pub mod seal;
 #[cfg(feature = "hardware")]
 pub mod sleep;
 pub mod sound_protocol;

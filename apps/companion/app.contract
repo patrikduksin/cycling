@@ -2,6 +2,7 @@ use EmptyState from "exact:content"
 
 routes nav
   tab device "/"
+    pair "/pair"
   tab wifi "/wifi"
   tab workouts "/workouts"
     ride "/workouts/ride/:id"
@@ -11,6 +12,10 @@ shape Link
   detail: string
   name: string
   psm: number
+
+shape Pairing
+  paired: bool
+  id: string
 
 shape Outcome
   ok: bool
@@ -80,10 +85,13 @@ fn barInk(bars: number): string = bars >= 3 ? "-exact-label" : bars == 2 ? "-exa
 fn stateInk(s: string): string = isOpen(s) ? "vana.green" : s == "failed" ? "vana.red" : s == "idle" ? "-exact-secondary-label" : "vana.amber"
 
 component Companion
+  resource pairing = pairing() as shape Pairing
   resource link = link() as shape Link
   resource time = exactTime() as shape Time
   mutation connected as shape Outcome refreshes link
   mutation dropped as shape Outcome refreshes link
+  mutation linked as shape Outcome refreshes pairing, link
+  mutation unlinked as shape Outcome refreshes pairing, link
   derive open = isOpen(link.state)
   resource bike = bike() when open as shape Bike
   resource rides = rides(time.utcOffset) when open as shape Rides
@@ -97,6 +105,7 @@ component Companion
   state password = ""
   state problem = ""
   state sharing = ""
+  state pasted = ""
   derive busy = pending(scanned) or pending(joined) or pending(forgot)
   derive joinOutcome = match joined { case some(j) => j.outcome, case none => "" }
   derive joinText = match joined { case some(j) => j.text, case none => "" }
@@ -114,6 +123,16 @@ component Companion
     send connected = connect()
   action dropNow
     send dropped = disconnect()
+  action editPasted(v: string)
+    pasted = v
+  action pairPasted
+    send linked = pair(pasted)
+    pasted = ""
+  action pairFrom(link: string)
+    send linked = pair(link)
+    nav = go(nav, "/")
+  action unpairNow
+    send unlinked = unpair()
   action reloadDevice
     refresh link
     refresh bike
@@ -171,25 +190,36 @@ component Companion
                     text "VANA" role="heading" aria-level=1 flex=1
                   list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
                     refresh=reloadDevice refreshing=(pending(link) or pending(bike))
-                    section
-                      header
-                        text "Bluetooth"
-                      row
-                        text "Status" flex=1
-                        text stateLabel(link.state) color=stateInk(link.state) testId="state"
-                      if link.name != ""
+                    if not pairing.paired
+                      section
+                        header
+                          text "Pair Bike Computer"
                         row
-                          text "Name" flex=1
-                          text link.name color="-exact-secondary-label" testId="name"
-                    section
-                      if open
-                        button press=dropNow testId="disconnect"
-                          text "Disconnect" color="vana.red"
-                      else
-                        button press=connectNow disabled=pending(connected) testId="connect"
-                          text (pending(connected) ? "Connecting…" : "Connect")
-                      footer
-                        text match failure(connected) { case some(f) => f.message, case none => link.detail } testId="detail"
+                          text "Run “cycling pair” on your computer, then scan the QR code it shows with the Camera." color="-exact-secondary-label" testId="pair-how"
+                        button commandfor="paste" command="show-modal" disabled=pending(linked) testId="paste-link"
+                          text "Paste Pairing Link"
+                        footer
+                          text match failure(linked) { case some(f) => f.message, case none => "" } testId="pair-error"
+                    else
+                      section
+                        header
+                          text "Bluetooth"
+                        row
+                          text "Status" flex=1
+                          text stateLabel(link.state) color=stateInk(link.state) testId="state"
+                        if link.name != ""
+                          row
+                            text "Name" flex=1
+                            text link.name color="-exact-secondary-label" testId="name"
+                      section
+                        if open
+                          button press=dropNow testId="disconnect"
+                            text "Disconnect" color="vana.red"
+                        else
+                          button press=connectNow disabled=pending(connected) testId="connect"
+                            text (pending(connected) ? "Connecting…" : "Connect")
+                        footer
+                          text match failure(connected) { case some(f) => f.message, case none => link.detail } testId="detail"
                     if open
                       section
                         header
@@ -214,6 +244,38 @@ component Companion
                         row
                           text "LTHR" flex=1
                           text bike.lthr color="-exact-secondary-label" testId="lthr"
+                    if pairing.paired
+                      section
+                        button commandfor="unpair" command="show-modal" disabled=pending(unlinked) testId="unpair"
+                          text "Forget This Bike Computer" color="vana.red"
+                        footer
+                          text match failure(unlinked) { case some(f) => f.message, case none => `Paired with bike computer ${pairing.id}.` } testId="paired-id"
+                  dialog id="paste" role="alertdialog" aria-label="Paste Pairing Link"
+                    text "Paste the link “cycling pair” printed."
+                    input type="url" value=pasted input=editPasted placeholder="vanaride://pair?…" aria-label="Pairing link" testId="pasted"
+                    button press=pairPasted disabled=(pasted == "") commandfor="paste" command="close" testId="paste-confirm"
+                      text "Pair"
+                    button commandfor="paste" command="close" testId="paste-cancel"
+                      text "Cancel"
+                  dialog id="unpair" role="alertdialog" aria-label="Forget This Bike Computer?"
+                    text "This iPhone stops connecting to it until you pair again."
+                    button press=unpairNow destructive=true commandfor="unpair" command="close" testId="unpair-confirm"
+                      text "Forget"
+                    button commandfor="unpair" command="close" testId="unpair-cancel"
+                      text "Cancel"
+                else if e.name == "pair"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Pair Bike Computer" role="heading" aria-level=2
+                  list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                    section
+                      row
+                        text "Bike Computer" flex=1
+                        text searchParam(e, "id") color="-exact-secondary-label" testId="pair-id"
+                      footer
+                        text "Pairing replaces any bike computer this iPhone used before, and any iPhone the bike computer knew." testId="pair-note"
+                    section
+                      button press=pairFrom(`vanaride://pair?id=${searchParam(e, "id")}&k=${searchParam(e, "k")}`) testId="pair-confirm"
+                        text "Pair"
                 else if e.name == "wifi"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "Wi-Fi" role="heading" aria-level=1 flex=1

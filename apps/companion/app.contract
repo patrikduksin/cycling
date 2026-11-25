@@ -1,0 +1,89 @@
+use EmptyState from "exact:content"
+
+routes nav
+  tab device "/"
+  tab wifi "/wifi"
+  tab workouts "/workouts"
+
+shape Link
+  state: string
+  detail: string
+  name: string
+  psm: number
+
+shape Outcome
+  ok: bool
+  text: string
+
+fn isOpen(s: string): bool = s == "open"
+fn stateLabel(s: string): string = isOpen(s) ? "Connected" : s == "idle" ? "Not Connected" : s == "failed" ? "Failed" : "Connecting…"
+fn stateInk(s: string): string = isOpen(s) ? "vana.green" : s == "failed" ? "vana.red" : s == "idle" ? "-exact-secondary-label" : "vana.amber"
+
+component Companion
+  resource link = link() as shape Link
+  mutation connected as shape Outcome
+  mutation dropped as shape Outcome
+  derive open = isOpen(link.state)
+
+  action pick(name: string)
+    nav = select(nav, name)
+  action follow(url: string)
+    nav = go(nav, url)
+  action connectNow
+    send connected = connect()
+  action dropNow
+    send dropped = disconnect()
+
+  view
+    main testId="root" navigationKey=`${top(nav).id}` navigate=follow width="100%" height="100%"
+      display="flex" flex-direction="column"
+      column flex=1 min-height=0 position="relative"
+        for t in nav.tabs key=t.name
+          column role="tabpanel" id=`panel-${t.name}` position="absolute" inset=0
+            for e in t.stack key=e.id
+              column navigationKey=`${e.id}` navigationScroll=`content-${e.id}` position="absolute" inset=0
+                display="flex" flex-direction="column"
+                if e.name == "device"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "VANA" role="heading" aria-level=1 flex=1
+                  list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                    section
+                      header
+                        text "Bluetooth"
+                      row
+                        text "Status" flex=1
+                        text stateLabel(link.state) color=stateInk(link.state) testId="state"
+                      if link.name != ""
+                        row
+                          text "Name" flex=1
+                          text link.name color="-exact-secondary-label" testId="name"
+                    section
+                      if open
+                        button press=dropNow testId="disconnect"
+                          text "Disconnect" color="vana.red"
+                      else
+                        button press=connectNow disabled=pending(connected) testId="connect"
+                          text (pending(connected) ? "Connecting…" : "Connect")
+                      footer
+                        text match failure(connected) { case some(f) => f.message, case none => link.detail } testId="detail"
+                else if e.name == "wifi"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Wi-Fi" role="heading" aria-level=1 flex=1
+                  EmptyState(symbol="symbol:sf/wifi", title="No Networks Yet", message="Connect the bike computer first, then choose a network for it here.")
+                else
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Workouts" role="heading" aria-level=1 flex=1
+                  EmptyState(symbol="symbol:sf/figure.outdoor.cycle", title="No Workouts Yet", message="Workouts on the bike computer show up here once it is connected.")
+      row role="tablist" testId="tabs"
+        button role="tab" aria-controls="panel-device" aria-selected=(nav.tab == "device") press=pick("device")
+          testId="tab-device" flex=1
+          image "symbol:sf/bicycle"
+          text "Device"
+        button role="tab" aria-controls="panel-wifi" aria-selected=(nav.tab == "wifi") press=pick("wifi")
+          testId="tab-wifi" flex=1
+          image "symbol:sf/wifi"
+          text "Wi-Fi"
+        button role="tab" aria-controls="panel-workouts" aria-selected=(nav.tab == "workouts") press=pick("workouts")
+          testId="tab-workouts" flex=1
+          image "symbol:sf/list.bullet.rectangle"
+          text "Workouts"

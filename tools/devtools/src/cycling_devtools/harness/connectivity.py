@@ -27,11 +27,10 @@ def scenarios(wifi_profile, original_wifi_connected=True):
             {'op': 'wifi', 'action': 'forget', 'expect': {'saved': 'false', 'online': 'false'}},
         ],
     }
-    # Preserve the pre-existing compiled authorized SDK peer while returning runtime BLE to echo.
     # The owned laptop fixture runs --profile both so both existing consumers can be checked.
     # Connect includes scan, connection and four bounded GATT phases; allow their full budget.
     ble = {
-        'connectivity_restore': {'ble': {'mode': 'authorized-heart', 'connected': False, 'echo_after': True}},
+        'connectivity_restore': {'ble': {'mode': 'authorized-heart', 'connected': False}},
         'steps': [
             {'op': 'ble', 'action': 'scan'},
             {'op': 'ble', 'action': 'select', 'mode': 'sim-heart'},
@@ -105,8 +104,6 @@ def scenarios(wifi_profile, original_wifi_connected=True):
             },
             {'op': 'wait', 'command': 'RIDE SENSORS', 'equals': {'cadence': 'Some(600)'}, 'timeout_s': 10},
             {'op': 'ble', 'action': 'forget', 'expect': {'saved': 'false', 'link': 'off'}},
-            {'op': 'ble', 'action': 'echo'},
-            {'op': 'wait', 'command': 'BLE', 'equals': {'link': 'advertising'}, 'timeout_s': 10},
         ],
     }
     return {'connectivity-wifi': wifi, 'connectivity-ble': ble}
@@ -120,9 +117,9 @@ def main():
     args = parser.parse_args()
     baseline = json.loads(private_path(args.baseline).read_text())
     original_ble = reply_fields(baseline['BLE']['data'])
-    if original_ble.get('link') != 'advertising':
+    if original_ble.get('link') != 'off':
         raise ValueError(
-            'generator requires an original capture with BLE advertising; supply a deliberate restoration plan for other originals'
+            'generator requires an original capture with BLE idle (link off); supply a deliberate restoration plan for other originals'
         )
     original_wifi = reply_fields(baseline['WIFI']['data'])
     output = private_path(args.output)

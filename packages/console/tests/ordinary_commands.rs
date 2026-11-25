@@ -208,6 +208,9 @@ impl Wifi for Station {
     fn stats(&self) -> device_api::connectivity::WifiStats {
         Default::default()
     }
+    fn rssi(&self) -> Option<i8> {
+        None
+    }
 }
 
 struct Switch(device_api::power::Status);

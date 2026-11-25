@@ -22,7 +22,7 @@ pub struct World {
     bulk: device::board::Bulk,
     sound: device::board::Sound,
     sensors: device::board::Sensors,
-    server: device::drivers::http::Server,
+    server: device::drivers::exchange::Server,
     access_point: device::board::AccessPoint,
     input: device::board::Input,
     power: device::board::Power,
@@ -101,7 +101,7 @@ impl World {
         bulk: device::board::Bulk,
         sound: device::board::Sound,
         sensors: device::board::Sensors,
-        server: device::drivers::http::Server,
+        server: device::drivers::exchange::Server,
         access_point: device::board::AccessPoint,
         input: device::board::Input,
         power: device::board::Power,
@@ -137,6 +137,7 @@ impl World {
         impl device_api::server::Server + 'a,
         impl Sound + 'a,
         impl PowerControl + 'a,
+        impl device_api::connectivity::Wifi + 'a,
     > {
         let ant = AntRecorder::new(&mut self.ant, log, &observed.ant);
         let ble = BleRecorder::new(&mut self.ble, log, &observed.ble);
@@ -160,6 +161,11 @@ impl World {
             server,
             sound: Started { sound, started },
             control,
+            wifi: device_api::connectivity::WifiRecorder::new(
+                crate::commands::Station,
+                log,
+                &observed.wifi,
+            ),
         }
     }
 

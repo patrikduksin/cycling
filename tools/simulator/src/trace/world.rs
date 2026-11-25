@@ -10,7 +10,7 @@ use device_api::observation::{Availability, Error, Observation};
 use device_api::positioning;
 use device_api::power;
 use device_api::sensors;
-use device_api::server::{AccessPointState, Reach};
+use device_api::server::{AccessPointState, Listen, PhoneLink, Reach};
 use device_api::sound;
 use firmware_services::trace::media::Access;
 use firmware_services::trace::origin::Memory;
@@ -70,7 +70,8 @@ pub enum World<'a> {
     },
     ServerRequest(Option<ServerRequest<'a>>),
     ServerRoom(usize),
-    ServerListen(bool),
+    ServerListen(Listen),
+    ServerLink(PhoneLink),
     ServerFinish(u32),
     ServerRead {
         id: u32,
@@ -184,6 +185,7 @@ pub fn read<'a>(call: &Call<'a>) -> Option<World<'a>> {
         ("Server", "request") => World::ServerRequest(Wire::take(r)),
         ("Server", "room") => World::ServerRoom(Wire::take(r)),
         ("Server", "listen") => World::ServerListen(Wire::take(r)),
+        ("Server", "link") => World::ServerLink(Wire::take(r)),
         ("Server", "finish") => World::ServerFinish(Wire::take(r)),
         ("Server", "read") => {
             let (id, more) = (Wire::take(r), Wire::take(r));

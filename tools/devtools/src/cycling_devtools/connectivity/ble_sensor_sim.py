@@ -16,7 +16,7 @@ ADV = 'org.bluez.LEAdvertisement1'
 ROOT = '/com/cycling/simulator'
 
 
-def run(profile):
+def run(profile, seconds=None):
     import dbus
     import dbus.mainloop.glib
     import dbus.service
@@ -223,6 +223,8 @@ def run(profile):
     )
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, shutdown)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, shutdown)
+    if seconds:
+        GLib.timeout_add_seconds(seconds, shutdown)
     loop.run()
 
 
@@ -231,10 +233,11 @@ def main():
     parser.add_argument(
         '--profile', choices=('heart', 'csc', 'both'), default=os.environ.get('CYCLING_SIM_PROFILE', 'both')
     )
+    parser.add_argument('--seconds', type=int, help='unregister and stop after this long')
     args = parser.parse_args()
     if args.profile not in ('heart', 'csc', 'both'):
         parser.error('CYCLING_SIM_PROFILE must be heart, csc, or both')
-    run(args.profile)
+    run(args.profile, args.seconds)
 
 
 if __name__ == '__main__':

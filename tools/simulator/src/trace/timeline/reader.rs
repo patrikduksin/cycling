@@ -10,7 +10,7 @@ use crate::trace::world::{self, World};
 use device_api::ant;
 use device_api::input::Input;
 use device_api::observation::Observation;
-use device_api::server::{AccessPointState, Reach};
+use device_api::server::{AccessPointState, Listen, Reach};
 use firmware_services::trace::{self, Event, Level};
 use std::fmt::{self, Write as _};
 
@@ -746,12 +746,15 @@ impl Reader {
                 )
             }),
             World::ServerListen(listen) => self.push_with(kind, 0, |line| {
-                line.write_str(if listen {
-                    "server listen"
-                } else {
-                    "server stop"
+                line.write_str(match listen {
+                    Listen::Off => "server stop",
+                    Listen::Network => "server listen",
+                    Listen::Bluetooth => "server listen bluetooth",
                 })
             }),
+            World::ServerLink(link) => {
+                self.push_with(kind, 0, |line| write!(line, "phone link {}", link.name()))
+            }
             World::ServerFinish(id) => {
                 self.push_with(kind, 0, |line| write!(line, "server finish #{id}"))
             }
@@ -856,6 +859,7 @@ pub fn kind(world: &World<'_>) -> Option<Kind> {
         | World::ServerRequest(_)
         | World::ServerRoom(_)
         | World::ServerListen(_)
+        | World::ServerLink(_)
         | World::ServerFinish(_)
         | World::ServerRead { .. }
         | World::ServerWrite { .. } => Kind::Phone,

@@ -4,6 +4,7 @@ routes nav
   tab device "/"
   tab wifi "/wifi"
   tab workouts "/workouts"
+    ride "/workouts/ride/:id"
 
 shape Link
   state: string
@@ -15,15 +16,95 @@ shape Outcome
   ok: bool
   text: string
 
+shape Time
+  epochAtZero: number
+  utcOffset: number
+
+shape Bike
+  battery: string
+  firmware: string
+  storage: string
+  ftp: string
+  lthr: string
+
+shape Ride
+  id: string
+  title: string
+  subtitle: string
+  power: bool
+  heart: bool
+  date: string
+  start: string
+  moving: string
+  distance: string
+  speed: string
+  recorded: string
+  file: string
+
+shape Rides
+  indexing: bool
+  rides: Ride[]
+
+shape Today
+  planned: bool
+  name: string
+  detail: string
+
+shape Network
+  ssid: string
+  secure: bool
+  bars: number
+  signal: string
+  joined: bool
+
+shape Wifi
+  configured: bool
+  ssid: string
+  state: string
+  ink: string
+  bars: number
+  signal: string
+  networks: Network[]
+
+shape Joined
+  outcome: string
+  ssid: string
+  text: string
+
+shape Fit
+  path: string
+
 fn isOpen(s: string): bool = s == "open"
 fn stateLabel(s: string): string = isOpen(s) ? "Connected" : s == "idle" ? "Not Connected" : s == "failed" ? "Failed" : "Connecting…"
+fn barInk(bars: number): string = bars >= 3 ? "-exact-label" : bars == 2 ? "-exact-secondary-label" : "vana.unlit"
 fn stateInk(s: string): string = isOpen(s) ? "vana.green" : s == "failed" ? "vana.red" : s == "idle" ? "-exact-secondary-label" : "vana.amber"
 
 component Companion
   resource link = link() as shape Link
-  mutation connected as shape Outcome
-  mutation dropped as shape Outcome
+  resource time = exactTime() as shape Time
+  mutation connected as shape Outcome refreshes link
+  mutation dropped as shape Outcome refreshes link
   derive open = isOpen(link.state)
+  resource bike = bike() when open as shape Bike
+  resource rides = rides(time.utcOffset) when open as shape Rides
+  resource today = today() when open as shape Today
+  resource wifi = wifi() when open as shape Wifi
+  mutation scanned as shape Outcome refreshes wifi
+  mutation joined as shape Joined refreshes wifi then afterJoin
+  mutation forgot as shape Outcome refreshes wifi
+  mutation fit as shape Fit then shareFit
+  state aimed = ""
+  state password = ""
+  state problem = ""
+  state sharing = ""
+  derive busy = pending(scanned) or pending(joined) or pending(forgot)
+  derive joinOutcome = match joined { case some(j) => j.outcome, case none => "" }
+  derive joinText = match joined { case some(j) => j.text, case none => "" }
+  derive fitPath = match fit { case some(f) => f.path, case none => "" }
+  derive wifiNote = match failure(scanned) { case some(f) => f.message, case none => match failure(joined) { case some(f) => f.message, case none => joinOutcome == "no_internet" and not pending(joined) ? joinText : "2.4 GHz networks only" } }
+
+  task scanOnAppear when (open and nav.tab == "wifi")
+    after(1, scanNow)
 
   action pick(name: string)
     nav = select(nav, name)
@@ -33,6 +114,48 @@ component Companion
     send connected = connect()
   action dropNow
     send dropped = disconnect()
+  action reloadDevice
+    refresh link
+    refresh bike
+  action reloadWorkouts
+    refresh today
+    refresh rides
+  action scanNow
+    if not busy
+      send scanned = scan()
+  action reloadWifi
+    refresh wifi
+    if not busy
+      send scanned = scan()
+  action ask(ssid: string)
+    aimed = ssid
+    password = ""
+    showModal("join")
+  action editPassword(v: string)
+    password = v
+  action joinNow
+    send joined = join(aimed, password)
+  action dropPassword
+    password = ""
+  action afterJoin
+    password = ""
+    if joinOutcome == "wrong_password"
+      showModal("wrong")
+    else if joinOutcome == "failed"
+      problem = joinText
+      showModal("problem")
+  action tryAgain
+    showModal("join")
+  action forgetNow
+    send forgot = forget()
+  action openRide(id: string)
+    nav = push(nav, path("ride", id))
+  action shareRide(id: string, file: string)
+    sharing = id
+    send fit = fit(id, file)
+  action shareFit
+    if fitPath != ""
+      share(files=[fitPath])
 
   view
     main testId="root" navigationKey=`${top(nav).id}` navigate=follow width="100%" height="100%"
@@ -47,6 +170,7 @@ component Companion
                   header display="flex" align-items="center" padding="8px 16px"
                     text "VANA" role="heading" aria-level=1 flex=1
                   list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                    refresh=reloadDevice refreshing=(pending(link) or pending(bike))
                     section
                       header
                         text "Bluetooth"
@@ -66,14 +190,175 @@ component Companion
                           text (pending(connected) ? "Connecting…" : "Connect")
                       footer
                         text match failure(connected) { case some(f) => f.message, case none => link.detail } testId="detail"
+                    if open
+                      section
+                        header
+                          text "Bike Computer"
+                        row
+                          text "Battery" flex=1
+                          text bike.battery color="-exact-secondary-label" testId="battery"
+                        row
+                          text "Firmware" flex=1
+                          text bike.firmware color="-exact-secondary-label" testId="firmware"
+                        row
+                          text "Storage" flex=1
+                          text bike.storage color="-exact-secondary-label" testId="storage"
+                        footer
+                          text match failure(bike) { case some(f) => f.message, case none => "" } testId="bike-error"
+                      section
+                        header
+                          text "Athlete"
+                        row
+                          text "FTP" flex=1
+                          text bike.ftp color="-exact-secondary-label" testId="ftp"
+                        row
+                          text "LTHR" flex=1
+                          text bike.lthr color="-exact-secondary-label" testId="lthr"
                 else if e.name == "wifi"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "Wi-Fi" role="heading" aria-level=1 flex=1
-                  EmptyState(symbol="symbol:sf/wifi", title="No Networks Yet", message="Connect the bike computer first, then choose a network for it here.")
+                  if not open
+                    EmptyState(symbol="symbol:sf/wifi", title="Not Connected", message="Connect the bike computer on the Device tab to put it on Wi-Fi.")
+                  else
+                    list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                      refresh=reloadWifi refreshing=pending(wifi)
+                      section
+                        header
+                          text "Current Network"
+                        row gap=8 align-items="center" testId="current"
+                          column flex=1 min-width=0 gap=2
+                            text (wifi.configured ? wifi.ssid : "No network") color=(wifi.configured ? "-exact-label" : "-exact-secondary-label") testId="current-ssid"
+                            text wifi.state font="-exact-subheadline" color=wifi.ink testId="current-state"
+                          if wifi.bars > 0
+                            image "symbol:sf/wifi" color=barInk(wifi.bars) aria-label=wifi.signal testId="current-signal"
+                        if wifi.configured
+                          button commandfor="forget" command="show-modal" disabled=busy testId="forget"
+                            text "Forget This Network" color="vana.red"
+                        footer
+                          text match failure(forgot) { case some(f) => f.message, case none => match failure(wifi) { case some(f) => f.message, case none => "" } } testId="current-error"
+                      section
+                        header
+                          row gap=6 align-items="center"
+                            text "Networks"
+                            if pending(scanned)
+                              progress aria-label="Scanning" testId="scanning"
+                        if wifi.networks.length == 0 and not pending(scanned)
+                          row
+                            text "No networks found" color="-exact-secondary-label" testId="no-networks"
+                        for n, i in wifi.networks key=n.ssid
+                          if n.secure
+                            button press=ask(n.ssid) disabled=busy aria-label=`${n.ssid}, secured, ${n.signal}` testId=`network-${i}`
+                              row gap=8 align-items="center" flex=1 min-width=0
+                                if n.joined
+                                  image "symbol:checkmark" color="vana.accent" font="-exact-body" aria-label="Joined" testId=`network-${i}-joined`
+                                text n.ssid flex=1 min-width=0 color="-exact-label" testId=`network-${i}-ssid`
+                                if pending(joined) and aimed == n.ssid
+                                  progress aria-label="Joining"
+                                image "symbol:sf/lock.fill" color="-exact-secondary-label" font="-exact-footnote" aria-label="Secured"
+                                image "symbol:sf/wifi" color=barInk(n.bars) font="-exact-body" aria-label=n.signal
+                          else
+                            row gap=8 align-items="center" testId=`network-${i}`
+                              column flex=1 min-width=0 gap=2
+                                text n.ssid color="-exact-tertiary-label" testId=`network-${i}-ssid`
+                                text "Not supported" font="-exact-footnote" color="-exact-tertiary-label" testId=`network-${i}-unsupported`
+                              image "symbol:sf/wifi" color="-exact-tertiary-label" font="-exact-body" aria-label=n.signal
+                        footer
+                          text wifiNote testId="networks-note"
+                  dialog id="join" role="alertdialog" aria-label=`Enter the password for “${aimed}”` close=dropPassword
+                    input type="password" value=password input=editPassword placeholder="Password" aria-label="Password" testId="password"
+                    button press=joinNow disabled=(password.length < 8) commandfor="join" command="close" testId="join-confirm"
+                      text "Join"
+                    button commandfor="join" command="close" testId="join-cancel"
+                      text "Cancel"
+                  dialog id="wrong" role="alertdialog" aria-label="Wrong Password"
+                    text `The password for “${aimed}” is incorrect.` testId="wrong-text"
+                    button press=tryAgain commandfor="wrong" command="close" testId="wrong-retry"
+                      text "Try Again"
+                    button commandfor="wrong" command="close" testId="wrong-cancel"
+                      text "Cancel"
+                  dialog id="problem" role="alertdialog" aria-label="Couldn’t Join Network"
+                    text problem testId="problem"
+                    button commandfor="problem" command="close" testId="problem-ok"
+                      text "OK"
+                  dialog id="forget" role="alertdialog" aria-label=`Forget “${wifi.ssid}”?`
+                    text "The bike computer will stop joining this network."
+                    button press=forgetNow destructive=true commandfor="forget" command="close" testId="forget-confirm"
+                      text "Forget"
+                    button commandfor="forget" command="close" testId="forget-cancel"
+                      text "Cancel"
+                else if e.name == "ride"
+                  for r in rides.rides.filter(x => x.id == e.params.id) key=r.id
+                    header display="flex" align-items="center" padding="8px 16px"
+                      text r.title role="heading" aria-level=2
+                    list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                      section
+                        row
+                          text "Date" flex=1
+                          text r.date color="-exact-secondary-label" testId="ride-date"
+                        row
+                          text "Start" flex=1
+                          text r.start color="-exact-secondary-label" testId="ride-start"
+                        row
+                          text "Moving Time" flex=1
+                          text r.moving color="-exact-secondary-label" testId="ride-moving"
+                        row
+                          text "Distance" flex=1
+                          text r.distance color="-exact-secondary-label" testId="ride-distance"
+                        row
+                          text "Average Speed" flex=1
+                          text r.speed color="-exact-secondary-label" testId="ride-speed"
+                        row
+                          text "Recorded" flex=1
+                          text r.recorded color="-exact-secondary-label" testId="ride-recorded"
+                      section
+                        if pending(fit) and sharing == r.id
+                          button disabled=true testId="share-fit"
+                            row gap=8 align-items="center"
+                              progress aria-label="Downloading"
+                              text "Downloading FIT…"
+                        else
+                          button press=shareRide(r.id, r.file) disabled=pending(fit) testId="share-fit"
+                            row gap=8 align-items="center"
+                              image "symbol:share"
+                              text "Share FIT"
+                        footer
+                          text match failure(fit) { case some(f) => f.message, case none => "" } testId="share-error"
                 else
                   header display="flex" align-items="center" padding="8px 16px"
                     text "Workouts" role="heading" aria-level=1 flex=1
-                  EmptyState(symbol="symbol:sf/figure.outdoor.cycle", title="No Workouts Yet", message="Workouts on the bike computer show up here once it is connected.")
+                  if not open
+                    EmptyState(symbol="symbol:sf/bicycle", title="Not Connected", message="Connect the bike computer on the Device tab to see today's workout and your rides.")
+                  else
+                    list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                      refresh=reloadWorkouts refreshing=(pending(today) or pending(rides))
+                      section
+                        header
+                          text "Today"
+                        row testId="today"
+                          column flex=1 min-width=0 gap=2
+                            text today.name color=(today.planned ? "-exact-label" : "-exact-secondary-label") testId="today-name"
+                            if today.detail != ""
+                              text today.detail font="-exact-subheadline" color="-exact-secondary-label" testId="today-detail"
+                        footer
+                          text match failure(today) { case some(f) => f.message, case none => "" } testId="today-error"
+                      section
+                        header
+                          text "Rides"
+                        if rides.rides.length == 0 and current(rides)
+                          row
+                            text (rides.indexing ? "Looking for rides…" : "No rides yet") color="-exact-secondary-label" testId="no-rides"
+                        for r in rides.rides key=r.id
+                          button press=openRide(r.id) gap=8 align-items="center" testId=`ride-${r.id}`
+                            column flex=1 min-width=0 gap=2
+                              text r.title testId=`ride-${r.id}-title`
+                              text r.subtitle font="-exact-subheadline" color="-exact-secondary-label" testId=`ride-${r.id}-subtitle`
+                            if r.power
+                              image "symbol:sf/bolt.fill" color="vana.power" font="-exact-footnote" aria-label="Power" testId=`ride-${r.id}-power`
+                            if r.heart
+                              image "symbol:heart-fill" color="vana.heart" font="-exact-footnote" aria-label="Heart rate" testId=`ride-${r.id}-heart`
+                            image "symbol:forward-chevron"
+                        footer
+                          text match failure(rides) { case some(f) => f.message, case none => (rides.indexing and rides.rides.length > 0 ? "Still looking for older rides." : "") } testId="rides-error"
       row role="tablist" testId="tabs"
         button role="tab" aria-controls="panel-device" aria-selected=(nav.tab == "device") press=pick("device")
           testId="tab-device" flex=1

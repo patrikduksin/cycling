@@ -5,7 +5,7 @@ execution. Use the `cycling` tasks (`cycling` lists them; [cli.py](src/cycling_d
 defines them). Tools run in this
 package's locked uv environment (`uv run --project tools/devtools --locked`),
 which also provides esptool, pytest and ruff. The Bluetooth tasks
-(`bluetooth-echo`, `ble-simulator`) instead use system Python for the
+(`ble-http`, `ble-simulator`) instead use system Python for the
 distribution's D-Bus and GLib bindings, with the source tree on `PYTHONPATH`.
 
 Device access follows the [C606 skill](../../.agents/skills/c606/SKILL.md);

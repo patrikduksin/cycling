@@ -7,7 +7,7 @@ pub const STALE_MS: u64 = 5_000;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Profile {
     #[default]
-    Echo,
+    Unset,
     HeartRate,
     Cadence,
 }
@@ -17,13 +17,13 @@ impl Profile {
         match value {
             1 => Self::HeartRate,
             2 => Self::Cadence,
-            _ => Self::Echo,
+            _ => Self::Unset,
         }
     }
 
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Echo => "echo",
+            Self::Unset => "none",
             Self::HeartRate => "heart",
             Self::Cadence => "cadence",
         }

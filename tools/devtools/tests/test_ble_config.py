@@ -4,8 +4,8 @@ import cycling_devtools.connectivity.ble_config as ble_config
 
 
 class BleConfigTest(unittest.TestCase):
-    def test_echo_and_simulator_modes_have_no_private_address(self):
-        self.assertEqual(ble_config.configuration('echo'), (0, b'', None))
+    def test_none_and_simulator_modes_have_no_private_address(self):
+        self.assertEqual(ble_config.configuration('none'), (0, b'', None))
         self.assertEqual(ble_config.configuration('sim-heart'), (1, b'Cycling Sim', None))
         self.assertEqual(ble_config.configuration('sim-csc'), (2, b'Cycling Sim', None))
 
@@ -31,7 +31,7 @@ class BleConfigTest(unittest.TestCase):
 
     def test_runtime_command_uses_bounded_hex_fields(self):
         self.assertEqual(ble_config.command('sim-heart'), 'BLE SELECT HRS 4379636c696e672053696d -')
-        self.assertEqual(ble_config.command('echo'), 'BLE FORGET')
+        self.assertEqual(ble_config.command('none'), 'BLE FORGET')
 
 
 if __name__ == '__main__':

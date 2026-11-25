@@ -15,7 +15,7 @@ class EntrypointTests(unittest.TestCase):
     def test_bluetooth_import_and_help_without_dbus_dependencies(self):
         # -S excludes site packages, including D-Bus and GLib. Import and help
         # must succeed without even loading their hardware integration modules.
-        for name in ('bluetooth', 'ble_sensor_sim'):
+        for name in ('ble_http', 'ble_sensor_sim'):
             module = f'cycling_devtools.connectivity.{name}'
             for args in (['-c', f'import {module}'], ['-m', module, '--help']):
                 result = subprocess.run(

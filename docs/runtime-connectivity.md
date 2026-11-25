@@ -1,6 +1,6 @@
 # Runtime connectivity
 
-Firmware starts Wi-Fi without credentials and BLE in echo mode. Saved Wi-Fi
+Firmware starts Wi-Fi without credentials and BLE idle. Saved Wi-Fi
 configuration is restored after restart, and VANA restores the saved HRS/CSC peer.
 Firmware images contain no credentials or target identifiers.
 
@@ -37,7 +37,6 @@ CMD 16 BLE DISCONNECT
 CMD 17 BLE SELECT CSC 4379636c696e672053696d -
 CMD 18 BLE CONNECT
 CMD 19 BLE FORGET
-CMD 20 BLE ECHO
 ```
 
 The Wi-Fi example encodes a test network `Test` with a test password; use
@@ -102,7 +101,7 @@ Stop the BLE fixture afterward.
 
 Typed steps look like `{"op":"wifi","action":"configure","profile":".local/wifi/config.json"}`
 or `{"op":"ble","action":"select","mode":"sim-heart"}`. Other actions are `scan`,
-`connect`, `disconnect`, `forget` and BLE `echo`. Each step waits for its own
+`connect`, `disconnect` and `forget`. Each step waits for its own
 operation sequence to complete or fail. `"completion":"error"` expects a
 deliberate failure; Wi-Fi `"invalid_password":true` tests recovery without a
 second private file.
@@ -115,20 +114,19 @@ checks completion. The device does not export stored credentials.
 {
   "connectivity_restore": {
     "wifi": {"profile": ".local/wifi/config.json", "connected": true},
-    "ble": {"mode": "authorized-heart", "connected": false, "echo_after": true}
+    "ble": {"mode": "authorized-heart", "connected": false}
   },
   "steps": [{"op": "wifi", "action": "scan"}]
 }
 ```
 
 - A null Wi-Fi profile means originally unconfigured.
-- BLE modes are `none`, `echo`, `sim-heart`, `sim-csc` or `authorized-heart`; the
+- BLE modes are `none`, `sim-heart`, `sim-csc` or `authorized-heart`; the
   last reads an explicit private authorization record.
-- `echo_after` returns runtime BLE to echo while keeping the saved selection.
-- The generator accepts only a captured original whose BLE is advertising
-  (echo). Its BLE scenario restores by selecting `authorized-heart` from the
-  private authorization record and then returning runtime BLE to echo. Any
-  other original needs a deliberate restoration plan; the generator refuses it.
+- The generator accepts only a captured original whose BLE is idle (`link=off`).
+  Its BLE scenario restores by selecting `authorized-heart` from the private
+  authorization record, not connected. Any other original needs a deliberate
+  restoration plan; the generator refuses it.
 
 The virtual backend covers parsing, settings persistence, selection
 changes and notification-generation rejection; radio connect and scan are

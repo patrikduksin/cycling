@@ -1,1 +1,1 @@
-exact_logic_abi::export!(vana_data::Vana, vana_data::Vana);
+exact_logic_abi::export!(vana_data::Vana, vana_data::Vana::default());

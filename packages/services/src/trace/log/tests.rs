@@ -413,7 +413,7 @@ struct Phone {
 }
 
 impl Server for Phone {
-    fn listen(&mut self, _: bool) {}
+    fn listen(&mut self, _: device_api::server::Listen) {}
     fn request(&self) -> Option<Request> {
         self.request.clone()
     }
@@ -427,6 +427,9 @@ impl Server for Phone {
         bytes.len()
     }
     fn finish(&mut self, _: u32) {}
+    fn link(&mut self) -> device_api::server::PhoneLink {
+        device_api::server::PhoneLink::Off
+    }
 }
 
 impl AccessPoint for Phone {

@@ -93,9 +93,13 @@ pub enum ControlError {
     ConfigurationFailed,
     LinkLost,
     RunnerStopped,
+    /// The access point refused the handshake: almost always a wrong password.
+    WrongPassword,
+    /// No access point with the configured SSID answered.
+    NetworkNotFound,
 }
 impl ControlError {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Unconfigured,
         Self::ScanFailed,
         Self::ScanTimeout,
@@ -109,6 +113,8 @@ impl ControlError {
         Self::ConfigurationFailed,
         Self::LinkLost,
         Self::RunnerStopped,
+        Self::WrongPassword,
+        Self::NetworkNotFound,
     ];
     pub const fn name(self) -> &'static str {
         match self {
@@ -125,6 +131,8 @@ impl ControlError {
             Self::ConfigurationFailed => "configuration_failed",
             Self::LinkLost => "link_lost",
             Self::RunnerStopped => "runner_stopped",
+            Self::WrongPassword => "wrong_password",
+            Self::NetworkNotFound => "network_not_found",
         }
     }
 }
@@ -214,6 +222,8 @@ impl core::fmt::Debug for WifiStats {
 pub struct NetworkDiscovery {
     pub ssid: Text<32>,
     pub rssi: i8,
+    /// The network asks for a password; an open one does not.
+    pub secure: bool,
 }
 
 /// The Wi-Fi station. Requests are accepted, not completed: read `control`
@@ -232,6 +242,9 @@ pub trait Wifi {
     fn online(&self) -> bool;
     #[observe]
     fn stats(&self) -> WifiStats;
+    /// The associated network's signal in dBm; `None` while not associated.
+    #[observe]
+    fn rssi(&self) -> Option<i8>;
 }
 
 #[cfg(test)]
@@ -273,6 +286,8 @@ mod tests {
                 "configuration_failed",
                 "link_lost",
                 "runner_stopped",
+                "wrong_password",
+                "network_not_found",
             ]
         );
         let mut status = ControlStatus::new();

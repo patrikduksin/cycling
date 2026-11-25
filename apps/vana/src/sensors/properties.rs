@@ -75,7 +75,7 @@ fn arbitrary_ble_notifications_decode_without_panic() {
 fn a_ble_client_survives_any_link_and_packet_order() {
     for seed in 0..200 {
         let mut rng = Rng::new(seed);
-        let profile = rng.pick(&[Profile::Echo, Profile::HeartRate, Profile::Cadence]);
+        let profile = rng.pick(&[Profile::Unset, Profile::HeartRate, Profile::Cadence]);
         let mut client = Client::new(profile);
         let mut transport = Snapshot {
             link: Link::Connected,

@@ -284,10 +284,10 @@ impl Runtime {
         "OK"
     }
 
-    /// `PHONE` reports the phone session; `PHONE START [HOME]` opens one on
-    /// the access point or the home network; `PHONE STOP` closes it. The
-    /// reply carries the session's password and token: the terminal is the
-    /// owner's.
+    /// `PHONE` reports the phone session; `PHONE START [HOME|BLE]` opens one
+    /// on the access point, the home network or Bluetooth; `PHONE STOP`
+    /// closes it. The reply carries the session's password and token: the
+    /// terminal is the owner's.
     fn phone_command(
         &mut self,
         operation: Option<&str>,
@@ -298,10 +298,19 @@ impl Runtime {
             (None, None) => {}
             (Some("START"), None) => self.open_phone(super::PhoneMode::AccessPoint),
             (Some("START"), Some("HOME")) => self.open_phone(super::PhoneMode::Home),
+            (Some("START"), Some("BLE")) => self.open_phone(super::PhoneMode::Bluetooth),
             (Some("STOP"), None) => self.close_phone(),
             _ => return "INVALID",
         }
         let result = match self.phone_status() {
+            Some(status) if status.mode == super::PhoneMode::Bluetooth => write!(
+                output,
+                "state=open mode={} link={} requests={} downloads={}",
+                status.mode.name(),
+                status.link.name(),
+                status.requests,
+                status.downloads
+            ),
             Some(status) => {
                 let url = status.url();
                 write!(
@@ -600,7 +609,7 @@ impl Runtime {
                     profile,
                 )
             }
-            None => (None, Profile::Echo),
+            None => (None, Profile::Unset),
         };
         let previous = shell.settings;
         shell.settings.ble = selection;

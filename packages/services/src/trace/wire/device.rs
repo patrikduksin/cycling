@@ -13,7 +13,7 @@ use device_api::position_control;
 use device_api::positioning;
 use device_api::power;
 use device_api::sensors;
-use device_api::server::{AccessPointState, Method, Reach};
+use device_api::server::{AccessPointState, Listen, Method, PhoneLink, Reach};
 use device_api::sound;
 use device_api::storage;
 
@@ -80,6 +80,8 @@ codes! {
     }
     device_api::observation::Error { Unsupported = 0, Unavailable = 1, Failed = 2, Invalid = 3 }
     Method { Get = 0, Head = 1, Delete = 2, Put = 3, Post = 4, Options = 5 }
+    Listen { Off = 0, Network = 1, Bluetooth = 2 }
+    PhoneLink { Off = 0, Advertising = 1, Connected = 2, Failed = 3, Unsupported = 4 }
     sound::State {
         Idle = 0, Queued = 1, Submitted = 2, Elapsed = 3, StopQueued = 4, StopSubmitted = 5,
         Failed = 6,
@@ -112,6 +114,7 @@ codes! {
         Unconfigured = 0, ScanFailed = 1, ScanTimeout = 2, PeerNotFound = 3, ConnectFailed = 4,
         ConnectTimeout = 5, ConnectionEnded = 6, GattFailed = 7, DisconnectFailed = 8,
         DisconnectTimeout = 9, ConfigurationFailed = 10, LinkLost = 11, RunnerStopped = 12,
+        WrongPassword = 13, NetworkNotFound = 14,
     }
     power::Support { Unsupported = 0, Unknown = 1, Supported = 2 }
     storage::Region { Configuration = 0, Data = 1, Crash = 2, Intent = 4, Screens = 5 }
@@ -160,7 +163,7 @@ record! {
     ble_transport::Selection { name, address, service, characteristic }
     ble_transport::Discovery { name, address, random, rssi }
     connectivity::ControlStatus { sequence, operation, error }
-    connectivity::NetworkDiscovery { ssid, rssi }
+    connectivity::NetworkDiscovery { ssid, rssi, secure }
     connectivity::WifiStats { associations, probe_successes, probe_failures, fault }
     power::WakeSources { button, usb, timer }
     power::Capabilities { shutdown, sleep, sleep_timer_ms, wake, shutdown_wake, sleep_wake }
@@ -420,7 +423,6 @@ impl Wire<'_> for ble_transport::Operation {
             }
             Self::Connect => w.byte(2),
             Self::Disconnect => w.byte(3),
-            Self::Echo => w.byte(4),
         }
     }
     fn take(r: &mut Reader<'_>) -> Self {
@@ -429,7 +431,6 @@ impl Wire<'_> for ble_transport::Operation {
             1 => Self::Select(Wire::take(r)),
             2 => Self::Connect,
             3 => Self::Disconnect,
-            4 => Self::Echo,
             _ => {
                 r.fail();
                 Self::Scan

@@ -96,7 +96,7 @@ storage::Geometry: capacity program_size erase_size durable
 ble_transport::Selection: name address service characteristic
 ble_transport::Discovery: name address random rssi
 connectivity::ControlStatus: sequence operation error
-connectivity::NetworkDiscovery: ssid rssi
+connectivity::NetworkDiscovery: ssid rssi secure
 connectivity::WifiStats: associations probe_successes probe_failures fault
 power::WakeSources: button usb timer
 power::Capabilities: shutdown sleep sleep_timer_ms wake shutdown_wake sleep_wake
@@ -261,7 +261,6 @@ fn ble_requests_control_and_discoveries_round_trip() {
         round_trip(&Operation::Disconnect),
         Operation::Disconnect
     ));
-    assert!(matches!(round_trip(&Operation::Echo), Operation::Echo));
     for error in connectivity::ControlError::ALL {
         same(connectivity::ControlStatus {
             sequence: 9,
@@ -294,9 +293,13 @@ fn wifi_observations_round_trip() {
     let found = connectivity::NetworkDiscovery {
         ssid: text("home"),
         rssi: -64,
+        secure: true,
     };
     let back = round_trip(&[None, Some(found), None, None, None, None, None, None]);
-    assert_eq!(back[1].map(|d| (d.ssid, d.rssi)), Some((found.ssid, -64)));
+    assert_eq!(
+        back[1].map(|d| (d.ssid, d.rssi, d.secure)),
+        Some((found.ssid, -64, true))
+    );
     for state in [
         connectivity::WifiState::Unconfigured,
         connectivity::WifiState::Verified,

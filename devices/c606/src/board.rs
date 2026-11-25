@@ -340,7 +340,7 @@ impl Fitted for device_api::Absent {
 impl Fitted for Positioning {}
 impl Fitted for Ant {}
 impl Fitted for Ble {}
-impl Fitted for crate::drivers::http::Server {}
+impl Fitted for crate::drivers::exchange::Server {}
 impl Fitted for AccessPoint {}
 impl Fitted for Sound {}
 impl Fitted for Bulk {}
@@ -352,7 +352,7 @@ const _: () = assert!(fitted_handle::<Positioning>() == crate::fitted::GPS);
 const _: () = assert!(fitted_handle::<Ant>() == crate::fitted::ANT);
 const _: () = assert!(fitted_handle::<Ble>() == crate::fitted::BLE);
 const _: () = assert!(
-    fitted_handle::<crate::drivers::http::Server>() == crate::fitted::WIFI
+    fitted_handle::<crate::drivers::exchange::Server>() == crate::fitted::WIFI
         && fitted_handle::<AccessPoint>() == crate::fitted::WIFI
 );
 const _: () = assert!(fitted_handle::<Sound>() == crate::fitted::SOUND);
@@ -367,7 +367,7 @@ pub struct Parts {
     pub ant: Ant,
     pub ble: Ble,
     pub positioning: Positioning,
-    pub server: crate::drivers::http::Server,
+    pub server: crate::drivers::exchange::Server,
     pub access_point: AccessPoint,
     pub power: Power,
     pub power_control: Power,
@@ -442,7 +442,7 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         ant: Ant,
         ble: Ble,
         positioning: Positioning,
-        server: crate::drivers::http::Server,
+        server: crate::drivers::exchange::Server,
         access_point: AccessPoint { started: stack },
         power: Power,
         power_control: Power,

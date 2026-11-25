@@ -69,7 +69,6 @@ pub enum Command {
     BleSelect(device_api::ble_transport::Selection, u8),
     BleDisconnect,
     BleForget,
-    BleEcho,
     Storage,
     Fitted,
     Display(u16),
@@ -376,7 +375,6 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             Some("PEERS") => Command::BlePeers,
             Some("DISCONNECT") => Command::BleDisconnect,
             Some("FORGET") => Command::BleForget,
-            Some("ECHO") => Command::BleEcho,
             Some("SELECT") => {
                 let profile = match words.next() {
                     Some("HRS") => 1,

@@ -1,6 +1,7 @@
 //! Phone companion: a session that lets one phone browse and download rides,
 //! and load a course to follow, over the device's own Wi-Fi access point (or
-//! the home network), with no app to install.
+//! the home network), with no app to install, or over Bluetooth to the VANA
+//! iPhone app.
 //!
 //! A session has a random WPA2 password and a random token. The phone joins
 //! the access point (QR code 1), opens `http://192.168.4.1/?t=<token>` (QR
@@ -8,6 +9,12 @@
 //! must carry it. The session ends when the rider leaves the screen, after
 //! `IDLE_MS` without requests, or when a ride starts; then the access point
 //! stops and the station returns to the home network.
+//!
+//! A Bluetooth session has no access point, password or token: the device
+//! advertises its sync service while the session is open, and the phone's
+//! channel is read-only: every `GET` and a Wi-Fi scan, which changes no
+//! setting, are served and every other request is refused with 403. The
+//! session also ends when the phone's link drops.
 //!
 //! The device serves the pre-gzipped web client, small JSON and FIT files
 //! streamed from the ride journal through `ride::fit`, two passes per file so
@@ -46,7 +53,7 @@ use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::connectivity::Text;
 use device_api::server::{
-    AccessPoint, AccessPointConfig, AccessPointState, Method, Request, Server,
+    AccessPoint, AccessPointConfig, AccessPointState, Listen, Method, PhoneLink, Request, Server,
 };
 use firmware_services::files;
 use firmware_services::fit::{Counter, Sink};
@@ -54,6 +61,7 @@ use firmware_services::http::{Head, query_value};
 use firmware_services::why;
 
 mod screens;
+mod wifi;
 
 const PASSWORD_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const PASSWORD_GROUPS: usize = 3;
@@ -81,6 +89,8 @@ pub enum Mode {
     AccessPoint,
     /// The home network the station is on.
     Home,
+    /// The VANA iPhone app's Bluetooth channel, read-only.
+    Bluetooth,
 }
 
 impl Mode {
@@ -88,6 +98,14 @@ impl Mode {
         match self {
             Self::AccessPoint => "access_point",
             Self::Home => "home",
+            Self::Bluetooth => "bluetooth",
+        }
+    }
+
+    const fn listen(self) -> Listen {
+        match self {
+            Self::AccessPoint | Self::Home => Listen::Network,
+            Self::Bluetooth => Listen::Bluetooth,
         }
     }
 }
@@ -102,6 +120,8 @@ pub struct Status {
     /// The address to open, once the network is up.
     pub address: Option<[u8; 4]>,
     pub access_point: AccessPointState,
+    /// The phone's Bluetooth link; `Off` outside Bluetooth mode.
+    pub link: PhoneLink,
     pub requests: u32,
     pub downloads: u32,
 }
@@ -138,6 +158,8 @@ pub enum Closed {
     Radio,
     /// Home mode without a home network.
     Offline,
+    /// The phone's Bluetooth link dropped.
+    Link,
 }
 
 impl Closed {
@@ -148,6 +170,7 @@ impl Closed {
             Self::Ride => "ride",
             Self::Radio => "radio",
             Self::Offline => "offline",
+            Self::Link => "link",
         }
     }
 }
@@ -236,6 +259,10 @@ enum Job {
         next: u16,
         first: bool,
     },
+    Wifi {
+        id: u32,
+        asked: wifi::Asked,
+    },
 }
 
 #[derive(Default)]
@@ -253,6 +280,8 @@ pub(super) struct Phone {
     /// Ride indexes and the response in progress, kept by the device
     /// outside the runtime (see [`Runtime::attach_phone`]).
     work: Option<&'static mut Work>,
+    /// A network the phone asked to join, kept past the session it may end.
+    join: wifi::Join,
 }
 
 #[cfg(not(target_os = "none"))]
@@ -264,6 +293,7 @@ impl why::State for Phone {
         out.field("ssid", &status.map(|status| status.ssid));
         out.field("address", &status.and_then(|status| status.address));
         out.field("access_point", &status.map(|status| status.access_point));
+        out.field("link", &status.map(|status| status.link));
         out.field("requests", &status.map(|status| status.requests));
         out.field("downloads", &status.map(|status| status.downloads));
         out.field("last_request_ms", &session.map(|s| s.last_request_ms));
@@ -370,6 +400,35 @@ fn queue(text: &mut heapless::Vec<u8, TEXT>, status: u16, body: &str) {
     }
 }
 
+/// What a Bluetooth session serves until the phone is paired: reads, and a
+/// Wi-Fi scan.
+fn bluetooth_allows(method: Method, path: &str) -> bool {
+    matches!(
+        (method, path),
+        (Method::Get, _) | (Method::Post, "/api/wifi/scan")
+    )
+}
+
+/// Put the head of a JSON response before the body `text` holds after
+/// `HEAD_GAP`.
+fn frame(text: &mut heapless::Vec<u8, TEXT>, status: u16) {
+    let body = text.len() - HEAD_GAP;
+    let head = Head::new(status)
+        .header("Content-Type", "application/json")
+        .header("Cache-Control", "no-store")
+        .length(body)
+        .finish();
+    match head {
+        Some(head) if head.bytes().len() <= HEAD_GAP => {
+            let at = HEAD_GAP - head.bytes().len();
+            text[at..HEAD_GAP].copy_from_slice(head.bytes());
+            text.copy_within(at.., 0);
+            text.truncate(body + head.bytes().len());
+        }
+        _ => text.clear(),
+    }
+}
+
 struct Out<'a, S: Server> {
     server: &'a mut S,
     id: u32,
@@ -449,19 +508,25 @@ impl Runtime {
             self.phone.closed = Some(Closed::Ride);
             return;
         }
-        let mut ssid = heapless::String::<32>::new();
-        let suffix: Text<4> = random_text(ap, GROUP, SSID_ALPHABET);
-        let _ = write!(ssid, "{SSID_PREFIX}{}", suffix.text());
-        let status = Status {
+        let mut status = Status {
             mode,
-            ssid: Text::new(ssid.as_bytes()).unwrap_or(Text::empty()),
-            password: random_text(ap, PASSWORD_GROUPS * GROUP, PASSWORD_ALPHABET),
-            token: random_text(ap, 16, b"0123456789abcdef"),
+            ssid: Text::empty(),
+            password: Text::empty(),
+            token: Text::empty(),
             address: None,
             access_point: AccessPointState::Off,
+            link: PhoneLink::Off,
             requests: 0,
             downloads: 0,
         };
+        if mode != Mode::Bluetooth {
+            let mut ssid = heapless::String::<32>::new();
+            let suffix: Text<4> = random_text(ap, GROUP, SSID_ALPHABET);
+            let _ = write!(ssid, "{SSID_PREFIX}{}", suffix.text());
+            status.ssid = Text::new(ssid.as_bytes()).unwrap_or(Text::empty());
+            status.password = random_text(ap, PASSWORD_GROUPS * GROUP, PASSWORD_ALPHABET);
+            status.token = random_text(ap, 16, b"0123456789abcdef");
+        }
         for index in &mut self.phone.w().indexes {
             index.reset();
         }
@@ -520,7 +585,7 @@ impl Runtime {
             }
         }
         let Some(session) = self.phone.session.as_mut() else {
-            server.listen(false);
+            server.listen(Listen::Off);
             if self.phone.stopping && ap.stop().is_ok() {
                 self.phone.stopping = false;
             }
@@ -554,8 +619,23 @@ impl Runtime {
                     return;
                 }
             }
+            Mode::Bluetooth => {
+                let before = session.status.link;
+                let link = server.link();
+                session.status.link = link;
+                if matches!(link, PhoneLink::Failed | PhoneLink::Unsupported) {
+                    why!("phone.no_bluetooth", link);
+                    self.end_session(Closed::Radio);
+                    return;
+                }
+                if before == PhoneLink::Connected && link != PhoneLink::Connected {
+                    why!("phone.link_lost", before, link);
+                    self.end_session(Closed::Link);
+                    return;
+                }
+            }
         }
-        server.listen(true);
+        server.listen(session.status.mode.listen());
         self.index_step(store, bulk);
         self.answer(server, ap, store, bulk, now);
     }
@@ -635,7 +715,8 @@ impl Runtime {
             | Job::Workout { id, .. }
             | Job::ScreenBody { id, .. }
             | Job::ScreenSave { id }
-            | Job::Listing { id, .. } => Some(*id),
+            | Job::Listing { id, .. }
+            | Job::Wifi { id, .. } => Some(*id),
         };
         if let Some(id) = job_id
             && current.as_ref().is_none_or(|r| r.id != id)
@@ -687,7 +768,15 @@ impl Runtime {
     ) {
         let id = request.id;
         let path = request.path.as_str();
+        let bluetooth = self
+            .phone
+            .session
+            .as_ref()
+            .is_some_and(|session| session.status.mode == Mode::Bluetooth);
         match (request.method, path) {
+            _ if bluetooth && !bluetooth_allows(request.method, path) => {
+                self.reply(id, 403, Some(r#"{"error":"read_only"}"#));
+            }
             (Method::Get | Method::Head, "/" | "/index.html") => {
                 self.phone.w().text.clear();
                 let fresh = query_value(&request.query, "t").is_some() && self.authorized(request);
@@ -725,7 +814,7 @@ impl Runtime {
                 };
             }
             (Method::Get, "/favicon.ico") => self.reply(id, 404, None),
-            _ if path.starts_with("/api/") && !self.authorized(request) => {
+            _ if path.starts_with("/api/") && !bluetooth && !self.authorized(request) => {
                 self.reply(id, 401, Some(r#"{"error":"session"}"#));
             }
             (Method::Get, "/api/status") => self.status_reply(id),
@@ -749,6 +838,7 @@ impl Runtime {
             _ if path == "/api/screens" || path.starts_with("/api/screens/") => {
                 self.route_screens(request);
             }
+            _ if path == "/api/wifi" || path.starts_with("/api/wifi/") => self.route_wifi(request),
             (Method::Post, "/api/close") => {
                 self.reply(id, 204, None);
                 self.phone.wanted = Some(None);
@@ -1073,6 +1163,7 @@ impl Runtime {
             Job::ScreenBody { .. } => self.progress_screen_body(server, now),
             Job::ScreenSave { .. } => self.progress_screen_save(),
             Job::Listing { .. } => self.progress_listing(server),
+            Job::Wifi { .. } => {}
         }
     }
 
@@ -1272,21 +1363,7 @@ impl Runtime {
                 let _ = text.extend_from_slice(b"null}");
             }
         }
-        let body = text.len() - HEAD_GAP;
-        let head = Head::new(200)
-            .header("Content-Type", "application/json")
-            .header("Cache-Control", "no-store")
-            .length(body)
-            .finish();
-        match head {
-            Some(head) if head.bytes().len() <= HEAD_GAP => {
-                let at = HEAD_GAP - head.bytes().len();
-                text[at..HEAD_GAP].copy_from_slice(head.bytes());
-                text.copy_within(at.., 0);
-                text.truncate(body + head.bytes().len());
-            }
-            _ => text.clear(),
-        }
+        frame(text, 200);
         work.job = Job::Text { id, at: 0 };
     }
 

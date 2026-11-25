@@ -15,7 +15,9 @@ use crate::observation::{Availability, Error, Observation};
 use crate::positioning::{self, Positioning};
 use crate::power::{self, Power, PowerControl};
 use crate::sensors::{self, SensorSet, Sensors};
-use crate::server::{AccessPoint, AccessPointConfig, AccessPointState, Reach, Request, Server};
+use crate::server::{
+    AccessPoint, AccessPointConfig, AccessPointState, Listen, PhoneLink, Reach, Request, Server,
+};
 use crate::sound::{self, Sound};
 use crate::storage::{AccessError, Geometry, OwnedFlash, Region};
 use core::convert::Infallible;
@@ -106,6 +108,9 @@ impl Wifi for Absent {
     }
     fn stats(&self) -> WifiStats {
         WifiStats::default()
+    }
+    fn rssi(&self) -> Option<i8> {
+        None
     }
 }
 
@@ -276,7 +281,7 @@ impl AccessPoint for Absent {
 }
 
 impl Server for Absent {
-    fn listen(&mut self, _: bool) {}
+    fn listen(&mut self, _: Listen) {}
     fn request(&self) -> Option<Request> {
         None
     }
@@ -290,6 +295,9 @@ impl Server for Absent {
         0
     }
     fn finish(&mut self, _: u32) {}
+    fn link(&mut self) -> PhoneLink {
+        PhoneLink::Unsupported
+    }
 }
 
 #[cfg(test)]

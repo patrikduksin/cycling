@@ -136,8 +136,12 @@ place of the GPS receiver).
   only when the test establishes it and then observes resumed parser/companion progress.
 - GNSS: check transport, parser progress, freshness and recovery. Valid sentences
   without a fix indoors are not a regression by themselves.
-- BLE: `cycling bluetooth-echo` verifies reconnect, read/write and notifications.
-  A reported MTU is observed, not forced; keep the separate MTU-23 regression.
+- BLE: `cycling ble-http GET /api/status` (after `PHONE START BLE`) opens the
+  phone's sync channel from a Linux host and prints each framed response; it
+  drops the link afterwards, which ends the session. One Linux adapter reuses
+  one link per peer, so it cannot be the phone while it is also the device's
+  `ble-simulator` sensor. A reported MTU is observed, not forced; keep the
+  separate MTU-23 regression.
   BlueZ tasks use system Python. Stop `cycling ble-simulator` afterward to
   unregister its advertisement and GATT application.
 

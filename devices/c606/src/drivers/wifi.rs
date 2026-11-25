@@ -27,9 +27,12 @@ use embassy_time::Timer;
 use embassy_time::with_timeout;
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Rng;
+use esp_radio::wifi::AuthenticationMethod;
 use esp_radio::wifi::AuthenticationMethodConfig;
 use esp_radio::wifi::Config;
+use esp_radio::wifi::ConnectionError;
 use esp_radio::wifi::ControllerConfig;
+use esp_radio::wifi::DisconnectReason;
 use esp_radio::wifi::Interface;
 use esp_radio::wifi::Password;
 use esp_radio::wifi::Ssid;
@@ -656,6 +659,9 @@ async fn scan(controller: &mut WifiController<'static>, automatic: bool) {
                         *slot = Some(NetworkDiscovery {
                             ssid,
                             rssi: ap.signal_strength,
+                            secure: ap
+                                .auth_method
+                                .is_some_and(|method| method != AuthenticationMethod::None),
                         });
                     }
                 }
@@ -739,17 +745,30 @@ async fn connect(controller: &mut WifiController<'static>, retry: &mut Reconnect
                 CONTROL.with(|c| c.mark_uncertain());
             }
             Link::Failed.store();
-            CONTROL.with(|c| {
-                c.finish(
-                    automatic,
-                    Some(if result.is_err() {
-                        ControlError::ConnectTimeout
-                    } else {
-                        ControlError::ConnectFailed
-                    }),
-                )
-            });
+            let error = match result {
+                Err(_) => ControlError::ConnectTimeout,
+                Ok(Err(ConnectionError::Failed(info))) => refusal(info.reason),
+                Ok(_) => ControlError::ConnectFailed,
+            };
+            CONTROL.with(|c| c.finish(automatic, Some(error)));
         }
+    }
+}
+
+/// What the station's disconnect reason says about a failed join. A wrong
+/// WPA2 password shows as a handshake that times out or fails: the access
+/// point never says "wrong password" outright.
+fn refusal(reason: DisconnectReason) -> ControlError {
+    match reason {
+        DisconnectReason::FourWayHandshakeTimeout
+        | DisconnectReason::HandshakeTimeout
+        | DisconnectReason::AuthenticationFailed
+        | DisconnectReason::_802_1xAuthenticationFailed => ControlError::WrongPassword,
+        DisconnectReason::NoAccessPointFound
+        | DisconnectReason::NoAccessPointFoundWithCompatibleSecurity => {
+            ControlError::NetworkNotFound
+        }
+        _ => ControlError::ConnectFailed,
     }
 }
 

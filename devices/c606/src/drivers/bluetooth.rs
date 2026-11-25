@@ -1,10 +1,17 @@
-//! One-peer BLE discovery, bounded notification bytes and echo transport.
+//! BLE: one sensor as central (discovery, bounded notification bytes), and
+//! beside it the phone's sync channel as peripheral.
+//!
+//! The phone link advertises the sync service only while the application
+//! listens on Bluetooth. The phone reads the L2CAP PSM from the service and
+//! opens a channel that `exchange::serve_channel` serves. It runs on its own
+//! connection beside the sensor's, so opening it costs the rider no sensor.
 
 use bt_hci::cmd::le::LeSetAdvEnable;
 use bt_hci::cmd::le::LeSetScanEnable;
 use bt_hci::cmd::le::LeSetScanParams;
 use bt_hci::controller::ControllerCmdSync;
 use core::cell::RefCell;
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicI32;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
@@ -22,6 +29,7 @@ use esp_radio::ble::controller::BleConnector;
 use firmware_services::connectivity::Reconnect;
 use trouble_host::prelude::*;
 
+use crate::drivers::exchange;
 use crate::drivers::radio_control::DISCOVERIES;
 use crate::drivers::radio_control::Shared;
 use device_api::ble_transport::BatteryLevel;
@@ -37,6 +45,7 @@ use device_api::connectivity::Text;
 use device_api::observation::Availability;
 use device_api::observation::Error;
 use device_api::power::PeripheralState;
+use device_api::server::{Listen, PhoneLink};
 
 type BleController = ExternalController<BleConnector<'static>, 10>;
 type BleStack<'s> = Stack<'s, BleController, DefaultPacketPool>;
@@ -84,9 +93,23 @@ const BATTERY_REREAD_MS: u64 = 60_000;
 /// One bound for each battery step, so a slow peer cannot starve notifications.
 const BATTERY_STEP: Duration = Duration::from_secs(2);
 
-const CONNECTIONS: usize = 1;
+/// The sensor, and the phone beside it.
+const CONNECTIONS: usize = 2;
 const CHANNELS: usize = 2;
-const ECHO_NAME: &[u8] = b"Cycling Echo";
+const PHONE_NAME: &[u8] = b"VANA";
+/// The L2CAP PSM the phone opens its channel on, published in `SyncService`.
+const SYNC_PSM: u16 = 0x0081;
+/// The sync service's UUID, little-endian as advertised.
+const SYNC_SERVICE_LE: [u8; 16] = [
+    0x06, 0xc6, 0x06, 0xc6, 0x06, 0xc6, 0x6b, 0x6e, 0x69, 0x4c, 0x01, 0x00, 0x41, 0x4e, 0x41, 0x56,
+];
+/// Channel memory in external RAM: an SDU (at least the channel MTU, which
+/// the packet pool caps), a request head, and body and response pieces.
+const SDU: usize = 256;
+const PIECE: usize = 512;
+const CHANNEL_MEMORY: usize = SDU + firmware_services::http::MAX_HEAD + PIECE + PIECE + SDU;
+/// The peripheral role holds no advertiser and no connection.
+static ROLE_QUIET: AtomicBool = AtomicBool::new(true);
 static SCAN_REPORTS: AtomicU32 = AtomicU32::new(0);
 /// Signal range of the current scan only; reset when each scan starts.
 static SCAN_RSSI_MIN: AtomicI32 = AtomicI32::new(i32::MAX);
@@ -105,21 +128,16 @@ static STATE: Mutex<RefCell<Snapshot>> = Mutex::new(RefCell::new(Snapshot {
     scan_reports: 0,
 }));
 
-#[gatt_server]
+#[gatt_server(connections_max = 2)]
 struct Server {
-    echo: EchoService,
+    sync: SyncService,
 }
 
-#[gatt_service(uuid = "7e570001-2a6f-4d75-9f6a-5afbf0f50c06")]
-struct EchoService {
-    #[characteristic(
-        uuid = "7e570002-2a6f-4d75-9f6a-5afbf0f50c06",
-        read,
-        write,
-        notify,
-        value = 0u64
-    )]
-    value: u64,
+#[gatt_service(uuid = "56414e41-0001-4c69-6e6b-c606c606c606")]
+struct SyncService {
+    /// The L2CAP PSM the phone connects its byte stream to.
+    #[characteristic(uuid = "56414e41-0002-4c69-6e6b-c606c606c606", read, value = SYNC_PSM)]
+    psm: u16,
 }
 
 struct ScanCounter;
@@ -214,6 +232,7 @@ pub async fn start(bt: BT<'static>) {
         Ok(connector) => connector,
         Err(error) => {
             set_link(Link::Failed);
+            exchange::set_link(PhoneLink::Failed);
             log::info!(target: "ble", "CYCLING_BLE init_failed error={:?}", error);
             return;
         }
@@ -223,54 +242,62 @@ pub async fn start(bt: BT<'static>) {
         HostResources::new();
     let stack = trouble_host::new(controller, &mut resources)
         .set_random_address(Address::random([0x15, 0xc6, 0x06, 0x00, 0x00, 0xc0]))
+        .register_l2cap_spsm(SYNC_PSM)
         .build();
     let central = stack.central();
     let peripheral = stack.peripheral();
     let mut runner = stack.runner();
     let server = match Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: "Cycling Echo",
+        name: "VANA",
         appearance: &appearance::computer::GENERIC_COMPUTER,
     })) {
         Ok(server) => server,
         Err(_) => {
             set_link(Link::Failed);
+            exchange::set_link(PhoneLink::Failed);
             log::info!(target: "ble", "CYCLING_BLE server_failed");
             return;
         }
     };
 
     log::info!(target: "ble",
-        "CYCLING_BLE ready mode={} att_mtu_max=60 heap_before={} heap_after={}",
+        "CYCLING_BLE ready mode={} att_mtu_max=60 heap_before={} heap_after={} psm_handle={}",
         "runtime",
         heap_before,
-        esp_alloc::HEAP.free()
+        esp_alloc::HEAP.free(),
+        server.sync.psm.handle
     );
 
     CONTROL.with(|c| c.set_ready());
-    let outcome = select(
+    let outcome = select3(
         runner.run_with_handler(&ScanCounter),
         application(&stack, central, peripheral, &server),
+        peripheral_role(&stack, &server),
     )
     .await;
     CONTROL.with(|c| c.stop(ControlError::RunnerStopped));
     set_link(Link::Failed);
+    exchange::set_link(PhoneLink::Failed);
     match outcome {
-        Either::First(Ok(())) => log::info!(target: "ble", "CYCLING_BLE runner_stopped result=ok"),
-        Either::First(Err(_)) => {
+        Either3::First(Ok(())) => {
+            log::info!(target: "ble", "CYCLING_BLE runner_stopped result=ok")
+        }
+        Either3::First(Err(_)) => {
             log::info!(target: "ble", "CYCLING_BLE runner_stopped result=error")
         }
-        Either::Second(()) => log::info!(target: "ble", "CYCLING_BLE application_stopped"),
+        Either3::Second(()) | Either3::Third(()) => {
+            log::info!(target: "ble", "CYCLING_BLE application_stopped")
+        }
     }
 }
 
 /// Transport intent that survives individual operations and power cycles.
 struct Session {
-    echo: bool,
     retry: Reconnect,
 }
 
-/// Owner loop: power transitions first, then one command or automatic
-/// reconnect, then the idle activity until new work arrives.
+/// Owner loop of the central role: power transitions first, then one command
+/// or automatic reconnect, then a reconnect backoff or waiting for new work.
 async fn application<'a>(
     stack: &'a BleStack<'_>,
     mut central: BleCentral<'a>,
@@ -278,7 +305,6 @@ async fn application<'a>(
     server: &Server<'_>,
 ) {
     let mut session = Session {
-        echo: true,
         retry: Reconnect::default(),
     };
     loop {
@@ -295,7 +321,7 @@ async fn application<'a>(
             }
             continue;
         }
-        // Keep echo, selection and reconnect intent unchanged across power
+        // Keep selection and reconnect intent unchanged across power
         // preparation. Fresh transport work resumes below.
         if CONTROL.with(|c| c.complete_resume()) == PeripheralState::Failed {
             CONTROL.changed().await;
@@ -317,13 +343,21 @@ async fn application<'a>(
         if CONTROL.with(|c| c.suspended()) {
             continue;
         }
-        idle(&mut session, &mut peripheral, server).await;
+        idle(&mut session).await;
     }
 }
 
 /// Stop scanning and advertising with the runner alive, and report whether the
 /// controller acknowledged inactivity.
 async fn quiesce(stack: &BleStack<'_>, peripheral: &mut BlePeripheral<'_>) {
+    // The peripheral role sees the suspend and lets go of its link first.
+    let parked = embassy_time::with_timeout(Duration::from_secs(6), async {
+        while !ROLE_QUIET.load(Ordering::Relaxed) {
+            Timer::after_millis(20).await;
+        }
+    })
+    .await
+    .is_ok();
     // Dropping an advertiser/scan session only queues cancellation.
     // Wait for actual controller acknowledgements with the runner alive.
     let result = embassy_time::with_timeout(Duration::from_secs(5), async {
@@ -331,7 +365,7 @@ async fn quiesce(stack: &BleStack<'_>, peripheral: &mut BlePeripheral<'_>) {
         stack.command(LeSetAdvEnable::new(false)).await
     })
     .await;
-    let mut quiet = matches!(result, Ok(Ok(_)));
+    let mut quiet = parked && matches!(result, Ok(Ok(_)));
     if !quiet {
         CONTROL.with(|c| c.mark_uncertain());
     }
@@ -365,27 +399,18 @@ async fn perform<'a>(
             critical_section::with(|cs| *SELECTION.borrow_ref_mut(cs) = selection);
             while PACKETS.try_receive().is_ok() {}
             critical_section::with(|cs| *BATTERY.borrow_ref_mut(cs) = None);
-            session.echo = false;
             set_link(Link::Off);
             CONTROL.with(|c| c.finish(automatic, None));
             central
         }
         BleOperation::Disconnect => {
             session.retry.disconnect();
-            session.echo = false;
             set_link(Link::Off);
-            CONTROL.with(|c| c.finish(automatic, None));
-            central
-        }
-        BleOperation::Echo => {
-            session.retry.disconnect();
-            session.echo = true;
             CONTROL.with(|c| c.finish(automatic, None));
             central
         }
         BleOperation::Scan => {
             session.retry.disconnect();
-            session.echo = false;
             CONTROL.clear_discoveries();
             let (central, _, success) = scan_target(central).await;
             set_link(Link::Off);
@@ -406,7 +431,6 @@ async fn connect<'a>(
     if !automatic {
         session.retry.connect();
     }
-    session.echo = false;
     let Some(selection) = critical_section::with(|cs| *SELECTION.borrow_ref(cs)) else {
         set_link(Link::Off);
         session.retry.disconnect();
@@ -445,17 +469,10 @@ async fn connect<'a>(
     central
 }
 
-/// Background activity between operations: echo advertising, a reconnect
-/// backoff, or simply waiting for the next command or power request.
-async fn idle(session: &mut Session, peripheral: &mut BlePeripheral<'_>, server: &Server<'_>) {
-    if session.echo {
-        if advertise_and_echo(peripheral, server).await.is_err() {
-            // A GATT error can drop a live connection and only queue its
-            // disconnect. Do not claim power quiescence without completion.
-            CONTROL.with(|c| c.mark_uncertain());
-            let _ = select(CONTROL.work_pending(), Timer::after_secs(1)).await;
-        }
-    } else if session.retry.requested() {
+/// Between central operations: a reconnect backoff, or simply waiting for the
+/// next command or power request.
+async fn idle(session: &mut Session) {
+    if session.retry.requested() {
         let _ = select(
             CONTROL.work_pending(),
             Timer::after_secs(session.retry.delay()),
@@ -744,25 +761,77 @@ where
     true
 }
 
-async fn advertise_and_echo<C>(
-    peripheral: &mut Peripheral<'_, C, DefaultPacketPool>,
+/// The phone link is wanted while the application listens on Bluetooth and
+/// the radio is not suspended.
+fn wanted() -> bool {
+    CONTROL.with(|c| c.ready() && !c.suspended()) && exchange::listening() == Listen::Bluetooth
+}
+
+/// Returns once the phone link is no longer wanted.
+async fn unwanted() {
+    while wanted() {
+        Timer::after_millis(200).await;
+    }
+}
+
+/// Owner loop of the peripheral role, beside the central's: advertise and
+/// serve the phone while it is wanted.
+async fn peripheral_role(stack: &BleStack<'_>, server: &Server<'_>) {
+    let mut peripheral = stack.peripheral();
+    exchange::install(
+        || crate::drivers::psram::zeroed(exchange::BUFFER),
+        || crate::drivers::psram::zeroed(exchange::INBOX),
+    );
+    let mut memory = crate::drivers::psram::zeroed(CHANNEL_MEMORY);
+    loop {
+        if !wanted() {
+            exchange::set_link(PhoneLink::Off);
+            ROLE_QUIET.store(true, Ordering::Relaxed);
+            Timer::after_millis(200).await;
+            continue;
+        }
+        ROLE_QUIET.store(false, Ordering::Relaxed);
+        let result = match memory.as_deref_mut() {
+            Some(memory) => phone_link(stack, &mut peripheral, server, memory).await,
+            None => {
+                log::warn!(target: "ble", "CYCLING_BLE phone no external RAM for the channel");
+                exchange::set_link(PhoneLink::Failed);
+                unwanted().await;
+                Ok(())
+            }
+        };
+        if result.is_err() {
+            // A GATT error can drop a live connection and only queue its
+            // disconnect. Do not claim power quiescence without completion.
+            CONTROL.with(|c| c.mark_uncertain());
+            Timer::after_secs(1).await;
+        }
+    }
+}
+
+/// Advertise the sync service as `VANA`, then serve one phone's connection
+/// and its channel until the link ends or the phone link is unwanted.
+async fn phone_link<'a>(
+    stack: &'a BleStack<'_>,
+    peripheral: &mut BlePeripheral<'a>,
     server: &Server<'_>,
-) -> Result<(), BleHostError<C::Error>>
-where
-    C: Controller,
-{
-    let mut scan_data = [0; 31];
-    let scan_len =
-        AdStructure::encode_slice(&[AdStructure::CompleteLocalName(ECHO_NAME)], &mut scan_data)?;
+    memory: &mut [u8],
+) -> Result<(), ()> {
     let mut adv_data = [0; 31];
     let adv_len = AdStructure::encode_slice(
-        &[AdStructure::Flags(
-            LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED,
-        )],
+        &[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::IncompleteServiceUuids128(&[SYNC_SERVICE_LE]),
+        ],
         &mut adv_data,
-    )?;
-    set_link(Link::Advertising);
-    log::info!(target: "ble", "CYCLING_BLE advertising");
+    )
+    .map_err(drop)?;
+    let mut scan_data = [0; 31];
+    let scan_len = AdStructure::encode_slice(
+        &[AdStructure::CompleteLocalName(PHONE_NAME)],
+        &mut scan_data,
+    )
+    .map_err(drop)?;
     let advertiser = peripheral
         .advertise(
             &Default::default(),
@@ -771,66 +840,139 @@ where
                 scan_data: &scan_data[..scan_len],
             },
         )
-        .await?;
-    let connection = match select(advertiser.accept(), CONTROL.work_pending()).await {
-        Either::First(result) => result?.with_attribute_server(server)?,
+        .await
+        .map_err(drop)?;
+    exchange::set_link(PhoneLink::Advertising);
+    log::info!(target: "ble", "CYCLING_BLE phone_advertising");
+    let connection = match select(advertiser.accept(), unwanted()).await {
+        Either::First(result) => result
+            .map_err(drop)?
+            .with_attribute_server(server)
+            .map_err(drop)?,
         Either::Second(()) => return Ok(()),
     };
-    update_state(|state| state.connections = state.connections.saturating_add(1));
-    set_link(Link::Connected);
-    log::info!(target: "ble", "CYCLING_BLE connected heap_free={}", esp_alloc::HEAP.free());
+    exchange::set_link(PhoneLink::Connected);
+    log::info!(target: "ble", "CYCLING_BLE phone_connected heap_free={}", esp_alloc::HEAP.free());
+    fast_link(stack, connection.raw()).await;
+    let listener = L2capChannel::listen(stack, connection.raw());
+    // One future for the channel's whole life, polled beside the GATT loop and
+    // never restarted: dropping it mid-send would cut a response short.
+    let mut sync = core::pin::pin!(serve_sync(stack, &listener, memory));
     loop {
-        let event = match select(connection.next(), CONTROL.work_pending()).await {
-            Either::First(event) => event,
-            Either::Second(()) => {
-                connection.raw().disconnect();
-                if wait_disconnected(connection.raw()).await {
-                    disconnected();
-                }
+        match select3(connection.next(), unwanted(), sync.as_mut()).await {
+            Either3::First(GattConnectionEvent::Disconnected { reason }) => {
+                exchange::set_link(PhoneLink::Off);
+                log::info!(target: "ble", "CYCLING_BLE phone_disconnected reason={:?}", reason);
                 return Ok(());
+            }
+            Either3::First(GattConnectionEvent::Gatt { event }) => {
+                if let Ok(reply) = event.accept() {
+                    reply.send().await;
+                }
+            }
+            Either3::First(GattConnectionEvent::RequestConnectionParams(request)) => {
+                let _ = request.accept(None, stack).await;
+            }
+            Either3::First(_) => {}
+            Either3::Second(()) => {
+                connection.raw().disconnect();
+                wait_disconnected(connection.raw()).await;
+                exchange::set_link(PhoneLink::Off);
+                return Ok(());
+            }
+            Either3::Third(never) => match never {},
+        }
+    }
+}
+
+/// Ask for the fastest link an iPhone grants: 2M PHY, 251-byte packets, a
+/// 15 ms interval (iOS's floor). Each is a request; log the outcome.
+async fn fast_link(stack: &BleStack<'_>, connection: &Connection<'_, DefaultPacketPool>) {
+    let phy = connection.set_phy(stack, PhyKind::Le2M).await.is_ok();
+    let length = connection
+        .update_data_length(stack, 251, 2120)
+        .await
+        .is_ok();
+    let params = RequestedConnParams {
+        min_connection_interval: Duration::from_millis(15),
+        max_connection_interval: Duration::from_millis(15),
+        max_latency: 0,
+        min_event_length: Duration::from_millis(0),
+        max_event_length: Duration::from_millis(15),
+        supervision_timeout: Duration::from_secs(4),
+    };
+    let interval = connection
+        .update_connection_params(stack, &params)
+        .await
+        .is_ok();
+    log::info!(target: "ble",
+        "CYCLING_BLE fast_link phy_req={} dle_req={} interval_req={}",
+        phy, length, interval
+    );
+}
+
+struct Incoming<'a, 's> {
+    reader: L2capChannelReader<'a, DefaultPacketPool>,
+    stack: &'a BleStack<'s>,
+}
+
+impl exchange::ReceiveSdu for Incoming<'_, '_> {
+    async fn receive(&mut self, sdu: &mut [u8]) -> Option<usize> {
+        self.reader.receive(self.stack, sdu).await.ok()
+    }
+}
+
+struct Outgoing<'a, 's> {
+    writer: L2capChannelWriter<'a, DefaultPacketPool>,
+    stack: &'a BleStack<'s>,
+}
+
+impl exchange::SendSdu for Outgoing<'_, '_> {
+    async fn send(&mut self, sdu: &[u8]) -> bool {
+        self.writer.send(self.stack, sdu).await.is_ok()
+    }
+}
+
+/// Accept the phone's channels on this connection, one at a time, and serve
+/// each through the exchange. Runs for the connection's life.
+async fn serve_sync<'a>(
+    stack: &'a BleStack<'_>,
+    listener: &L2capChannelListener<'a, BleController, DefaultPacketPool>,
+    memory: &mut [u8],
+) -> core::convert::Infallible {
+    loop {
+        let channel = match listener.accept(&L2capChannelConfig::default()).await {
+            Ok(channel) => channel,
+            Err(_) => {
+                log::info!(target: "ble", "CYCLING_BLE sync_accept_failed");
+                Timer::after_secs(1).await;
+                continue;
             }
         };
-        match event {
-            GattConnectionEvent::Disconnected { reason } => {
-                update_state(|state| {
-                    state.disconnections = state.disconnections.saturating_add(1);
-                    state.link = Link::Advertising;
-                });
-                log::info!(target: "ble", "CYCLING_BLE disconnected reason={:?}", reason);
-                return Ok(());
-            }
-            GattConnectionEvent::Gatt { event } => {
-                if let GattEvent::Write(write) = event {
-                    if write.handle() != server.echo.value.handle {
-                        write.accept()?.send().await;
-                    } else if write.with_data(|_, data| data.len()) != 8 {
-                        write
-                            .reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)?
-                            .send()
-                            .await;
-                        log::info!(target: "ble", "CYCLING_BLE echo_rejected reason=length");
-                    } else {
-                        write.accept()?.send().await;
-                        let value = server.get(&server.echo.value)?;
-                        update_state(|state| {
-                            state.notifications = state.notifications.saturating_add(1)
-                        });
-                        if server
-                            .echo
-                            .value
-                            .notify(&connection, &value, true)
-                            .await
-                            .is_err()
-                        {
-                            log::info!(target: "ble", "CYCLING_BLE notify_failed");
-                        }
-                    }
-                } else {
-                    event.accept()?.send().await;
-                }
-            }
-            _ => {}
-        }
+        // `send` refuses an SDU over the peer's MTU; the cap at our own MTU as
+        // well is the size the device runs were measured with.
+        let piece = usize::from(channel.mtu().min(channel.peer_mtu()));
+        log::info!(target: "ble",
+            "CYCLING_BLE sync_open mtu={} mps={} peer_mtu={} peer_mps={}",
+            channel.mtu(), channel.mps(), channel.peer_mtu(), channel.peer_mps()
+        );
+        let (writer, reader) = channel.split();
+        let (sdu, rest) = memory.split_at_mut(SDU);
+        let (head, rest) = rest.split_at_mut(firmware_services::http::MAX_HEAD);
+        let (into, out) = rest.split_at_mut(PIECE);
+        exchange::serve_channel(
+            Incoming { reader, stack },
+            Outgoing { writer, stack },
+            piece,
+            exchange::ChannelBuffers {
+                sdu,
+                head,
+                into,
+                out,
+            },
+        )
+        .await;
+        log::info!(target: "ble", "CYCLING_BLE sync_closed");
     }
 }
 

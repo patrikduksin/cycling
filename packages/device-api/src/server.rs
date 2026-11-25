@@ -5,8 +5,9 @@
 //! request at a time. A request's body, if any, arrives in pieces the
 //! application reads as they come; the transport never holds it whole. The
 //! application answers by writing the whole response, head included, in
-//! bounded pieces whenever there is room, then finishes it. The transport
-//! closes the connection after each response.
+//! bounded pieces whenever there is room, then finishes it. A TCP transport
+//! closes the connection after each response; a phone's Bluetooth channel
+//! stays open for its next request.
 
 use crate::capability::capability;
 
@@ -53,13 +54,55 @@ impl Request {
     }
 }
 
+/// Where the server takes requests from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Listen {
+    /// Nothing is reachable.
+    #[default]
+    Off,
+    /// TCP on the access point and the home network.
+    Network,
+    /// A phone's Bluetooth channel and nothing else: every request the server
+    /// presents while it listens here came over that channel. The device
+    /// advertises the channel only while it listens here.
+    Bluetooth,
+}
+
+/// The phone's Bluetooth link, while the server listens on Bluetooth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PhoneLink {
+    /// Not advertising: the server listens elsewhere, or the radio is
+    /// suspended or still starting.
+    #[default]
+    Off,
+    Advertising,
+    /// A phone holds the link.
+    Connected,
+    /// The radio could not start; no phone can reach it this boot.
+    Failed,
+    /// This device has no Bluetooth.
+    Unsupported,
+}
+
+impl PhoneLink {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Advertising => "advertising",
+            Self::Connected => "connected",
+            Self::Failed => "failed",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 /// The application side of a local HTTP server.
 #[capability(id = 15)]
 pub trait Server {
-    /// Accept connections. Off by default: nothing is reachable until the
-    /// application opens a session.
+    /// Accept requests from `on`. Off by default: nothing is reachable until
+    /// the application opens a session.
     #[request(refreshes, repeats)]
-    fn listen(&mut self, on: bool);
+    fn listen(&mut self, on: Listen);
     /// The request waiting for an answer. It stays until `finish`, or until
     /// the peer goes away, after which it is `None` (or the next request,
     /// with another id) and writes for it are dropped.
@@ -80,6 +123,10 @@ pub trait Server {
     /// The response to request `id` is complete.
     #[request(refreshes)]
     fn finish(&mut self, id: u32);
+    /// The phone's Bluetooth link, read only while the application listens
+    /// on Bluetooth.
+    #[take]
+    fn link(&mut self) -> PhoneLink;
 }
 
 /// Soft access point settings. The password is WPA2-Personal, 8 to 63 bytes.

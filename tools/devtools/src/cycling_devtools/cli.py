@@ -296,9 +296,9 @@ TASKS = [
         f'{DEV}harness.stress companion .local/tests/companion-stress-$(date +%s)',
     ),
     task(
-        'bluetooth-echo',
-        'Verify C606 BLE echo notifications, reads and reconnect with this laptop',
-        f'{SYSTEM_PYTHON}connectivity.bluetooth',
+        'ble-http',
+        'Send HTTP requests over the C606 Bluetooth sync channel as the phone does: ble-http GET /api/status [...]',
+        f'{SYSTEM_PYTHON}connectivity.ble_http',
     ),
     task(
         'ble-simulator',

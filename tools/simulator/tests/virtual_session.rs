@@ -72,7 +72,11 @@ fn deterministic_observations_use_production_freshness_loss_and_missing() {
     assert!(command(&mut s, "POSITION").1.contains("transport=failed"));
     fixture(&mut s, "FIXTURE POSITION UNSUPPORTED");
     assert_eq!(command(&mut s, "POSITION").0, "UNAVAILABLE");
-    assert_eq!(command(&mut s, "WIFI RECONNECT").0, "UNSUPPORTED");
+    // The station takes a reconnect with nothing saved, and fails it as the
+    // C606's does.
+    assert_eq!(command(&mut s, "WIFI RECONNECT").0, "ACCEPTED");
+    fixture(&mut s, "FIXTURE ADVANCE 4000");
+    assert!(command(&mut s, "WIFI").1.contains("error=unconfigured"));
 }
 #[test]
 fn display_pattern_capture_is_current_submission_and_restart_invalidates_session() {

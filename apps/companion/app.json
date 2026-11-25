@@ -48,7 +48,7 @@
     "data": {
       "crate": "vana-data",
       "type": "vana_data::Vana",
-      "source": "vana_data::Vana"
+      "source": "vana_data::Vana::default()"
     },
     "module": {
       "package": "vana-logic"

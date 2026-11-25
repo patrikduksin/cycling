@@ -2,6 +2,7 @@ use super::{Observations, Runtime};
 use device_api::ant::Ant;
 use device_api::ble_transport::Ble;
 use device_api::bulk::ReadWrite;
+use device_api::connectivity::Wifi;
 use device_api::display::Display;
 use device_api::input::{InputObservation, InputSource};
 use device_api::positioning::Positioning;
@@ -27,7 +28,7 @@ pub enum Point {
     VanaAfter,
 }
 
-pub struct Handles<A, Bl, Bu, Ap, Sv, So, Pc> {
+pub struct Handles<A, Bl, Bu, Ap, Sv, So, Pc, W> {
     pub ant: A,
     pub ble: Bl,
     pub bulk: Bu,
@@ -35,18 +36,20 @@ pub struct Handles<A, Bl, Bu, Ap, Sv, So, Pc> {
     pub server: Sv,
     pub sound: So,
     pub control: Pc,
+    /// The station, which the phone's Wi-Fi routes scan, join and forget.
+    pub wifi: W,
 }
 
 /// Inlined so the pass adds no frame under the frames VANA prepares.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
+pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc, W>(
     app: &mut Runtime,
     shell: &mut Shell<D, I, P, B>,
     startup: Startup,
     seen: Observations<'_, Pos, In>,
     now: u64,
-    handles: Handles<A, Bl, Bu, Ap, Sv, So, Pc>,
+    handles: Handles<A, Bl, Bu, Ap, Sv, So, Pc, W>,
     at: &mut impl FnMut(Point, &mut Shell<D, I, P, B>),
 ) where
     D: Display,
@@ -62,6 +65,7 @@ pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
     Sv: Server,
     So: Sound,
     Pc: PowerControl,
+    W: Wifi,
 {
     let Handles {
         mut ant,
@@ -71,6 +75,7 @@ pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
         mut server,
         mut sound,
         mut control,
+        mut wifi,
     } = handles;
     let position = seen.position;
     app.set_startup_status(startup);
@@ -108,6 +113,7 @@ pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
         &mut bulk,
         now,
     );
+    app.serve_wifi(&mut server, &mut wifi, shell, now);
     app.serve_screens(shell.data_storage().screens());
     at(Point::Phone, shell);
     app.frame(shell, now, &ant, position);

@@ -1030,10 +1030,10 @@ mod tests {
 12 PowerControl: capabilities observe, status observe, request request(refreshes), request_after request(refreshes)
 13 Sensors: startup_status observe, startup_reason observe, snapshot observe, light observe, identity_status observe, query_identity request(refreshes), fitted observe
 14 AccessPoint: start request(refreshes, redact), stop request(refreshes), state observe, reach observe, entropy take(redact)
-15 Server: listen request(refreshes, repeats), request observe(redact), read take(refreshes) [out], room observe, write sink(refreshes) [input], finish request(refreshes)
+15 Server: listen request(refreshes, repeats), request observe(redact), read take(refreshes) [out], room observe, write sink(refreshes) [input], finish request(refreshes), link take
 16 Sound: patterns observe, snapshot observe, play request(refreshes), stop request(refreshes)
 17 OwnedFlash: availability observe(keys = Region::ALL), geometry observe(keys = Region::ALL), read media(read) [out], program media(write) [input], erase media(erase)
-18 Wifi: request request(refreshes, redact), control observe, discoveries observe, state observe, online observe, stats observe"
+18 Wifi: request request(refreshes, redact), control observe, discoveries observe, state observe, online observe, stats observe, rssi observe"
         );
     }
 }

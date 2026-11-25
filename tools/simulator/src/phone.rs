@@ -1,10 +1,12 @@
 //! The phone companion's radio and transport, simulated: an access point
 //! that comes up at once, phones that join when a scenario says so, and a
 //! server that takes one request at a time from the scenario and hands its
-//! body over in pieces, as the device's transport does. Secrets come from a
-//! fixed sequence, so screens are deterministic.
+//! body over in pieces, as the device's transport does. Listening on
+//! Bluetooth advertises at once. Secrets come from a fixed sequence, so
+//! screens are deterministic.
 use device_api::server::{
-    AccessPoint, AccessPointConfig, AccessPointState, Method, Reach, Request, Server,
+    AccessPoint, AccessPointConfig, AccessPointState, Listen, Method, PhoneLink, Reach, Request,
+    Server,
 };
 
 /// Body bytes the device's transport holds for the application at a time.
@@ -12,7 +14,7 @@ const INBOX: usize = 4096;
 
 #[derive(Default)]
 pub struct SimServer {
-    pub listening: bool,
+    pub listening: Listen,
     exchange: Option<Exchange>,
     next_id: u32,
 }
@@ -61,13 +63,13 @@ impl SimServer {
 }
 
 impl Server for SimServer {
-    fn listen(&mut self, on: bool) {
+    fn listen(&mut self, on: Listen) {
         self.listening = on;
     }
     fn request(&self) -> Option<Request> {
         self.exchange
             .as_ref()
-            .filter(|e| !e.finished && self.listening)
+            .filter(|e| !e.finished && self.listening != Listen::Off)
             .map(|e| e.request.clone())
     }
     fn read(&mut self, id: u32, out: &mut [u8]) -> usize {
@@ -100,6 +102,13 @@ impl Server for SimServer {
     fn finish(&mut self, id: u32) {
         if let Some(exchange) = self.current(id) {
             exchange.finished = true;
+        }
+    }
+    fn link(&mut self) -> PhoneLink {
+        if self.listening == Listen::Bluetooth {
+            PhoneLink::Advertising
+        } else {
+            PhoneLink::Off
         }
     }
 }

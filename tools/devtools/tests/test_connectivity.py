@@ -84,9 +84,7 @@ class ConnectivityTests(unittest.TestCase):
         )
         self.assertEqual(wifi['connectivity_restore']['wifi']['profile'], '/private/profile.json')
         ble = generated['connectivity-ble']
-        self.assertEqual(
-            ble['connectivity_restore']['ble'], {'mode': 'authorized-heart', 'connected': False, 'echo_after': True}
-        )
+        self.assertEqual(ble['connectivity_restore']['ble'], {'mode': 'authorized-heart', 'connected': False})
 
     def test_ble_scenario_allows_gatt_deadlines_and_checks_reconnected_measurements(self):
         ble = scenarios(Path('/private/profile.json'))['connectivity-ble']
@@ -108,7 +106,7 @@ class ConnectivityTests(unittest.TestCase):
         late = ble['steps'].index({'op': 'command', 'command': 'BLE', 'baseline': 'heart_after_att_timeout'})
         self.assertGreater(sum(s['seconds'] for s in ble['steps'][:late] if s['op'] == 'delay'), 30)
         restore = harness.connectivity_restore_steps('ble', ble['connectivity_restore']['ble'])
-        self.assertEqual([s['action'] for s in restore], ['select', 'echo'])
+        self.assertEqual([s['action'] for s in restore], ['select'])
         self.assertEqual(restore[0]['mode'], 'authorized-heart')
 
     def att_timeout_hold(self, snapshots):

@@ -5,7 +5,8 @@ use crate::sensors::ant::device_type::HEART_RATE;
 use crate::workout::model::Name;
 use crate::workout::today;
 use device_api::server::{
-    AccessPoint, AccessPointConfig, AccessPointState, Method, Reach, Request, Server,
+    AccessPoint, AccessPointConfig, AccessPointState, Listen, Method, PhoneLink, Reach, Request,
+    Server,
 };
 use std::string::String;
 
@@ -16,7 +17,8 @@ const ROOM: usize = 4096;
 /// One request at a time; the test drains what VANA wrote after each step.
 #[derive(Default)]
 pub(super) struct Transport {
-    listening: bool,
+    pub(super) listening: Listen,
+    pub(super) link: PhoneLink,
     pub(super) request: Option<Request>,
     /// The body still to be read, and the most each `read` hands over.
     body: Vec<u8>,
@@ -58,8 +60,11 @@ impl Transport {
 }
 
 impl Server for Transport {
-    fn listen(&mut self, on: bool) {
+    fn listen(&mut self, on: Listen) {
         self.listening = on;
+    }
+    fn link(&mut self) -> PhoneLink {
+        self.link
     }
     fn read(&mut self, id: u32, out: &mut [u8]) -> usize {
         if self.finished || self.request.as_ref().is_none_or(|r| r.id != id) {
@@ -237,7 +242,7 @@ fn a_phone_on_home_wifi_lists_and_downloads_a_ride() {
     phone.step();
     let status = phone.runtime.phone_status().unwrap();
     assert_eq!(status.address, Some([10, 0, 0, 7]));
-    assert!(phone.transport.listening);
+    assert_eq!(phone.transport.listening, Listen::Network);
     assert!(phone.radio.started.is_none(), "home mode keeps the station");
     let token = phone.token();
     assert_eq!(token.len(), 16);
@@ -301,7 +306,7 @@ fn a_phone_on_home_wifi_lists_and_downloads_a_ride() {
     phone.step();
     assert!(phone.runtime.phone_status().is_none());
     assert_eq!(phone.runtime.phone_closed(), Some(PhoneClosed::Rider));
-    assert!(!phone.transport.listening);
+    assert_eq!(phone.transport.listening, Listen::Off);
 }
 
 #[test]
@@ -1021,4 +1026,197 @@ fn holding_move_on_a_map_just_opened_stops_following() {
         assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
         assert!(!runtime.following(), "still following, map drawn: {drawn}");
     }
+}
+
+/// A Bluetooth session on `runtime`; the phone's link is advertising.
+fn over_bluetooth<'a>(runtime: &'a mut Runtime, journal: &'a mut Journal, now: u64) -> Phone<'a> {
+    attach(runtime);
+    runtime.open_phone(PhoneMode::Bluetooth);
+    let mut phone = Phone {
+        runtime,
+        journal,
+        transport: Transport {
+            link: PhoneLink::Advertising,
+            ..Transport::default()
+        },
+        radio: Radio2::default(),
+        now,
+    };
+    phone.step();
+    phone
+}
+
+#[test]
+fn the_iphone_app_reads_over_bluetooth_without_a_token() {
+    let mut journal = Journal::erased();
+    let (mut runtime, _, now) = saved_ride(&mut journal);
+    let mut phone = over_bluetooth(&mut runtime, &mut journal, now);
+    let status = phone.runtime.phone_status().unwrap();
+    assert_eq!(status.mode, PhoneMode::Bluetooth);
+    assert_eq!(status.link, PhoneLink::Advertising);
+    assert!(status.password.text().is_empty() && status.token.text().is_empty());
+    assert_eq!(status.url(), None);
+    assert_eq!(phone.transport.listening, Listen::Bluetooth);
+    assert!(phone.radio.started.is_none(), "no access point");
+
+    phone.transport.link = PhoneLink::Connected;
+    let (head, body) = phone.get(Method::Get, "/api/status", "", "");
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(String::from_utf8(body).unwrap().starts_with('{'));
+    let mut listed = String::new();
+    for _ in 0..50 {
+        let (head, body) = phone.get(Method::Get, "/api/activities", "", "");
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        listed = String::from_utf8(body).unwrap();
+        if listed.contains(r#""indexing":false"#) {
+            break;
+        }
+    }
+    assert!(listed.contains(r#""heart":true"#), "{listed}");
+    let (head, body) = phone.get(Method::Get, "/api/workouts", "", "");
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(String::from_utf8(body).unwrap().contains(r#""workout":"#));
+}
+
+#[test]
+fn bluetooth_refuses_every_write() {
+    let mut phone = Upload::new();
+    phone.runtime.close_phone();
+    phone.step();
+    phone.runtime.open_phone(PhoneMode::Bluetooth);
+    phone.transport.link = PhoneLink::Connected;
+    phone.step();
+    assert_eq!(phone.transport.listening, Listen::Bluetooth);
+    let refused = r#"{"error":"read_only"}"#;
+    let workout = workout_bytes("Tempo", 20);
+    for (method, path, body) in [
+        (Method::Put, "/api/workouts", workout.as_slice()),
+        (Method::Post, "/api/workouts", workout.as_slice()),
+        (Method::Delete, "/api/workouts", b"".as_slice()),
+        (Method::Delete, "/api/activities", b"".as_slice()),
+        (Method::Put, "/api/course", b"<gpx/>".as_slice()),
+        (Method::Put, "/api/time", b"".as_slice()),
+        (Method::Post, "/api/close", b"".as_slice()),
+        (
+            Method::Put,
+            "/api/wifi",
+            br#"{"ssid":"home","password":"password"}"#.as_slice(),
+        ),
+        (Method::Delete, "/api/wifi", b"".as_slice()),
+        (Method::Head, "/", b"".as_slice()),
+        (Method::Options, "/api/status", b"".as_slice()),
+    ] {
+        let (status, answer) = phone.request(method, path, "unix_ms=1793521800250", body, 64);
+        assert_eq!(
+            (status, answer.as_str()),
+            (403, refused),
+            "{method:?} {path}"
+        );
+    }
+    assert!(phone.stored_workouts().is_empty());
+    assert_eq!(phone.runtime.take_clock_set(), None);
+    assert!(
+        phone.runtime.phone_status().is_some(),
+        "a refused close keeps the session"
+    );
+    let (status, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
+    assert_eq!(
+        (status, body.as_str()),
+        (200, r#"{"store":"ok","workout":null}"#)
+    );
+}
+
+#[test]
+fn bluetooth_takes_a_wifi_scan_and_no_other_wifi_write() {
+    let mut phone = Upload::new();
+    phone.runtime.close_phone();
+    phone.step();
+    phone.runtime.open_phone(PhoneMode::Bluetooth);
+    phone.transport.link = PhoneLink::Connected;
+    phone.step();
+    let token = phone.token();
+    phone
+        .transport
+        .upload(Method::Post, "/api/wifi/scan", &token, b"", 64);
+    for _ in 0..20 {
+        phone.step();
+    }
+    assert!(
+        !phone.transport.finished,
+        "the scan waits for the station, not a 403: {:?}",
+        String::from_utf8_lossy(&phone.transport.pending)
+    );
+    phone.transport.finished = true;
+    phone.transport.request = None;
+    phone.transport.pending.clear();
+    phone.step();
+    let (status, body) = phone.request(Method::Put, "/api/wifi", "", b"{}", 64);
+    assert_eq!((status, body.as_str()), (403, r#"{"error":"read_only"}"#));
+}
+
+#[test]
+fn a_bluetooth_session_ends_when_the_link_drops_or_idles_or_the_radio_fails() {
+    let mut journal = Journal::erased();
+    let (mut runtime, _, now) = saved_ride(&mut journal);
+    let mut phone = over_bluetooth(&mut runtime, &mut journal, now);
+    // Advertising alone never ends it: the phone has not come yet.
+    phone.step();
+    assert!(phone.runtime.phone_status().is_some());
+    phone.transport.link = PhoneLink::Connected;
+    phone.step();
+    phone.transport.link = PhoneLink::Advertising;
+    phone.step();
+    assert_eq!(phone.runtime.phone_closed(), Some(PhoneClosed::Link));
+    phone.step();
+    assert_eq!(phone.transport.listening, Listen::Off);
+
+    phone.runtime.open_phone(PhoneMode::Bluetooth);
+    phone.step();
+    assert_eq!(phone.transport.listening, Listen::Bluetooth);
+    phone.now += crate::app::phone::IDLE_MS + 1;
+    phone.step();
+    assert_eq!(phone.runtime.phone_closed(), Some(PhoneClosed::Idle));
+    assert_eq!(phone.transport.listening, Listen::Off);
+
+    phone.transport.link = PhoneLink::Failed;
+    phone.runtime.open_phone(PhoneMode::Bluetooth);
+    phone.step();
+    assert_eq!(phone.runtime.phone_closed(), Some(PhoneClosed::Radio));
+    phone.step();
+    assert_eq!(phone.transport.listening, Listen::Off);
+    assert_eq!(phone.radio.stops, 0, "no access point was started to stop");
+}
+
+#[test]
+fn a_ride_start_ends_a_bluetooth_session() {
+    let mut journal = Journal::erased();
+    let mut radio = super::Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    attach(&mut runtime);
+    runtime.open_phone(PhoneMode::Bluetooth);
+    let mut transport = Transport {
+        link: PhoneLink::Connected,
+        ..Transport::default()
+    };
+    let mut access_point = Radio2::default();
+    let mut serve = |runtime: &mut Runtime, journal: &mut Journal, now| {
+        runtime.serve_phone(
+            &mut transport,
+            &mut access_point,
+            journal,
+            &mut MustNotWrite,
+            now,
+        );
+        transport.listening
+    };
+    assert_eq!(serve(&mut runtime, &mut journal, 900), Listen::Bluetooth);
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Ride));
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
+    for step in 0..8 {
+        tick(&mut runtime, &mut journal, &mut radio, 1000 + step * 250);
+    }
+    assert_eq!(serve(&mut runtime, &mut journal, 3000), Listen::Off);
+    assert_eq!(runtime.phone_closed(), Some(PhoneClosed::Ride));
 }

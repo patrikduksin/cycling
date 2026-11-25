@@ -366,7 +366,7 @@ impl Runtime {
         let kind = match ble.profile {
             Profile::HeartRate => device_type::HEART_RATE,
             Profile::Cadence => device_type::CADENCE,
-            Profile::Echo => return glance,
+            Profile::Unset => return glance,
         };
         let ant_serves = ant_stands_for(
             kind,

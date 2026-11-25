@@ -193,7 +193,7 @@ macro_rules! ageless {
 }
 
 ageless! {
-    bool, u8, u16, u32, u64, usize,
+    bool, i8, u8, u16, u32, u64, usize,
     crate::observation::Availability,
     crate::ant::Capabilities, crate::ant::ScanSnapshot, crate::ant::Discovery,
     crate::ble_transport::Snapshot, crate::ble_transport::Discovery,

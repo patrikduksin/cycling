@@ -21,6 +21,7 @@ pub mod route;
 pub mod screen;
 pub mod session;
 pub mod sim;
+pub mod station;
 pub mod storage;
 pub mod trace;
 pub mod twin;

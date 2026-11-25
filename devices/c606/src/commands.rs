@@ -119,7 +119,9 @@ pub fn execute<C: device_api::console::Console>(
     terminal.command_completed();
 }
 
-struct Station;
+/// The station as a capability: the console and VANA's phone routes hold
+/// it, each bound to the trace's recorder.
+pub(crate) struct Station;
 
 impl device_api::connectivity::Wifi for Station {
     fn request(
@@ -142,6 +144,9 @@ impl device_api::connectivity::Wifi for Station {
     }
     fn stats(&self) -> device_api::connectivity::WifiStats {
         wifi::stats()
+    }
+    fn rssi(&self) -> Option<i8> {
+        wifi::rssi()
     }
 }
 

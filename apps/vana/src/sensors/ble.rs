@@ -13,7 +13,7 @@ use device_api::ble_transport::Selection;
 /// Explicit profile selection, with no discovery of an arbitrary nearby sensor.
 pub fn selection(profile: Profile, name: &[u8], address: Option<[u8; 6]>) -> Option<Selection> {
     let (service, characteristic) = match profile {
-        Profile::Echo => return None,
+        Profile::Unset => return None,
         Profile::HeartRate => (0x180d, 0x2a37),
         Profile::Cadence => (0x1816, 0x2a5b),
     };
@@ -138,7 +138,7 @@ impl Client {
             return;
         };
         match self.profile {
-            Profile::Echo => {}
+            Profile::Unset => {}
             Profile::HeartRate => match HeartRate::parse(data) {
                 Some(value) => {
                     self.rr_dropped = self.rr_dropped.saturating_add(u32::from(value.rr_dropped));
@@ -355,7 +355,7 @@ mod tests {
     }
     #[test]
     fn profile_selection_is_explicit_and_preserves_uuid_pairs() {
-        assert!(selection(Profile::Echo, b"", None).is_none());
+        assert!(selection(Profile::Unset, b"", None).is_none());
         let heart = selection(Profile::HeartRate, b"fixture", None).unwrap();
         assert_eq!((heart.service, heart.characteristic), (0x180d, 0x2a37));
         let csc = selection(Profile::Cadence, b"fixture", None).unwrap();

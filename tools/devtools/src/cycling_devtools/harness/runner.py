@@ -168,7 +168,7 @@ def connectivity_command(radio, step):
     action = step.get('action')
     permitted = {
         'wifi': {'scan', 'configure', 'connect', 'disconnect', 'forget'},
-        'ble': {'scan', 'select', 'connect', 'disconnect', 'forget', 'echo'},
+        'ble': {'scan', 'select', 'connect', 'disconnect', 'forget'},
     }
     if radio not in permitted or action not in permitted[radio]:
         raise ValueError('unsupported typed connectivity operation')
@@ -195,20 +195,14 @@ def connectivity_restore_steps(radio, original):
         steps = [dict(action='configure', profile=original['profile'])] if configured else [dict(action='forget')]
     else:
         mode = original.get('mode')
-        if mode not in ('none', 'echo', 'authorized-heart', 'sim-heart', 'sim-csc'):
+        if mode not in ('none', 'authorized-heart', 'sim-heart', 'sim-csc'):
             raise ValueError('restoration requires the original BLE mode')
-        configured = mode not in ('none', 'echo')
+        configured = mode != 'none'
         steps = (
             [dict(action='select', **{k: v for k, v in original.items() if k in ('mode', 'authorization')})]
             if configured
             else [dict(action='forget')]
         )
-        if mode == 'echo':
-            steps.append(dict(action='echo'))
-    if radio == 'ble' and original.get('echo_after') is True:
-        if original['connected']:
-            raise ValueError('echo restoration cannot also connect a sensor')
-        steps.append(dict(action='echo'))
     if original['connected']:
         if not configured:
             raise ValueError('cannot reconnect an unconfigured original selection')

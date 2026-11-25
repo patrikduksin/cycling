@@ -15,6 +15,8 @@ pub mod companion_uart;
 pub mod crash_rtc;
 #[cfg(feature = "hardware")]
 pub mod display;
+#[cfg(any(feature = "hardware", test))]
+pub mod exchange;
 pub mod external;
 #[cfg(feature = "hardware")]
 pub mod gps_uart;

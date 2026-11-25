@@ -20,14 +20,14 @@ def address_bytes(value):
 
 
 def configuration(mode, authorized=None):
-    if mode == 'echo':
+    if mode == 'none':
         return 0, b'', None
     if mode == 'sim-heart':
         return 1, b'Cycling Sim', None
     if mode == 'sim-csc':
         return 2, b'Cycling Sim', None
     if mode != 'authorized-heart':
-        raise ValueError('BLE mode must be echo, authorized-heart, sim-heart, or sim-csc')
+        raise ValueError('BLE mode must be none, authorized-heart, sim-heart, or sim-csc')
     if not isinstance(authorized, dict) or authorized.get('authorized_by_user') is not True:
         raise ValueError('authorized heart sensor record is missing explicit authorization')
     if 'heart' not in str(authorized.get('profile', '')).lower():

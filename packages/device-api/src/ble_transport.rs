@@ -88,7 +88,6 @@ pub enum Operation {
     Select(Option<Selection>),
     Connect,
     Disconnect,
-    Echo,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub struct Discovery {

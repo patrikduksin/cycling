@@ -22,6 +22,13 @@ final class Link: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, Stre
     private var connecting: ExactReply?, connectStart = Date()
     private var connectTimeout: DispatchWorkItem?
 
+    /// HTTP over the channel, one request at a time: the rest wait in `queue`.
+    /// `to` is a file under the app's cache that takes a 2xx reply's body as bytes.
+    private struct Exchange { let request: Data; let reply: ExactReply; let timeout: Double; let to: URL? }
+    private var queue: [Exchange] = []
+    private var current: Exchange?, currentTimeout: DispatchWorkItem?
+    private var outbox: [UInt8] = [], inbox: [UInt8] = [], response: [UInt8] = []
+
     func status() -> [String: Any] {
         ["state": state, "detail": detail, "name": name, "psm": psm]
     }
@@ -31,6 +38,7 @@ final class Link: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, Stre
             switch request["op"] as? String {
             case "status": reply.send(status())
             case "connect": connect(reply)
+            case "http": http(request, reply)
             case "disconnect":
                 closeChannel()
                 if let p = peripheral { central?.cancelPeripheralConnection(p) }
@@ -146,7 +154,104 @@ final class Link: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, Stre
         connecting?.send(["ok": true, "name": name, "psm": psm, "ms": ms]); connecting = nil
     }
 
+    private func http(_ request: [String: Any], _ reply: ExactReply) {
+        guard channel != nil else { return reply.fail("not connected") }
+        let method = request["method"] as? String ?? "GET", path = request["path"] as? String ?? "/"
+        let body = Data((request["body"] as? String ?? "").utf8)
+        var bytes = Data("\(method) \(path) HTTP/1.1\r\nHost: vana\r\nContent-Length: \(body.count)\r\n\r\n".utf8)
+        bytes.append(body)
+        let timeout = (request["timeout_ms"] as? Double ?? 15_000) / 1000
+        let to = (request["to"] as? String).map { context.cache.appendingPathComponent($0) }
+        let exchange = Exchange(request: bytes, reply: reply, timeout: timeout, to: to)
+        let after = (request["after_ms"] as? Double ?? 0) / 1000
+        DispatchQueue.main.asyncAfter(deadline: .now() + after) { [self] in
+            guard channel != nil else { return reply.fail("not connected") }
+            queue.append(exchange)
+            nextExchange()
+        }
+    }
+
+    private func nextExchange() {
+        guard current == nil, !queue.isEmpty else { return }
+        let exchange = queue.removeFirst()
+        current = exchange
+        outbox = Array(exchange.request); inbox = []; response = []
+        // A late reply would be read as the next one's, so a timeout ends the channel.
+        let timeout = DispatchWorkItem { [weak self] in self?.channelClosed("request timed out") }
+        currentTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + exchange.timeout, execute: timeout)
+        flush()
+    }
+
+    private func flush() {
+        guard let out = channel?.outputStream else { return }
+        while !outbox.isEmpty, out.hasSpaceAvailable {
+            let n = outbox.withUnsafeBufferPointer { out.write($0.baseAddress!, maxLength: $0.count) }
+            if n <= 0 { break }
+            outbox.removeFirst(n)
+        }
+    }
+
+    /// Frames are a u16 LE length and that many bytes of the response; a zero length ends it.
+    private func receive() {
+        guard let input = channel?.inputStream else { return }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while input.hasBytesAvailable {
+            let n = input.read(&buffer, maxLength: buffer.count)
+            if n <= 0 { break }
+            inbox.append(contentsOf: buffer[0..<n])
+        }
+        guard current != nil else { inbox = []; return }
+        while inbox.count >= 2 {
+            let length = Int(inbox[0]) | Int(inbox[1]) << 8
+            if length == 0 {
+                inbox.removeFirst(2)
+                return finishExchange()
+            }
+            guard inbox.count >= 2 + length else { return }
+            response.append(contentsOf: inbox[2..<(2 + length)])
+            inbox.removeFirst(2 + length)
+        }
+    }
+
+    private func finishExchange() {
+        currentTimeout?.cancel(); currentTimeout = nil
+        let exchange = current; current = nil
+        if let to = exchange?.to, let split = headEnd(response), response.starts(with: Array("HTTP/1.1 2".utf8)) {
+            do {
+                try FileManager.default.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(response[split...]).write(to: to, options: .atomic)
+                exchange?.reply.send(["response": String(decoding: response[..<split], as: UTF8.self), "saved": response.count - split])
+            } catch {
+                exchange?.reply.fail("could not save the file: \(error.localizedDescription)")
+            }
+        } else {
+            exchange?.reply.send(["response": String(decoding: response, as: UTF8.self)])
+        }
+        response = []
+        nextExchange()
+    }
+
+    private func headEnd(_ bytes: [UInt8]) -> Int? {
+        let gap: [UInt8] = [13, 10, 13, 10]
+        guard bytes.count >= 4 else { return nil }
+        return (0...(bytes.count - 4)).first { Array(bytes[$0..<($0 + 4)]) == gap }.map { $0 + 4 }
+    }
+
+    private func failExchanges(_ why: String) {
+        currentTimeout?.cancel(); currentTimeout = nil
+        current?.reply.fail(why); current = nil
+        for exchange in queue { exchange.reply.fail(why) }
+        queue = []; outbox = []; inbox = []; response = []
+    }
+
+    private func channelClosed(_ why: String) {
+        closeChannel()
+        set("failed", why)
+    }
+
     private func closeChannel() {
+        failExchanges("channel closed")
         if let ch = channel {
             for s in [ch.inputStream as Stream, ch.outputStream as Stream] { s.close(); s.remove(from: .main, forMode: .default) }
         }
@@ -155,9 +260,9 @@ final class Link: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, Stre
 
     func stream(_ s: Stream, handle event: Stream.Event) {
         switch event {
-        case .errorOccurred, .endEncountered:
-            closeChannel()
-            set("failed", "channel closed")
+        case .hasBytesAvailable: receive()
+        case .hasSpaceAvailable: flush()
+        case .errorOccurred, .endEncountered: channelClosed("channel closed")
         default: break
         }
     }

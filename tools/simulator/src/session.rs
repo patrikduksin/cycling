@@ -256,36 +256,6 @@ impl Ble for BleFixture {
         self.battery.take()
     }
 }
-#[derive(Default)]
-pub struct WifiFixture {
-    pub control: device_api::connectivity::ControlStatus,
-    pub online: bool,
-}
-impl device_api::connectivity::Wifi for WifiFixture {
-    fn request(&mut self, operation: device_api::connectivity::WifiOperation) -> Result<(), Error> {
-        let device_api::connectivity::WifiOperation::Configure(_) = operation else {
-            return Err(Error::Unsupported);
-        };
-        self.control.sequence = self.control.sequence.wrapping_add(1);
-        self.control.operation = device_api::connectivity::Operation::Completed;
-        Ok(())
-    }
-    fn control(&self) -> device_api::connectivity::ControlStatus {
-        self.control
-    }
-    fn discoveries(&self) -> [Option<device_api::connectivity::NetworkDiscovery>; 8] {
-        [None; 8]
-    }
-    fn state(&self) -> device_api::connectivity::WifiState {
-        device_api::connectivity::WifiState::Unconfigured
-    }
-    fn online(&self) -> bool {
-        self.online
-    }
-    fn stats(&self) -> device_api::connectivity::WifiStats {
-        device_api::connectivity::WifiStats::default()
-    }
-}
 struct UnrecordedConsolePower(device_api::power::Status);
 impl PowerControl for UnrecordedConsolePower {
     fn capabilities(&self) -> device_api::power::Capabilities {
@@ -898,7 +868,7 @@ pub struct Simulated {
     /// Coordinated shutdown and work readiness, as composition reads them.
     pub switch: PowerSwitch,
     barometer: Option<(u64, u32)>,
-    pub wifi: WifiFixture,
+    pub wifi: crate::station::Station,
     pub phone_server: crate::phone::SimServer,
     pub access_point: crate::phone::SimAccessPoint,
     /// The parts the model has.
@@ -913,6 +883,7 @@ fn absent() -> &'static mut Absent {
 impl Simulated {
     fn carry_into(&mut self, next: &mut Simulated, power: bool, uptime: u64) {
         next.world = core::mem::take(&mut self.world);
+        next.wifi.around = core::mem::take(&mut self.wifi.around);
         // RTC memory keeps the clock through a reset, not a power loss; the
         // next boot's uptime starts at zero.
         next.network_time = (!power)
@@ -982,7 +953,7 @@ impl Simulated {
                 ..PowerSwitch::default()
             },
             barometer: None,
-            wifi: WifiFixture::default(),
+            wifi: Default::default(),
             phone_server: Default::default(),
             access_point: Default::default(),
             fitted,
@@ -1151,6 +1122,7 @@ impl Devices {
         &'a mut dyn Server,
         &'a mut dyn Sound,
         &'a mut dyn PowerControl,
+        &'a mut dyn device_api::connectivity::Wifi,
     ) {
         match self {
             Devices::Simulated(sim) => {
@@ -1175,6 +1147,7 @@ impl Devices {
                         absent()
                     },
                     &mut sim.switch,
+                    if fitted.wifi { &mut sim.wifi } else { absent() },
                 )
             }
             Devices::Twin(servers) => (
@@ -1185,6 +1158,7 @@ impl Devices {
                 &mut servers.server,
                 &mut servers.sound,
                 &mut servers.control,
+                &mut servers.wifi,
             ),
         }
     }
@@ -2174,6 +2148,7 @@ impl Session {
         let mut sound = device_api::sound::SoundRecorder::new(raw.5, record, &observed.sound);
         let mut control =
             device_api::power::PowerControlRecorder::new(raw.6, record, &observed.control);
+        let mut wifi = device_api::connectivity::WifiRecorder::new(raw.7, record, &observed.wifi);
         ant.sample();
         ble.sample();
         access_point.sample();
@@ -2203,6 +2178,7 @@ impl Session {
                     started,
                 },
                 control: &mut control,
+                wifi: &mut wifi,
             },
             &mut |point, shell| {
                 if point == vana::app::Point::InputsReady {
@@ -2325,6 +2301,7 @@ impl Session {
             let step = left.min(10);
             left -= step;
             self.sim_mut().world.advance(step);
+            self.sim_mut().wifi.advance(step);
             self.unseen_ms += step;
             if self.unseen_ms < self.rest_ms
                 && self.input.edges.borrow().pushed() == self.edges_seen

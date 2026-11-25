@@ -145,9 +145,11 @@ The [verify skill](../.agents/skills/verify/SKILL.md) says when to run
   refuses a verdict on any other. A PASS on a stacked PR therefore covers its
   own changes only, and it still holds after the parent lands and the PR is
   rebased onto main, if the rebased diff is the one that was reviewed.
-- After a merge, three jobs run in the background at `nice 19`: the screen
-  fill and the slow tier on the merged commit, and a request for tier 2 on
-  the newest main (see `cycling verify --deep` below), with its log in
+- After a merge, up to three jobs run in the background at `nice 19`, each
+  only when the merge's changed paths select its gate (a docs or
+  `apps/companion` merge starts none): the screen fill (`screens`) and the
+  slow tier (the web gates) on the merged commit, and a request for tier 2 on
+  the newest main (`test-rust`; see `cycling verify --deep` below), with its log in
   `.local/merge/deep.log`. `cycling sim-compare --fill` caches its screens
   as the base of later comparisons, with its log in `.local/merge/fill.log`. The slow tier
   runs in `.local/merge/slow-tier` of the primary checkout and comments on

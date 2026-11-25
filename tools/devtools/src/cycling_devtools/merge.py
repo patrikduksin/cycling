@@ -4,8 +4,8 @@ import argparse
 import subprocess
 import sys
 
-from cycling_devtools import forge, merge_checkout, review, runner, verify, workspace
-from cycling_devtools.tree import git
+from cycling_devtools import forge, lanes, merge_checkout, review, runner, verify, workspace
+from cycling_devtools.tree import changed_paths, git
 
 ATTEMPTS = 5
 SLOW_TIER = (sys.executable, '-m', 'cycling_devtools.slow_tier')
@@ -103,16 +103,20 @@ def announce(pr, commit, report):
     forge.comment(pr.number, f'Merged as {commit} by `cycling merge`.{kept}\n\n{report}')
 
 
-def after(pr, commit, report):
+def after(pr, base, commit, report):
     try:
         announce(pr, commit, report)
     except Exception as failed:
         why = getattr(failed, 'stderr', None) or failed
         print(f'cycling merge: #{pr.number} is merged, but its pull request was not updated: {why}', flush=True)
-    place = merge_checkout.directory()
-    detached([*FILL_SCREENS, commit], place / 'fill.log', place / 'verify')
-    detached([*SLOW_TIER, str(pr.number), commit], place / 'slow-tier.log', workspace.main_checkout())
-    detached(DEEP_TIER, place / 'deep.log', workspace.main_checkout())
+    place, home = merge_checkout.directory(), workspace.main_checkout()
+    gates = lanes.select(changed_paths(base, commit), home)
+    if 'screens' in gates:
+        detached([*FILL_SCREENS, commit], place / 'fill.log', place / 'verify')
+    if gates & lanes.WEB:
+        detached([*SLOW_TIER, str(pr.number), commit], place / 'slow-tier.log', home)
+    if 'test-rust' in gates:
+        detached(DEEP_TIER, place / 'deep.log', home)
 
 
 def open_pull_request(number):
@@ -163,7 +167,7 @@ def merge(number):
         refused = land(pr, heads, commit)
         if refused is None:
             print(f'merged #{number} as {commit}', flush=True)
-            after(pr, commit, f'{outcome.comment()}\n\n{table}')
+            after(pr, heads.main, commit, f'{outcome.comment()}\n\n{table}')
             return
         now = forge.fetch(pr)
         if now.head != reviewed:

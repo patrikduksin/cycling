@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from cycling_devtools import clean, forge, merge, merge_checkout, review, slow_tier, verify
+from cycling_devtools import clean, forge, lanes, merge, merge_checkout, review, slow_tier, verify
 from verify_fixture import commit, gate_runs, git
 
 PR = forge.PullRequest(7, 'feature', 'main', 'Add b', 'Because b was missing.', 'OPEN', False, '')
@@ -34,6 +34,8 @@ class GitHub:
         monkeypatch.setattr(forge, 'comment', self.comment)
         monkeypatch.setattr(forge, 'POLL_SECONDS', 0)
         monkeypatch.setattr(merge, 'detached', lambda command, log, cwd: self.started.append((command, log.name)))
+        # The gates that start the background jobs; a path no rule matches selects them all.
+        monkeypatch.setattr(lanes, 'EVERY', lanes.EVERY | {'screens', 'test-web', 'test-rust'})
 
     def pushes(self):
         log = self.remote / 'pushes.log'
@@ -223,6 +225,20 @@ def test_a_merge_that_cannot_update_its_pull_request_is_still_a_merge_with_its_b
     assert f'merged #7 as {landed}' in said
     assert '#7 is merged, but its pull request was not updated: HTTP 502' in said
     assert [log for _, log in github.started] == ['fill.log', 'slow-tier.log', 'deep.log']
+
+
+def test_a_merge_of_paths_that_select_no_gate_starts_no_background_job(checkout, github, monkeypatch):
+    git('checkout', '-q', '-b', 'feature', cwd=checkout)
+    commit(checkout, 'Docs', **{'docs/b.md': 'b\n'})
+    git('push', '-q', 'origin', 'feature', cwd=checkout)
+    git('checkout', '-q', 'main', cwd=checkout)
+    head = git('rev-parse', 'feature', cwd=checkout)
+    github.head = head
+    approve(head)
+
+    merge.merge(7)
+
+    assert github.merged and github.started == []
 
 
 def test_the_squash_is_never_dated_before_the_main_it_lands_on(checkout, feature, monkeypatch):

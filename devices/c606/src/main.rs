@@ -627,9 +627,10 @@ fn traced_pass(
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
         trace.network_time(network_time, now);
         let token = sdk.phone_status().map(|status| status.token);
-        // The phone's channel is sealed with the saved pairing, outside the
-        // recorded world: the key never reaches a trace.
-        device::drivers::exchange::set_pairing(&system.settings.pairing);
+        // The phone's channel is sealed with the pairing VANA names (the
+        // pending one while its code is up), outside the recorded world: the
+        // key never reaches a trace.
+        device::drivers::exchange::set_pairing(&sdk.sealing());
         let log = trace.log;
         log.borrow_mut()
             .session_token(token.as_ref().map(|token| token.bytes()));

@@ -77,8 +77,10 @@ SYMBOLS = [
     ("sun-large", 22),
     ("moon", 18),
     ("chevron-right", 18),
+    ("phone", 22),
+    ("add", 18),
 ]
-SAME_AS = {"satellite-wide": "satellite", "sun-small": "sun", "sun-large": "sun"}
+SAME_AS = {"satellite-wide": "satellite", "sun-small": "sun", "sun-large": "sun", "add": "plus"}
 
 TURN = (
     '<path d="M-15 19 V-1 Q-15 -11 -5 -11 H4" fill="none" stroke="#fff" stroke-width="10" '

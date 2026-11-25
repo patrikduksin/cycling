@@ -20,6 +20,7 @@ pub mod network_time;
 pub mod pack;
 pub mod position_control;
 pub mod positioning;
+pub mod qr;
 pub mod sector_log;
 pub mod sound;
 pub mod storage;

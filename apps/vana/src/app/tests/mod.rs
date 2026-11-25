@@ -17,6 +17,7 @@ mod commands;
 mod invariants;
 mod pace;
 mod phone;
+mod phone_page;
 mod power;
 mod presentation;
 mod recording;

@@ -18,8 +18,8 @@ const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 #[derive(Default)]
 pub(super) struct Pairings {
     saved: Option<Pairing>,
-    /// Made by `PHONE PAIR`, until the shell saves it.
     fresh: Option<Pairing>,
+    forget: bool,
     /// Hardware entropy for the next pairing, drawn on a service step since
     /// a command has no entropy source of its own.
     seed: Option<[u8; SEED]>,
@@ -28,6 +28,35 @@ pub(super) struct Pairings {
 impl Pairings {
     pub(super) fn saved(&self) -> Option<Pairing> {
         self.saved
+    }
+
+    pub(super) fn take_new(&mut self) -> Option<Pairing> {
+        let seed = self.seed.take()?;
+        let mut pairing = Pairing {
+            id: [0; 4],
+            key: [0; 32],
+        };
+        pairing.id.copy_from_slice(&seed[..4]);
+        pairing.key.copy_from_slice(&seed[4..]);
+        Some(pairing)
+    }
+
+    pub(super) fn save(&mut self, pairing: Pairing) {
+        self.fresh = Some(pairing);
+        self.forget = false;
+    }
+
+    pub(super) fn forget(&mut self) {
+        self.fresh = None;
+        self.forget = true;
+    }
+
+    fn standing(&self) -> Option<Pairing> {
+        match (self.fresh, self.forget) {
+            (Some(fresh), _) => Some(fresh),
+            (None, true) => None,
+            (None, false) => self.saved,
+        }
     }
 }
 
@@ -70,11 +99,32 @@ impl Runtime {
         self.phone.pairing.seed = Some(seed);
     }
 
-    /// The device opens its Bluetooth session now: it is paired, nothing
-    /// else holds the phone session and no ride records.
+    /// The pairing the phone's link is sealed with: the Phone page's code's
+    /// while it is up, else the saved one. The device hands it to its
+    /// transport every pass; none keeps the device from advertising.
+    pub fn sealing(&self) -> Option<Pairing> {
+        self.phone
+            .page
+            .pending()
+            .or_else(|| self.phone.pairing.standing())
+    }
+
+    /// End a Bluetooth session sealed with another pairing than `before`
+    /// was: its phone holds another key.
+    pub(super) fn reseal(&mut self, before: Option<Pairing>) {
+        let bluetooth = self
+            .phone
+            .session
+            .as_ref()
+            .is_some_and(|session| session.status.mode == Mode::Bluetooth);
+        if bluetooth && self.sealing() != before {
+            self.phone.wanted = Some(None);
+        }
+    }
+
     pub(super) fn bluetooth_due(&self, now: u64) -> bool {
         let phone = &self.phone;
-        phone.pairing.saved.is_some()
+        self.sealing().is_some()
             && phone.session.is_none()
             && phone.wanted.is_none()
             && !phone.stopping
@@ -87,28 +137,21 @@ impl Runtime {
 
     /// `PHONE PAIR`: a new pairing, saved on the next pass, and its URL.
     pub(in crate::app) fn pair_command(&mut self, output: &mut impl Write) -> &'static str {
-        let Some(seed) = self.phone.pairing.seed.take() else {
+        let Some(pairing) = self.phone.pairing.take_new() else {
             return "BUSY";
         };
-        let mut pairing = Pairing {
-            id: [0; 4],
-            key: [0; 32],
-        };
-        pairing.id.copy_from_slice(&seed[..4]);
-        pairing.key.copy_from_slice(&seed[4..]);
-        self.phone.pairing.fresh = Some(pairing);
-        let written = write!(output, "id=")
-            .and_then(|()| write_id(output, pairing.id))
-            .and_then(|()| write!(output, " url={}", url(&pairing)));
-        if written.is_err() {
-            return "OUTPUT";
-        }
-        "ACCEPTED"
+        self.phone.pairing.save(pairing);
+        write_pairing(&pairing, output)
     }
 
-    /// What `PHONE` reports of the pairing: the saved id, `pending` while a
-    /// new one waits for its save, or `none`.
+    /// What `PHONE` reports of the pairing: the code's id while the Phone
+    /// page shows one, then the saved id, `pending` while a new one waits for
+    /// its save, or `none`.
     pub(in crate::app) fn write_paired(&self, output: &mut impl Write) -> core::fmt::Result {
+        if let Some(code) = self.phone.page.pending() {
+            write!(output, " code=")?;
+            write_id(output, code.id)?;
+        }
         match (self.phone.pairing.fresh, self.phone.pairing.saved) {
             (Some(_), _) => write!(output, " paired=pending"),
             (None, Some(saved)) => {
@@ -129,28 +172,42 @@ impl Runtime {
         P: device_api::power::Power,
         B: device_api::storage::OwnedFlash,
     {
+        let before = self.sealing();
         if let Some(fresh) = self.phone.pairing.fresh.take() {
-            let saved = shell.save_pairing(fresh);
+            let saved = shell.save_pairing(Some(fresh));
             why!("phone.paired", saved);
             log::info!(target: "phone", "VANA_PHONE paired saved={saved}");
         }
-        self.follow_pairing(shell.settings.pairing);
+        if core::mem::take(&mut self.phone.pairing.forget) {
+            let saved = shell.save_pairing(None);
+            why!("phone.forgotten", saved);
+            log::info!(target: "phone", "VANA_PHONE forgotten saved={saved}");
+        }
+        self.phone.pairing.saved = shell.settings.pairing;
+        self.reseal(before);
+        shell.hold_full_light(self.phone.page.full_light());
     }
 
     /// Use the pairing the shell holds. A Bluetooth session of another
     /// pairing ends: its phone no longer opens the link.
+    #[cfg(test)]
     pub(in crate::app) fn follow_pairing(&mut self, pairing: Option<Pairing>) {
-        let phone = &mut self.phone;
-        if phone.pairing.saved != pairing
-            && phone
-                .session
-                .as_ref()
-                .is_some_and(|session| session.status.mode == Mode::Bluetooth)
-        {
-            phone.wanted = Some(None);
-        }
-        phone.pairing.saved = pairing;
+        let before = self.sealing();
+        self.phone.pairing.saved = pairing;
+        self.reseal(before);
     }
+}
+
+/// `id=<hex8> url=<the pairing's URL>`, as `PHONE PAIR` and `PHONE CODE`
+/// reply.
+pub(super) fn write_pairing(pairing: &Pairing, output: &mut impl Write) -> &'static str {
+    let written = write!(output, "id=")
+        .and_then(|()| write_id(output, pairing.id))
+        .and_then(|()| write!(output, " url={}", url(pairing)));
+    if written.is_err() {
+        return "OUTPUT";
+    }
+    "ACCEPTED"
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 test "opens on the device tab, not paired"
   expect state nav.tab == "device"
-  expect tree has "pair-how"
+  expect text "pair-how" == "1. On the bike computer, swipe down and tap Phone."
   expect tree has "paste-link"
   expect tree missing "connect"
   expect tree missing "unpair"
@@ -25,8 +25,9 @@ test "paired, not connected: Connect and Forget This Bike Computer"
   clock data
   expect text "paired-id" == "Paired with bike computer c6060001."
 
-test "a pasted pairing link pairs"
+test "a pasted pairing link pairs and connects at once"
   answer source pair with {"ok": true, "text": "Paired"}
+  answer source connect with {"ok": true, "text": "Connected to VANA in 840 ms"}
   tap "paste-link"
   clock settle
   type "pasted" "vanaride://pair?id=c6060001&k=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
@@ -34,6 +35,18 @@ test "a pasted pairing link pairs"
   tap "paste-confirm"
   clock data
   expect state pasted == ""
+  expect state connected.text == "Connected to VANA in 840 ms"
+
+test "Pair on the link's screen saves the key and connects at once"
+  at "/pair?id=c6060001&k=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+  answer source pair with {"ok": true, "text": "Paired"}
+  answer source connect with {"ok": true, "text": "Connected to VANA in 840 ms"}
+  clock settle
+  expect text "pair-id" == "c6060001"
+  expect text "pair-note" == "Keep the code on the screen until this finishes. Pairing replaces any bike computer this iPhone used before, and any iPhone the bike computer knew."
+  tap "pair-confirm"
+  clock data
+  expect state connected.text == "Connected to VANA in 840 ms"
 
 test "each tab opens its screen"
   tap "tab-wifi"

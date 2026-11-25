@@ -291,7 +291,8 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
         | Page::Ride
         | Page::EndRide
         | Page::LoseRides
-        | Page::Done => None,
+        | Page::Done
+        | Page::Phone => None,
     };
     Step {
         go,

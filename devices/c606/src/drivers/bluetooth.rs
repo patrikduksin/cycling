@@ -878,13 +878,14 @@ async fn phone_link<'a>(
             .map_err(drop)?,
         Either::Second(()) => return Ok(()),
     };
-    exchange::set_link(PhoneLink::Connected);
+    // Connected once the phone's first frame opens under the key
+    // (`exchange::serve_channel`): a phone without it never is.
     log::info!(target: "ble", "CYCLING_BLE phone_connected heap_free={}", esp_alloc::HEAP.free());
     fast_link(stack, connection.raw()).await;
     let listener = L2capChannel::listen(stack, connection.raw());
     // One future for the channel's whole life, polled beside the GATT loop and
     // never restarted: dropping it mid-send would cut a response short.
-    let mut sync = core::pin::pin!(serve_sync(stack, &listener, memory, &pairing.key));
+    let mut sync = core::pin::pin!(serve_sync(stack, &listener, memory, &pairing));
     loop {
         match select3(connection.next(), unwanted(pairing), sync.as_mut()).await {
             Either3::First(GattConnectionEvent::Disconnected { reason }) => {
@@ -966,7 +967,7 @@ async fn serve_sync<'a>(
     stack: &'a BleStack<'_>,
     listener: &L2capChannelListener<'a, BleController, DefaultPacketPool>,
     memory: &mut [u8],
-    key: &[u8; 32],
+    pairing: &Pairing,
 ) -> core::convert::Infallible {
     loop {
         let channel = match listener.accept(&L2capChannelConfig::default()).await {
@@ -1005,7 +1006,7 @@ async fn serve_sync<'a>(
                 into,
                 out,
             },
-            key,
+            pairing,
             hello,
         )
         .await;

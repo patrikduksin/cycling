@@ -19,6 +19,7 @@ mod control_sheet;
 mod format;
 mod home;
 mod lose_rides;
+mod phone;
 mod power;
 mod question;
 mod ride_climb;
@@ -61,6 +62,10 @@ pub enum ScreenId {
     RideDone,
     /// Home with a workout planned for today.
     HomeToday,
+    PhoneCode,
+    PhoneDone,
+    PhonePaired,
+    ForgetPhone,
 }
 
 /// Which of its screens a page shows where it has more than one: its own,
@@ -105,6 +110,10 @@ impl ScreenId {
         Self::ControlSheet,
         Self::RideDone,
         Self::HomeToday,
+        Self::PhoneCode,
+        Self::PhoneDone,
+        Self::PhonePaired,
+        Self::ForgetPhone,
     ];
 
     pub const fn of(page: Page, ride: RidePage, paused: bool, asks: Asks) -> Self {
@@ -125,6 +134,7 @@ impl ScreenId {
             Page::EndRide => Self::RideEnd,
             Page::Done => Self::RideDone,
             Page::LoseRides => Self::LoseRides,
+            Page::Phone => Self::PhoneCode,
         }
     }
 
@@ -165,6 +175,10 @@ impl ScreenId {
                 | Self::RideDone
                 | Self::Home
                 | Self::HomeToday
+                | Self::PhoneCode
+                | Self::PhoneDone
+                | Self::PhonePaired
+                | Self::ForgetPhone
         )
     }
 
@@ -223,6 +237,10 @@ impl ScreenId {
 
             Self::RideDone => ride_done::BUILTIN,
             Self::HomeToday => home::TODAY,
+            Self::PhoneCode => phone::CODE_SCREEN,
+            Self::PhoneDone => phone::DONE,
+            Self::PhonePaired => phone::PAIRED,
+            Self::ForgetPhone => phone::FORGET,
         }
     }
 }

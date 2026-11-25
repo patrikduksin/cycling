@@ -284,6 +284,9 @@ impl Runtime {
             self.asks(),
         ) {
             ScreenId::Sensors => self.menu.screen(),
+            ScreenId::PhoneCode => self
+                .phone_shown()
+                .map_or(ScreenId::PhoneCode, |shown| shown.screen()),
             id => id,
         }
     }
@@ -353,6 +356,7 @@ impl<A: Ant> Owners for Carried<'_, A> {
             (Page::Format, OnPage::Answer(yes)) => runtime.format_input(yes, held, self.received),
             (Page::LoseRides, OnPage::Answer(yes)) if !held => runtime.lose_rides_input(yes),
             (Page::Boot, OnPage::Back) => runtime.navigation.go(To::Page(runtime.first_page())),
+            (Page::Phone, act) if !held => runtime.phone_page_act(act, self.now),
             _ => why!("compose.unowned", act),
         }
     }

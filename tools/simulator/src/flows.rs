@@ -394,6 +394,29 @@ impl Sim {
     }
 
     #[track_caller]
+    pub fn open_phone_page(&mut self) {
+        self.swipe((120, 4), (120, 160));
+        self.advance(500);
+        let row = self
+            .screen()
+            .find("Phone")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the sheet shows Phone:\n{}", self.screen().text()));
+        self.tap(row.x as u16, row.y as u16);
+        self.advance(500);
+    }
+
+    pub fn iphone_on_link(&mut self, on: bool) {
+        let what = if on { "joins" } else { "leaves" };
+        self.note(
+            crate::sim::NoteKind::Device,
+            format!("the iPhone {what} the link"),
+        );
+        self.device.sim_mut().phone_server.phone_on = on;
+    }
+
+    #[track_caller]
     pub fn disconnect_phone(&mut self) {
         let (status, reply) = self.command("PHONE STOP");
         assert_eq!(status, "ACCEPTED", "PHONE STOP: {reply}");

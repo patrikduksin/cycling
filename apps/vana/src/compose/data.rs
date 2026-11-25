@@ -63,6 +63,9 @@ pub trait Data {
     fn done(&self) -> Option<&crate::screens::done::Done> {
         None
     }
+    fn phone(&self) -> Option<crate::screens::phone::Shown<'_>> {
+        None
+    }
     /// The swipe-down sheet's brightness, look and sensors, while it shows.
     fn sheet(&self) -> Option<&crate::screens::sheet::Facts> {
         None

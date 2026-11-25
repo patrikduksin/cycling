@@ -94,7 +94,7 @@ impl Runtime {
             if named.is_some() || bound.is_some() {
                 return "INVALID";
             }
-            return self.phone_command(operation, argument, output);
+            return self.phone_command(operation, argument, now, output);
         }
         if domain == Some("RADAR") {
             if named.is_some() || argument.is_some() || bound.is_some() {
@@ -286,13 +286,15 @@ impl Runtime {
 
     /// `PHONE` reports the phone session and pairing; `PHONE START [HOME]`
     /// opens one on the access point or the home network; `PHONE STOP`
-    /// closes it; `PHONE PAIR` pairs a new phone (`phone::pairing`). The
+    /// closes it; `PHONE PAIR` pairs a new phone (`phone::pairing`);
+    /// `PHONE CODE` opens the Phone page's code and replies its URL. The
     /// replies carry the session's password and token and the pairing's key:
     /// the terminal is the owner's.
     fn phone_command(
         &mut self,
         operation: Option<&str>,
         argument: Option<&str>,
+        now: u64,
         output: &mut impl Write,
     ) -> &'static str {
         match (operation, argument) {
@@ -301,6 +303,7 @@ impl Runtime {
             (Some("START"), Some("HOME")) => self.open_phone(super::PhoneMode::Home),
             (Some("STOP"), None) => self.close_phone(),
             (Some("PAIR"), None) => return self.pair_command(output),
+            (Some("CODE"), None) => return self.code_command(now, output),
             _ => return "INVALID",
         }
         let result = match self.phone_status() {

@@ -61,9 +61,13 @@ use firmware_services::fit::{Counter, Sink};
 use firmware_services::http::{Head, query_value};
 use firmware_services::why;
 
+pub(in crate::app) mod page;
 mod pairing;
 mod screens;
 mod wifi;
+
+#[cfg(test)]
+pub(in crate::app) use pairing::url as pairing_url;
 
 const PASSWORD_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const PASSWORD_GROUPS: usize = 3;
@@ -290,6 +294,7 @@ pub(super) struct Phone {
     join: wifi::Join,
     /// The phone pairing the shell holds, and a new one waiting to be saved.
     pairing: pairing::Pairings,
+    page: page::Flow,
     /// No Bluetooth session opens before this.
     reopen_at: u64,
     /// The radio cannot serve a phone: no Bluetooth session this boot.
@@ -666,7 +671,11 @@ impl Runtime {
                 }
             }
         }
-        server.listen(session.status.mode.listen());
+        let (mode, link) = (session.status.mode, session.status.link);
+        server.listen(mode.listen());
+        if mode == Mode::Bluetooth {
+            self.phone_page_linked(link, now);
+        }
         self.index_step(store, bulk);
         self.answer(server, ap, store, bulk, now);
     }

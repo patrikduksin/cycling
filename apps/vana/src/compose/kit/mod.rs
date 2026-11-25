@@ -14,6 +14,7 @@
 mod band;
 pub mod bar;
 pub mod chart;
+pub mod code;
 pub mod facts;
 pub mod field;
 pub mod item;

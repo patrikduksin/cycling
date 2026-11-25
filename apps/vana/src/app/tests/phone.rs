@@ -141,7 +141,7 @@ impl AccessPoint for Radio2 {
 }
 
 /// A runtime with one saved ride of about nine seconds in its journal.
-fn saved_ride(journal: &mut Journal) -> (Runtime, super::Radio, u64) {
+pub(super) fn saved_ride(journal: &mut Journal) -> (Runtime, super::Radio, u64) {
     let mut radio = super::Radio::new();
     let mut runtime = ready_runtime(journal, &mut radio);
     runtime

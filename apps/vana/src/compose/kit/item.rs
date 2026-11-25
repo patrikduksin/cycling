@@ -35,7 +35,7 @@ impl Spec {
 
 specs! {
     /// A button. Ids: home and sheet 0–63, pause, end and done 64–127,
-    /// sensors 128–191.
+    /// sensors 128–191, phone 192–255.
     pub enum Button: Spec {
         End = 64 => Spec {
             label: "END",
@@ -92,6 +92,13 @@ specs! {
             tone: Tone::Bad,
             solid: true,
             action: Action::Page(OnPage::Answer(true)),
+        },
+        PairNew = 192 => Spec {
+            label: "PAIR NEW",
+            symbol: None,
+            tone: Tone::Info,
+            solid: true,
+            action: Action::Page(OnPage::Pair),
         },
     }
 }

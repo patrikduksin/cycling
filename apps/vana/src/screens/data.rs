@@ -60,6 +60,10 @@ impl Data for View<'_> {
     fn done(&self) -> Option<&crate::screens::done::Done> {
         self.done()
     }
+
+    fn phone(&self) -> Option<crate::screens::phone::Shown<'_>> {
+        self.phone()
+    }
     fn road(&self) -> Option<ClimbRoad<'_>> {
         super::ride::climb::road(self)
     }

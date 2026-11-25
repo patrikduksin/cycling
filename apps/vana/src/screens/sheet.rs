@@ -15,6 +15,16 @@ pub struct Facts {
     pub level: u8,
     pub light: bool,
     pub sensors: heapless::Vec<Glance, SENSORS>,
+    pub phone: PhoneRow,
+    pub recording: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PhoneRow {
+    #[default]
+    NotPaired,
+    Paired,
+    Connected,
 }
 
 impl Data for Facts {
@@ -59,7 +69,7 @@ pub fn bottom(laid: &Laid, at: &Scaled) -> usize {
     bottom.min(at.panel.height)
 }
 
-pub const ROOM: (usize, usize) = (13, 3);
+pub const ROOM: (usize, usize) = (17, 4);
 
 pub fn prepare(laid: &Laid, facts: &Facts, bottom: usize, canvas: &mut Canvas) {
     canvas.hide_within(0..bottom);
@@ -177,6 +187,8 @@ mod tests {
                 .map(|kind| Glance::ble(kind, kind == device_type::POWER, None))
                 .into_iter()
                 .collect(),
+            phone: super::PhoneRow::Paired,
+            recording: false,
         }
     }
 

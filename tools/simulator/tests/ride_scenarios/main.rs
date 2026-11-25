@@ -30,6 +30,7 @@ mod laps;
 mod marks;
 mod mutations;
 mod navigation;
+mod phone_pairing;
 mod phone_uploads;
 mod power_and_battery;
 mod radar;

@@ -223,6 +223,56 @@ fn menus() {
     walk.cell("sensors", "nearby");
 }
 
+impl Walk {
+    fn both_looks(&mut self, screen: &str, variant: &str) {
+        self.cell(screen, variant);
+        self.all(|sim| {
+            sim.option("THEME", "DAY");
+            sim.next_frame();
+        });
+        self.cell(screen, &format!("{variant}-light"));
+        self.all(|sim| {
+            sim.option("THEME", "NIGHT");
+            sim.next_frame();
+        });
+    }
+}
+
+#[test]
+fn the_phone_page() {
+    let mut walk = Walk::paired(sensors, &[]);
+    walk.all(|sim| {
+        sim.swipe((120, 4), (120, 160));
+        sim.advance(500);
+    });
+    walk.both_looks("sheet", "phone-unpaired");
+    walk.all(|sim| {
+        sim.swipe((120, 200), (120, 4));
+        sim.advance(500);
+        sim.open_phone_page();
+    });
+    walk.both_looks("phone", "code");
+    walk.all(|sim| {
+        sim.iphone_on_link(true);
+        sim.advance(seconds(1));
+    });
+    walk.both_looks("phone", "paired-tick");
+    walk.all(|sim| {
+        sim.advance(seconds(4));
+        sim.swipe((120, 4), (120, 160));
+        sim.advance(500);
+    });
+    walk.both_looks("sheet", "phone-connected");
+    walk.all(|sim| {
+        sim.swipe((120, 200), (120, 4));
+        sim.advance(500);
+        sim.open_phone_page();
+    });
+    walk.both_looks("phone", "paired");
+    walk.guide(|sim| sim.press(Role::Move));
+    walk.both_looks("phone", "forget");
+}
+
 fn riding(world: fn(Model) -> Sim) -> Walk {
     let mut walk = Walk::paired(world, &KINDS);
     walk.all(|sim| {

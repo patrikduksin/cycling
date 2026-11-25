@@ -7,19 +7,50 @@ use crate::compose::solve::Placed;
 use crate::compose::tile::{Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{Align, Rect};
+use crate::screens::phone::Shown;
 use crate::screens::scaled::Scaled;
 use crate::screens::theme::{LAYOUT, Theme};
 use crate::screens::workout::Text;
 
 pub struct Facts;
 
-/// One row: a label in sentence case, and a metric with its unit after it.
 #[derive(Debug)]
 pub struct Fact {
     pub label: &'static str,
-    pub metric: Metric,
-    /// Written after the number, its space included: `" km"`.
-    pub unit: &'static str,
+    pub value: Value,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Value {
+    Metric(Metric, &'static str),
+    Phone,
+}
+
+const CONNECTED: [&str; 2] = ["Not connected", "Connected"];
+
+impl Fact {
+    pub const fn metric(&self) -> Option<Metric> {
+        match self.value {
+            Value::Metric(metric, _) => Some(metric),
+            Value::Phone => None,
+        }
+    }
+
+    fn widest(&self, face: &firmware_shell::rendering::font::Face) -> usize {
+        match self.value {
+            Value::Metric(metric, unit) => {
+                let numbers = metric
+                    .extremes()
+                    .map(|number| face.fit_width(number.as_bytes()));
+                numbers.into_iter().max().unwrap_or(0) + face.width(unit.as_bytes())
+            }
+            Value::Phone => CONNECTED
+                .iter()
+                .map(|words| face.fit_width(words.as_bytes()))
+                .max()
+                .unwrap_or(0),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -35,25 +66,38 @@ impl Spec {
 }
 
 specs! {
-    /// A card of facts. Ids: pause, end and done 64–127, sensors 128–191.
+    /// A card of facts. Ids: pause, end and done 64–127, sensors 128–191,
+    /// phone 192–255.
     pub enum Card: Spec {
         Ride = 64 => Spec {
             name: "RIDE",
             rows: &[
-                Fact { label: "Ride time", metric: Metric::Elapsed, unit: "" },
-                Fact { label: "Distance", metric: Metric::Distance, unit: " km" },
-                Fact { label: "NP", metric: Metric::NormalizedPower, unit: " W" },
+                Fact { label: "Ride time", value: Value::Metric(Metric::Elapsed, "") },
+                Fact { label: "Distance", value: Value::Metric(Metric::Distance, " km") },
+                Fact { label: "NP", value: Value::Metric(Metric::NormalizedPower, " W") },
             ],
+        },
+        Phone = 192 => Spec {
+            name: "PHONE",
+            rows: &[Fact { label: "Status", value: Value::Phone }],
         },
     }
 }
 
-fn value(fact: &Fact, reading: Option<i32>) -> Text<24> {
-    let mut number = Text::<12>::new();
-    fact.metric.write(reading, &mut number);
+fn value(fact: &Fact, data: &dyn Data) -> Text<24> {
     let mut text = Text::new();
-    let _ = text.push_str(number.as_str());
-    let _ = text.push_str(fact.unit);
+    match fact.value {
+        Value::Metric(metric, unit) => {
+            let mut number = Text::<12>::new();
+            metric.write(data.metric(metric), &mut number);
+            let _ = text.push_str(number.as_str());
+            let _ = text.push_str(unit);
+        }
+        Value::Phone => {
+            let connected = matches!(data.phone(), Some(Shown::Paired { connected: true }));
+            let _ = text.push_str(CONNECTED[usize::from(connected)]);
+        }
+    }
     text
 }
 
@@ -70,12 +114,7 @@ impl Tile for Facts {
         let (note, label) = (at.face(LAYOUT.face.note), at.face(LAYOUT.face.label));
         let widest = rows
             .iter()
-            .map(|fact| {
-                let values = fact.metric.extremes().map(|number| {
-                    label.fit_width(number.as_bytes()) + label.width(fact.unit.as_bytes())
-                });
-                note.fit_width(fact.label.as_bytes()) + values.into_iter().max().unwrap_or(0)
-            })
+            .map(|fact| note.fit_width(fact.label.as_bytes()) + fact.widest(label))
             .max()
             .unwrap_or(0);
         forms(&[Form {
@@ -91,7 +130,7 @@ impl Tile for Facts {
         let rows = card.spec().rows;
         let mut shown = [const { Text::<24>::new() }; MAX_ROWS];
         for (text, fact) in shown.iter_mut().zip(rows) {
-            *text = value(fact, data.metric(fact.metric));
+            *text = value(fact, data);
         }
         let lines = rows.iter().zip(&shown).map(|(fact, text)| Line {
             label: fact.label.as_bytes(),

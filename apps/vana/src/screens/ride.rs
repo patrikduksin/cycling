@@ -198,7 +198,12 @@ fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
         match crate::compose::registry::tile(component).reads(arg) {
             Some(Reads::Target) => return None,
             Some(Reads::Metric(metric)) => note(metric),
-            Some(Reads::Card(card)) => card.spec().rows.iter().for_each(|fact| note(fact.metric)),
+            Some(Reads::Card(card)) => card
+                .spec()
+                .rows
+                .iter()
+                .filter_map(|fact| fact.metric())
+                .for_each(&mut note),
             None => {}
         }
     }

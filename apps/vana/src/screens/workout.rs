@@ -35,6 +35,7 @@ pub enum Page {
     /// LOSE n UNSAVED RIDES?, which a host CLEAR asks while the phone has
     /// not confirmed every ride of a volatile journal.
     LoseRides,
+    Phone,
 }
 
 impl Page {
@@ -48,6 +49,7 @@ impl Page {
             Self::EndRide => "end_ride",
             Self::Done => "ride_done",
             Self::LoseRides => "lose_rides",
+            Self::Phone => "phone",
         }
     }
 }
@@ -97,6 +99,7 @@ pub(super) enum Extra<'a> {
     /// The sensor pages.
     Sensors(&'a super::sensors::Menu),
     Done(&'a super::done::Done),
+    Phone(super::phone::Shown<'a>),
 }
 
 /// `$name` is the variant's field, or none when `$pat` is another variant.
@@ -121,6 +124,7 @@ impl<'a> Extra<'a> {
         home -> &Home = Self::Home(home) => home;
         sensors -> &'a super::sensors::Menu = Self::Sensors(menu) => *menu;
         done -> &'a super::done::Done = Self::Done(done) => *done;
+        phone -> super::phone::Shown<'a> = Self::Phone(shown) => *shown;
     }
 }
 
@@ -158,6 +162,7 @@ enum Painted<'v> {
     Home(&'v super::home::Strip),
     Map(Option<&'v ride::FilledMap<'v>>),
     Done(&'v super::done::Done),
+    Code(&'v firmware_services::qr::Code, super::chrome::Rect),
 }
 
 impl<'v> Painted<'v> {
@@ -176,7 +181,7 @@ impl Extra<'_> {
             Self::Workout(chart) => Painted::Workout(chart),
             Self::Map(map) => Painted::Map(map.as_ref()),
             Self::Home(home) => Painted::Home(&home.strip),
-            Self::Sensors(_) => Painted::None,
+            Self::Sensors(_) | Self::Phone(_) => Painted::None,
             Self::Done(done) => Painted::Done(done),
         }
     }
@@ -255,6 +260,9 @@ impl<'v> Scene<'v> {
                     done.paint(&mut row.plain(), theme);
                 }
                 self.paint_canvas(row);
+                if let Painted::Code(code, card) = self.painted {
+                    super::phone::paint(code, card, &mut row.plain());
+                }
                 if let (Painted::Home(strip), Some(theme)) = (self.painted, self.theme) {
                     strip.paint(theme, &mut row.plain());
                 }
@@ -677,6 +685,15 @@ impl<'a> View<'a> {
     pub(super) fn done(&self) -> Option<&'a super::done::Done> {
         self.extra.done()
     }
+
+    pub fn show_phone(&mut self, shown: super::phone::Shown<'a>) {
+        self.extra = Extra::Phone(shown);
+    }
+
+    pub(super) fn phone(&self) -> Option<super::phone::Shown<'a>> {
+        self.extra.phone()
+    }
+
     /// Show the sensor page `menu` is on.
     pub fn show_sensors(&mut self, menu: &'a super::sensors::Menu) {
         self.extra = Extra::Sensors(menu);
@@ -781,7 +798,8 @@ impl<'a> View<'a> {
             | Page::Home
             | Page::EndRide
             | Page::Done
-            | Page::LoseRides => true,
+            | Page::LoseRides
+            | Page::Phone => true,
             Page::Sensors => !self.bar_has_room(),
             _ => self.paused_screen_shown(),
         }
@@ -828,7 +846,12 @@ impl<'a> View<'a> {
                 .and_then(ride::main_status_bar)
                 .map_or(0..0, |bar| bar.top..bar.bottom),
             body: &self.body,
-            painted: self.extra.painted(),
+            painted: match (self.extra.phone(), self.composed()) {
+                (Some(super::phone::Shown::Code(code)), Some(laid)) => laid
+                    .box_of(crate::compose::registry::CODE)
+                    .map_or(Painted::None, |card| Painted::Code(code, card)),
+                _ => self.extra.painted(),
+            },
             radar,
             cues: if over.is_some() { &[] } else { &self.cues },
             toast: self.toast.as_ref().filter(|_| !sheet),
@@ -895,8 +918,9 @@ impl<'a> View<'a> {
             self.pause_screen,
             self.asks(),
         );
-        match self.sensor_pages() {
-            Some(menu) if id == crate::compose::builtin::ScreenId::Sensors => menu.screen(),
+        match (self.sensor_pages(), self.phone()) {
+            (Some(menu), _) if id == crate::compose::builtin::ScreenId::Sensors => menu.screen(),
+            (_, Some(shown)) if self.page == Page::Phone => shown.screen(),
             _ => id,
         }
     }

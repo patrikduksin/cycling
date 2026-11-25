@@ -8,6 +8,7 @@ pub const FACE: u8 = 107;
 pub const WIDGET: u8 = 108;
 pub const TODAY: u8 = 109;
 pub const START: u8 = 110;
+pub const SHEET_PHONE: u8 = 111;
 
 pub(super) static TILES: &[&dyn Component] = &[
     &Erased::<sheet::Level>::NEW,
@@ -17,6 +18,7 @@ pub(super) static TILES: &[&dyn Component] = &[
     &Erased::<home::Widget>::NEW,
     &Erased::<home::TodayCard>::NEW,
     &Erased::<home::Start>::NEW,
+    &Erased::<sheet::Phone>::NEW,
 ];
 
-const _: () = assert!(TILES.len() == (START - LEVEL) as usize + 1);
+const _: () = assert!(TILES.len() == (SHEET_PHONE - LEVEL) as usize + 1);

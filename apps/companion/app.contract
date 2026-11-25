@@ -90,7 +90,7 @@ component Companion
   resource time = exactTime() as shape Time
   mutation connected as shape Outcome refreshes link
   mutation dropped as shape Outcome refreshes link
-  mutation linked as shape Outcome refreshes pairing, link
+  mutation linked as shape Outcome refreshes pairing, link then afterLinked
   mutation unlinked as shape Outcome refreshes pairing, link
   derive open = isOpen(link.state)
   resource bike = bike() when open as shape Bike
@@ -131,6 +131,9 @@ component Companion
   action pairFrom(link: string)
     send linked = pair(link)
     nav = go(nav, "/")
+  action afterLinked
+    if not failed(linked)
+      connectNow()
   action unpairNow
     send unlinked = unpair()
   action reloadDevice
@@ -195,9 +198,14 @@ component Companion
                         header
                           text "Pair Bike Computer"
                         row
-                          text "Run “cycling pair” on your computer, then scan the QR code it shows with the Camera." color="-exact-secondary-label" testId="pair-how"
+                          text "1. On the bike computer, swipe down and tap Phone." testId="pair-how"
+                        row
+                          text "2. Point the iPhone Camera at the code."
+                        row
+                          text "3. Tap the VANA link."
+                      section
                         button commandfor="paste" command="show-modal" disabled=pending(linked) testId="paste-link"
-                          text "Paste Pairing Link"
+                          text "Paste Link" font-size="0.8125rem"
                         footer
                           text match failure(linked) { case some(f) => f.message, case none => "" } testId="pair-error"
                     else
@@ -251,7 +259,7 @@ component Companion
                         footer
                           text match failure(unlinked) { case some(f) => f.message, case none => `Paired with bike computer ${pairing.id}.` } testId="paired-id"
                   dialog id="paste" role="alertdialog" aria-label="Paste Pairing Link"
-                    text "Paste the link “cycling pair” printed."
+                    text "Paste a vanaride:// pairing link."
                     input type="url" value=pasted input=editPasted placeholder="vanaride://pair?…" aria-label="Pairing link" testId="pasted"
                     button press=pairPasted disabled=(pasted == "") commandfor="paste" command="close" testId="paste-confirm"
                       text "Pair"
@@ -272,7 +280,7 @@ component Companion
                         text "Bike Computer" flex=1
                         text searchParam(e, "id") color="-exact-secondary-label" testId="pair-id"
                       footer
-                        text "Pairing replaces any bike computer this iPhone used before, and any iPhone the bike computer knew." testId="pair-note"
+                        text "Keep the code on the screen until this finishes. Pairing replaces any bike computer this iPhone used before, and any iPhone the bike computer knew." testId="pair-note"
                     section
                       button press=pairFrom(`vanaride://pair?id=${searchParam(e, "id")}&k=${searchParam(e, "k")}`) testId="pair-confirm"
                         text "Pair"

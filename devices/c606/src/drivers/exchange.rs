@@ -34,9 +34,9 @@ pub const FRAME_MAX: usize = 1024;
 
 struct Exchange {
     listening: Listen,
-    /// The saved pairing, which the device hands the Bluetooth driver.
     pairing: Option<Pairing>,
-    /// Written by the Bluetooth driver, read by the application.
+    /// Written by the Bluetooth driver, read by the application; always of
+    /// `pairing`, so `Connected` says a phone holding its key is on.
     link: PhoneLink,
     request: Option<Request>,
     next_id: u32,
@@ -97,15 +97,31 @@ pub fn pairing() -> Option<Pairing> {
     with(|e| e.pairing)
 }
 
-/// The device hands over the saved pairing, once per pass.
+/// The device hands over the pairing to seal with, once per pass. Another
+/// pairing starts with no link: the one before was another key's.
 #[inline(never)]
 pub fn set_pairing(pairing: &Option<Pairing>) {
-    with(|e| e.pairing = *pairing);
+    with(|e| {
+        if e.pairing != *pairing {
+            e.pairing = *pairing;
+            e.link = PhoneLink::Off;
+        }
+    });
 }
 
 /// The Bluetooth driver reports the phone's link.
 pub fn set_link(link: PhoneLink) {
     with(|e| e.link = link);
+}
+
+/// A phone's frame opened under `pairing`'s key: it holds the key, so the
+/// link is connected, unless the exchange moved to another pairing since.
+fn opened_under(pairing: &Pairing) {
+    with(|e| {
+        if e.pairing.as_ref() == Some(pairing) {
+            e.link = PhoneLink::Connected;
+        }
+    });
 }
 
 /// The application side of the exchange.
@@ -396,6 +412,8 @@ impl<R: ReceiveSdu> Bytes<'_, R> {
 
 /// The phone's requests: its sealed frames, opened in order.
 struct Opened<'a, R> {
+    pairing: &'a Pairing,
+    opened: bool,
     bytes: Bytes<'a, R>,
     open: Direction,
     /// One sealed frame, then its plaintext.
@@ -414,6 +432,10 @@ impl<R: ReceiveSdu> Rx for Opened<'_, R> {
                 self.refused = true;
                 return None;
             };
+            if !self.opened {
+                self.opened = true;
+                opened_under(self.pairing);
+            }
             (self.at, self.len) = (0, len);
         }
         let n = out.len().min(self.len - self.at);
@@ -494,13 +516,14 @@ pub(crate) enum Ended {
 /// Serve a phone's channel: the handshake, then request after request until
 /// it closes, a frame fails to authenticate, the session stops listening on
 /// Bluetooth, or a response cannot complete. `piece` is the largest SDU both
-/// sides take, `key` the pairing's and `hello` this side's random nonce.
+/// sides take, `pairing` the one whose key seals it and `hello` this side's
+/// random nonce.
 pub(crate) async fn serve_channel(
     rx: impl ReceiveSdu,
     mut tx: impl SendSdu,
     piece: usize,
     buffers: ChannelBuffers<'_>,
-    key: &[u8; 32],
+    pairing: &Pairing,
     hello: [u8; HELLO],
 ) -> Ended {
     let ChannelBuffers {
@@ -530,9 +553,11 @@ pub(crate) async fn serve_channel(
     if !tx.send(&reply).await {
         return Ended::Closed;
     }
-    let Link { incoming, outgoing } = Link::new(key, &phone, &hello);
+    let Link { incoming, outgoing } = Link::new(&pairing.key, &phone, &hello);
     let (sealing, out) = out.split_at_mut(piece.clamp(3 + TAG, out.len() / 2));
     let mut rx = Opened {
+        pairing,
+        opened: false,
         bytes,
         open: incoming,
         frame,
@@ -620,6 +645,10 @@ mod tests {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const KEY: [u8; 32] = [0x4b; 32];
+    const PAIRING: Pairing = Pairing {
+        id: [0x0a, 0x0b, 0x0c, 0x0d],
+        key: KEY,
+    };
     const PHONE_HELLO: [u8; HELLO] = [0x70; HELLO];
     const DEVICE_HELLO: [u8; HELLO] = [0xd0; HELLO];
     /// Plaintext bytes in each of the phone's frames.
@@ -822,12 +851,14 @@ mod tests {
     ) -> Ended {
         install(|| Some(leak(BUFFER)), || Some(leak(INBOX)));
         Server.listen(Listen::Bluetooth);
+        set_pairing(&Some(PAIRING));
+        set_link(PhoneLink::Advertising);
         let device = serve_channel(
             channel.clone(),
             channel.clone(),
             piece,
             buffers(),
-            &KEY,
+            &PAIRING,
             DEVICE_HELLO,
         );
         let phone = async {
@@ -963,8 +994,48 @@ mod tests {
             channel.write(&get("/api/status"), 64);
             Timer::after_millis(50).await;
             assert!(channel.0.borrow().sent.is_empty(), "nothing answered");
+            assert_eq!(Server.link(), PhoneLink::Advertising, "not connected");
         });
         assert_eq!(ended, Ended::Refused);
+    }
+
+    #[test]
+    fn the_link_is_connected_once_the_phone_s_first_frame_opens() {
+        let _serial = SERIAL.lock();
+        let channel = Channel::default();
+        run(&channel, 64, async {
+            assert_eq!(
+                Server.link(),
+                PhoneLink::Advertising,
+                "a hello proves nothing"
+            );
+            channel.write(&get("/api/status"), 64);
+            channel.response(64).await;
+            assert_eq!(Server.link(), PhoneLink::Connected);
+        });
+    }
+
+    #[test]
+    fn a_frame_of_the_pairing_before_connects_no_link_of_the_next() {
+        let _serial = SERIAL.lock();
+        let channel = Channel::default();
+        run(&channel, 64, async {
+            channel.write(&get("/api/status"), 64);
+            channel.response(64).await;
+            let next = Pairing {
+                id: [1, 2, 3, 4],
+                key: [0x11; 32],
+            };
+            set_pairing(&Some(next));
+            assert_eq!(
+                Server.link(),
+                PhoneLink::Off,
+                "the next pairing starts unlinked"
+            );
+            opened_under(&PAIRING);
+            assert_eq!(Server.link(), PhoneLink::Off);
+            set_pairing(&Some(PAIRING));
+        });
     }
 
     #[test]
@@ -980,7 +1051,7 @@ mod tests {
             channel.clone(),
             64,
             buffers(),
-            &KEY,
+            &PAIRING,
             DEVICE_HELLO,
         ));
         assert_eq!(ended, Ended::Hello);
@@ -999,7 +1070,7 @@ mod tests {
             channel.clone(),
             64,
             buffers(),
-            &KEY,
+            &PAIRING,
             DEVICE_HELLO,
         ));
         assert!(channel.0.borrow().sent.is_empty());

@@ -152,7 +152,7 @@ impl Spec {
 
 specs! {
     /// A line of text. Ids: home and sheet 0–63, pause, end and done
-    /// 64–127, sensors 128–191.
+    /// 64–127, sensors 128–191, phone 192–255.
     pub enum Say: Spec {
         Paused = 64 => Spec {
             name: "PAUSED",
@@ -198,6 +198,41 @@ specs! {
             style: Style::Note,
             tone: Tone::Sub,
             align: Align::Right,
+        },
+        ScanWith = 192 => Spec {
+            name: "SCAN WITH",
+            words: Words::Fixed("Scan with the "),
+            style: Style::Label,
+            tone: Tone::Text,
+            align: Align::Left,
+        },
+        IphoneCamera = 196 => Spec {
+            name: "IPHONE CAMERA",
+            words: Words::Fixed("iPhone Camera"),
+            style: Style::Label,
+            tone: Tone::Text,
+            align: Align::Left,
+        },
+        PhonePaired = 193 => Spec {
+            name: "PHONE PAIRED",
+            words: Words::Fixed("iPhone paired"),
+            style: Style::Heading,
+            tone: Tone::Text,
+            align: Align::Center,
+        },
+        ForgetPhone = 194 => Spec {
+            name: "FORGET PHONE",
+            words: Words::Fixed("Forget iPhone?"),
+            style: Style::Heading,
+            tone: Tone::Text,
+            align: Align::Center,
+        },
+        StopsConnecting = 195 => Spec {
+            name: "STOPS CONNECTING",
+            words: Words::Fixed("It stops connecting"),
+            style: Style::Note,
+            tone: Tone::Sub,
+            align: Align::Center,
         },
     }
 }

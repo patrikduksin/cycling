@@ -63,9 +63,13 @@ fn pace(seen: &Seen) -> Pace {
         _ => return Pace::Busy,
     }
     let still = match seen.page {
-        Page::Home | Page::Sensors | Page::Ride | Page::EndRide | Page::LoseRides | Page::Done => {
-            true
-        }
+        Page::Home
+        | Page::Sensors
+        | Page::Ride
+        | Page::EndRide
+        | Page::LoseRides
+        | Page::Done
+        | Page::Phone => true,
         Page::Boot | Page::Format => false,
     };
     if still && !seen.busy {

@@ -11,6 +11,7 @@ pub mod home;
 pub mod icons;
 pub mod limits;
 pub mod look;
+pub mod phone;
 pub mod power;
 pub mod ride;
 pub mod scaled;

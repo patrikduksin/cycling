@@ -96,19 +96,21 @@ pub(super) struct Screen {
 }
 impl Screen {
     pub(super) fn new() -> Self {
+        Self::with(Box::leak(Box::new(Store::new(Absent))))
+    }
+
+    pub(super) fn saving() -> Self {
+        let flash = crate::testing::JournalFlash::of(device_api::storage::Region::Configuration);
+        Self::with(Box::leak(Box::new(Store::new(flash))))
+    }
+
+    fn with(store: &'static mut dyn firmware_shell::storage::Settings) -> Self {
         let panel = Panel(
             Rc::new(RefCell::new(vec![0; WIDTH * HEIGHT])),
             Rc::default(),
         );
-        let shell = Shell::new(
-            panel.clone(),
-            Keys,
-            Absent,
-            Absent,
-            Box::leak(Box::new(Store::new(Absent))),
-            0,
-        )
-        .expect("display is ready");
+        let shell =
+            Shell::new(panel.clone(), Keys, Absent, Absent, store, 0).expect("display is ready");
         Self { panel, shell }
     }
 

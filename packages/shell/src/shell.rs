@@ -192,6 +192,7 @@ pub struct Shell<D, I, P, B> {
     pub clock: Option<fn() -> u64>,
     idle: Idle,
     effective: u8,
+    full_light: bool,
     power: P,
     display: D,
     input: I,
@@ -289,6 +290,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             clock: None,
             idle: Idle::new(now),
             effective: 0,
+            full_light: false,
             power,
             display,
             input,
@@ -320,6 +322,14 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
 
     pub fn activity(&mut self, now: u64) {
         self.idle.button(now);
+    }
+    /// Hold the backlight full and undimmed while `full`, whatever the
+    /// rider's brightness; it applies on the next tick.
+    pub fn hold_full_light(&mut self, full: bool) {
+        self.full_light = full;
+    }
+    pub fn full_light(&self) -> bool {
+        self.full_light
     }
     pub fn set_app_active(&mut self, active: bool) {
         if self.app_active != active {
@@ -461,7 +471,11 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             0
         } else {
             self.idle.tick(now, config);
-            self.idle.effective(self.settings.brightness, config)
+            if self.full_light {
+                100
+            } else {
+                self.idle.effective(self.settings.brightness, config)
+            }
         };
         self.power_error = self.power.availability() == Availability::Failed;
         if self.power.availability() == Availability::Ready && self.effective != effective {
@@ -579,9 +593,10 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         }
         Ok(())
     }
-    /// Pair with a new phone, in place of the one before.
-    pub fn save_pairing(&mut self, pairing: device_api::server::Pairing) -> bool {
-        let previous = self.settings.pairing.replace(pairing);
+    /// Pair with a new phone, in place of the one before, or forget the
+    /// phone with `None`.
+    pub fn save_pairing(&mut self, pairing: Option<device_api::server::Pairing>) -> bool {
+        let previous = core::mem::replace(&mut self.settings.pairing, pairing);
         let saved = self.save_connectivity();
         if !saved {
             self.settings.pairing = previous;

@@ -15,6 +15,7 @@ const INBOX: usize = 4096;
 #[derive(Default)]
 pub struct SimServer {
     pub listening: Listen,
+    pub phone_on: bool,
     exchange: Option<Exchange>,
     next_id: u32,
 }
@@ -105,10 +106,10 @@ impl Server for SimServer {
         }
     }
     fn link(&mut self) -> PhoneLink {
-        if self.listening == Listen::Bluetooth {
-            PhoneLink::Advertising
-        } else {
-            PhoneLink::Off
+        match (self.listening, self.phone_on) {
+            (Listen::Bluetooth, true) => PhoneLink::Connected,
+            (Listen::Bluetooth, false) => PhoneLink::Advertising,
+            _ => PhoneLink::Off,
         }
     }
 }

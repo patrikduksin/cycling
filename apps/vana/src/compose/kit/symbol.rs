@@ -34,7 +34,7 @@ impl Spec {
 
 specs! {
     /// A symbol. Ids: home and sheet 0–63, pause, end and done 64–127,
-    /// sensors 128–191.
+    /// sensors 128–191, phone 192–255.
     pub enum Mark: Spec {
         Satellite = 0 => Spec {
             name: "SATELLITE",
@@ -63,6 +63,27 @@ specs! {
             tone: Tone::Good,
             disc: Some(LAYOUT.space.small_disc),
             saved_only: true,
+        },
+        Phone = 192 => Spec {
+            name: "PHONE",
+            symbol: Symbol::Phone,
+            tone: Tone::Info,
+            disc: Some(LAYOUT.space.badge),
+            saved_only: false,
+        },
+        PhonePaired = 193 => Spec {
+            name: "PHONE PAIRED",
+            symbol: Symbol::Tick,
+            tone: Tone::Good,
+            disc: Some(LAYOUT.space.badge),
+            saved_only: false,
+        },
+        ForgetPhone = 194 => Spec {
+            name: "FORGET PHONE",
+            symbol: Symbol::Trash,
+            tone: Tone::Bad,
+            disc: Some(LAYOUT.space.badge),
+            saved_only: false,
         },
     }
 }

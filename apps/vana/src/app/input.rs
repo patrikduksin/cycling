@@ -170,6 +170,7 @@ impl Runtime {
             | Page::EndRide
             | Page::Done
             | Page::LoseRides => 0,
+            Page::Phone => self.screen_id() as u32,
         };
         let sheet = u32::from(self.power.view().is_some());
         let dark = u32::from(!self.display.is_active());
@@ -194,6 +195,9 @@ impl Runtime {
             _ if composed.is_some() => composed,
             _ if key.is_some() => key,
             Page::Done => Some(Control::Key(device_api::input::Role::Act)),
+            Page::Phone if self.screen_id() == crate::compose::builtin::ScreenId::PhoneDone => {
+                Some(Control::Key(device_api::input::Role::Act))
+            }
             Page::Ride if paused_screen => None,
             // The course sign floats over every ride page, a region of the
             // screen rather than a tile of its tree.

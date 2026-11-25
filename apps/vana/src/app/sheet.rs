@@ -79,6 +79,11 @@ impl Runtime {
                 self.close_sheet();
                 self.open_sensors(ant, now);
             }
+            SheetAct::Phone if self.ride.recording() => {}
+            SheetAct::Phone => {
+                self.close_sheet();
+                self.open_phone_page(now);
+            }
         }
     }
 
@@ -104,6 +109,8 @@ impl Runtime {
             level: self.preferences.display.brightness,
             light: self.light(),
             sensors: self.glance(now).iter().take(SENSORS).copied().collect(),
+            phone: self.phone_row(),
+            recording: self.ride.recording(),
         })
     }
 }

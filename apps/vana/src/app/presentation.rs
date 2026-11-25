@@ -324,6 +324,11 @@ impl Runtime {
             Page::Sensors => {
                 view.show_sensors(&self.menu);
             }
+            Page::Phone => {
+                if let Some(shown) = self.phone_shown() {
+                    view.show_phone(shown);
+                }
+            }
         }
         if page == Page::Ride && view.ride_page == RidePage::Climb {
             // Borrowed from the ride and the look-ahead's own block, not copied.

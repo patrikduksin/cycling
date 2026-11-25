@@ -6,7 +6,7 @@ use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{Align, Rect};
 use crate::screens::icons::{Icon, Sensor, Size, StaticIcon, Symbol};
 use crate::screens::scaled::Scaled;
-use crate::screens::sheet::SENSORS;
+use crate::screens::sheet::{PhoneRow, SENSORS};
 use crate::screens::theme::LAYOUT;
 
 const BAR_RADIUS: usize = 14;
@@ -151,6 +151,92 @@ impl Tile for Sensors {
 
     fn action((): ()) -> Option<Action> {
         Some(Action::Sheet(SheetAct::Sensors))
+    }
+}
+
+pub struct Phone;
+
+impl Tile for Phone {
+    type Arg = ();
+    const NAME: &'static str = "sheet phone";
+
+    fn forms((): (), at: &Scaled) -> Forms {
+        let chevron = at.art.symbol(Symbol::ChevronRight).ink(0, 0).width();
+        let (label, note) = (at.face(LAYOUT.face.label), at.face(LAYOUT.face.note));
+        let state = note.fit_width(b"Not paired");
+        forms(&[Form {
+            width: (2 * at.unit(PAD)
+                + at.unit(ICON_INK + ICON_GAP)
+                + label.fit_width(b"Phone")
+                + at.unit(ICON_GAP)
+                + state
+                + at.unit(ICON_GAP)
+                + chevron) as u16,
+            height: at.unit(40) as u16,
+            shapes: 4,
+            runs: 2,
+        }])
+    }
+
+    fn prepare((): (), placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
+        let Some(facts) = data.sheet() else {
+            return;
+        };
+        let theme = data.theme();
+        let rect = placed.rect.rect();
+        out.shape(Shape::Panel {
+            rect,
+            radius: at.unit(TILE_RADIUS),
+            color: theme.raised,
+        });
+        let (ink, sub) = if facts.recording {
+            (theme.sub, theme.rule)
+        } else {
+            (theme.text, theme.sub)
+        };
+        let middle = (rect.top + rect.bottom) / 2;
+        let icon = at.art.symbol(Symbol::Phone);
+        let drawn = icon_centred(out, icon, (rect.left + at.unit(PAD), middle), ink);
+        if facts.phone == PhoneRow::Connected {
+            out.shape(Shape::Disc {
+                cx: (4 * drawn.right) as i32,
+                cy: (4 * drawn.top) as i32,
+                radius: (2 * at.unit(DOT)) as i32,
+                color: theme.good,
+            });
+        }
+        let chevron = at.art.symbol(Symbol::ChevronRight);
+        let right = rect.right - at.unit(PAD) - chevron.ink(0, 0).width();
+        icon_centred(out, chevron, (right, middle), sub);
+        let (label, note) = (at.face(LAYOUT.face.label), at.face(LAYOUT.face.note));
+        let left = drawn.right + at.unit(ICON_GAP);
+        let state: &[u8] = match facts.phone {
+            PhoneRow::NotPaired => b"Not paired",
+            PhoneRow::Paired => b"Paired",
+            PhoneRow::Connected => b"",
+        };
+        let words = out.fit(
+            &[note],
+            state,
+            right.saturating_sub(left + at.unit(ICON_GAP)),
+            right - at.unit(ICON_GAP),
+            middle + usize::from(note.cap) / 2,
+            Align::Right,
+            sub,
+        );
+        out.fit(
+            &[label, note],
+            b"Phone",
+            words.left.saturating_sub(left + at.unit(ICON_GAP)),
+            left,
+            middle + usize::from(label.cap) / 2,
+            Align::Left,
+            ink,
+        );
+    }
+
+    fn action((): ()) -> Option<Action> {
+        Some(Action::Sheet(SheetAct::Phone))
     }
 }
 

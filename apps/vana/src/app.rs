@@ -381,6 +381,7 @@ impl Runtime {
             &mut pace::Touched::new(bulk),
         );
         self.service_sensor_links(ant, now);
+        self.tick_phone_page(now);
         self.receive_ant(ant, now);
         self.service_calibration(ant, now);
         self.receive_ble(ble);

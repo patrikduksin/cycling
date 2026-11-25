@@ -59,6 +59,7 @@ pub enum SheetAct {
     Level,
     DayNight,
     Sensors,
+    Phone,
 }
 
 /// A press or a tap on a list's items.
@@ -101,6 +102,7 @@ pub enum OnPage {
     Forget,
     /// Search for sensors again.
     Search,
+    Pair,
 }
 
 /// The owners an action reaches.

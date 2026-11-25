@@ -3,20 +3,23 @@ set -u
 
 words=()
 harmless=0
+admin=0
 while (($#)); do
   case $1 in
     # These take a value, so the word after one is never a flag: `--body -h` is a body of "-h".
     -R | --repo | -a | --assignee | -B | --base | -b | --body | -F | --body-file | -H | --head | -l | --label | \
       -m | --milestone | -p | --project | --recover | -r | --reviewer | -T | --template | -t | --title) shift ;;
     --dry-run | --help | -h) harmless=1 ;;
+    --admin) admin=1 ;;
     -*) ;;
     *) words+=("$1") ;;
   esac
   shift
 done
 # Before the harmless flags: a merge flag the list above misses could take one as its value.
-if [[ ${words[0]-} == pr && ${words[1]-} == merge ]]; then
-  echo "gh pr merge refused: cycling merge <pr> is the only way to merge. It verifies the merge tree and pushes exactly that commit." >&2
+# --admin is Patrik's bypass: a PR he waived the gates for merges without verify or a review.
+if [[ ${words[0]-} == pr && ${words[1]-} == merge ]] && ((!admin)); then
+  echo "gh pr merge refused: cycling merge <pr> merges; gh pr merge <pr> --admin --squash only for a PR Patrik waived the gates for." >&2
   exit 1
 fi
 ((harmless)) && exit 0

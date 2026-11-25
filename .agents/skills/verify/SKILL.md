@@ -49,10 +49,11 @@ lists the deeper ones.
    onto main before merging. `cycling review step --pr <n> --by deslop --started
    <seconds>` records the time of a step that gives no verdict.
    `cycling review status --pr <n>` shows what the current patch has.
-6. Merge with `cycling merge <n>`, the only way to merge. It queues, squashes
+6. Merge with `cycling merge <n>`. It queues, squashes
    the PR onto main, verifies that tree unless it already passed, pushes
    exactly that commit, and posts the verify table and the review times. It
-   refuses a PR whose base is not main and a patch without a PASS, and the
-   dev shell's `gh` refuses `gh pr merge`.
+   refuses a PR whose base is not main and a patch without a PASS. When
+   Patrik waives the gates for a PR, `gh pr merge <n> --admin --squash` is
+   the bypass; the dev shell's `gh` refuses `gh pr merge` without `--admin`.
 7. Report each step that ran with its result, and each step you did not run
    with the reason.

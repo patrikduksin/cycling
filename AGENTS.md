@@ -35,7 +35,8 @@ shell provides every tool and the `cycling` command; see
   lists the deeper ones and when each is worth its time.
 - Verify, review and merge with the [verify skill](.agents/skills/verify/SKILL.md),
   before you open or update a PR. GitHub CI runs only on pushes to main, and
-  `cycling merge <n>` is the only way to merge.
+  `cycling merge <n>` merges. When Patrik waives the gates for a PR,
+  `gh pr merge <n> --admin --squash` merges it without verify or review.
 - Firmware changes: `cycling test`, `cycling check` (includes boundary checks
   and ruff) and `cycling build`.
 - Disk: a worktree that ran `cycling verify` carries about 7 GB of target dirs

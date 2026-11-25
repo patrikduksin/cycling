@@ -71,6 +71,8 @@ VERIFY_MODULES = ('admission', 'clean', 'cli', 'lanes', 'runner', 'tree', 'verif
 
 # A path no rule matches selects every gate, so a new directory is verified in full until it gets a rule.
 RULES = (
+    # The iPhone app is an Exact project with its own Cargo workspace; no gate here builds it.
+    ('apps/companion/', NONE),
     ('apps/', RUST_CODE | {'check-generated-web'}),
     ('packages/', RUST_CODE),
     ('devices/', RUST_BUILD),

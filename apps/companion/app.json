@@ -1,0 +1,57 @@
+{
+  "host": {
+    "ios": {
+      "minimumOS": "17.0",
+      "deviceFamily": [
+        "iphone"
+      ],
+      "localNetworking": "Connects to the development server on your computer.",
+      "appTransportSecurity": {
+        "allowsArbitraryLoads": true
+      }
+    }
+  },
+  "deploy": {
+    "store": {
+      "ios": "0"
+    }
+  },
+  "$schema": ".exact/checkout/scripts/app.schema.json",
+  "name": "VANA",
+  "short_name": "VANA",
+  "id": "computer.cycling.vana",
+  "start_url": "/",
+  "display": "standalone",
+  "app": {
+    "id": "computer.cycling.vana",
+    "name": "VANA"
+  },
+  "icons": [
+    {
+      "src": "assets/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ],
+  "userInterfaceStyle": "dark",
+  "commands": {
+    "dev-client": [
+      "bun",
+      "dev-client.mjs"
+    ],
+    "release": [
+      "bun",
+      "release.mjs"
+    ]
+  },
+  "rust": {
+    "data": {
+      "crate": "vana-data",
+      "type": "vana_data::Vana",
+      "source": "vana_data::Vana"
+    },
+    "module": {
+      "package": "vana-logic"
+    }
+  }
+}

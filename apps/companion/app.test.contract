@@ -1,0 +1,11 @@
+test "opens on the device tab, not connected"
+  expect state nav.tab == "device"
+  expect text "state" == "Not Connected"
+
+test "each tab opens its screen"
+  tap "tab-wifi"
+  expect state nav.tab == "wifi"
+  tap "tab-workouts"
+  expect state nav.tab == "workouts"
+  tap "tab-device"
+  expect tree has "connect"

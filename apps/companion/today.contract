@@ -1,0 +1,473 @@
+// Today: a demo of the companion's daily view. Every number is mocked and fixed:
+// the rider is the athlete profile (FTP 210 W, 66 kg), the clock reads 08:12 on
+// Thursday 26 November, yesterday was a 2 h 10 endurance ride, tonight is
+// threshold work.
+
+shape Step
+  at: number
+  min: number
+  pct: number
+  zone: number
+
+shape Stage
+  at: number
+  min: number
+  level: number
+
+shape Meal
+  id: string
+  at: number
+  time: string
+  name: string
+  detail: string
+  carbs: number
+  protein: number
+  kind: string
+
+shape Block
+  id: string
+  name: string
+  detail: string
+  watts: string
+  zone: number
+
+shape Item
+  id: string
+  time: string
+  title: string
+  detail: string
+  symbol: string
+  ink: string
+
+shape Macro
+  id: string
+  name: string
+  eaten: number
+  target: number
+  unit: string
+  ink: string
+
+// The curve of body charge from 07:00 yesterday to now, in a 352 × 120 box
+// (the line starts at x 0 and ends at x 340, y 30). Generated from hourly values.
+fn chargeLine(): string = "M0.0 41.0 C2.2 40.8 9.0 40.0 13.5 40.0 C18.0 40.0 22.5 40.3 27.0 41.0 C31.5 41.7 36.9 41.8 40.5 44.0 C44.1 46.2 45.7 50.3 48.6 54.0 C51.5 57.7 54.4 61.3 58.0 66.0 C61.6 70.7 66.4 79.2 70.2 82.0 C74.0 84.8 77.0 83.0 81.0 83.0 C85.0 83.0 89.9 81.8 94.4 82.0 C98.9 82.2 103.4 83.5 107.9 84.0 C112.4 84.5 116.9 84.8 121.4 85.0 C125.9 85.2 130.4 84.7 134.9 85.0 C139.4 85.3 143.9 86.5 148.4 87.0 C152.9 87.5 157.4 87.7 161.9 88.0 C166.4 88.3 170.9 88.7 175.4 89.0 C179.9 89.3 184.4 89.7 188.9 90.0 C193.4 90.3 197.9 90.7 202.4 91.0 C206.9 91.3 212.5 92.2 215.9 92.0 C219.3 91.8 219.2 92.2 222.6 90.0 C226.0 87.8 231.6 82.8 236.1 79.0 C240.6 75.2 245.1 70.8 249.6 67.0 C254.1 63.2 258.6 59.3 263.1 56.0 C267.6 52.7 272.1 49.7 276.6 47.0 C281.1 44.3 285.6 42.0 290.1 40.0 C294.6 38.0 299.1 36.5 303.6 35.0 C308.1 33.5 313.3 31.8 317.1 31.0 C320.9 30.2 322.7 30.2 326.5 30.0 C330.3 29.8 337.8 30.0 340.0 30.0"
+fn chargeArea(): string = `${chargeLine()} L340.0 116 L0.0 116 Z`
+
+fn steps(): Step[] = [Step(at=0, min=4, pct=50, zone=1), Step(at=4, min=4, pct=62, zone=2), Step(at=8, min=4, pct=72, zone=2), Step(at=12, min=1, pct=110, zone=5), Step(at=13, min=1, pct=50, zone=1), Step(at=14, min=1, pct=110, zone=5), Step(at=15, min=1, pct=50, zone=1), Step(at=16, min=1, pct=110, zone=5), Step(at=17, min=3, pct=55, zone=1), Step(at=20, min=20, pct=97, zone=4), Step(at=40, min=5, pct=55, zone=1), Step(at=45, min=20, pct=97, zone=4), Step(at=65, min=10, pct=50, zone=1)]
+
+fn sleep(): Stage[] = [Stage(at=0, min=14, level=2), Stage(at=14, min=38, level=1), Stage(at=52, min=46, level=0), Stage(at=98, min=22, level=1), Stage(at=120, min=18, level=2), Stage(at=138, min=4, level=3), Stage(at=142, min=40, level=1), Stage(at=182, min=34, level=0), Stage(at=216, min=30, level=2), Stage(at=246, min=44, level=1), Stage(at=290, min=18, level=0), Stage(at=308, min=36, level=2), Stage(at=344, min=6, level=3), Stage(at=350, min=58, level=1), Stage(at=408, min=40, level=2), Stage(at=448, min=14, level=1)]
+
+fn hrvWeek(): number[] = [52, 55, 49, 57, 54, 58, 61]
+fn restWeek(): number[] = [50, 49, 51, 49, 48, 49, 47]
+
+fn meals(): Meal[] = [Meal(id="breakfast", at=90, time="07:30", name="Breakfast", detail="Oats, banana, honey, Greek yoghurt", carbs=95, protein=25, kind="done"), Meal(id="lunch", at=390, time="12:30", name="Lunch", detail="Rice, chicken, roast vegetables", carbs=100, protein=40, kind="next"), Meal(id="pre", at=540, time="15:00", name="Before the ride", detail="Bagel with jam. Low fibre, low fat", carbs=70, protein=10, kind="later"), Meal(id="ride", at=690, time="17:30", name="On the bike", detail="One 750 ml bottle and one gel", carbs=65, protein=0, kind="ride"), Meal(id="recovery", at=770, time="18:50", name="Recovery", detail="500 ml chocolate milk, within 30 min", carbs=50, protein=18, kind="later"), Meal(id="dinner", at=870, time="20:30", name="Dinner", detail="Pasta, salmon, greens", carbs=95, protein=35, kind="later")]
+
+fn dayItems(): Item[] = [Item(id="breakfast", time="07:30", title="Breakfast", detail="Oats, banana, honey, yoghurt", symbol="symbol:sf/sun.horizon.fill", ink="vana.power"), Item(id="lunch", time="12:30", title="Lunch, carbs first", detail="Rice, chicken, vegetables. 100 g carbs", symbol="symbol:sf/fork.knife", ink="vana.power"), Item(id="snack", time="15:00", title="Bagel with jam", detail="Last fibre and fat until after the ride", symbol="symbol:sf/carrot.fill", ink="vana.power"), Item(id="ride", time="17:30", title="Threshold 2 × 20", detail="Bottle from the start, gel at 0:42", symbol="symbol:sf/bicycle", ink="vana.green"), Item(id="recover", time="18:50", title="Chocolate milk", detail="500 ml within 30 minutes", symbol="symbol:sf/drop.fill", ink="vana.heart"), Item(id="dinner", time="20:30", title="Pasta and salmon", detail="Refill for tomorrow", symbol="symbol:sf/fork.knife", ink="vana.power"), Item(id="sleep", time="22:30", title="Lights out", detail="Aim for 8 h. Tomorrow is a rest day", symbol="symbol:sf/moon.stars.fill", ink="vana.sleep")]
+
+fn macros(): Macro[] = [Macro(id="carbs", name="Carbs", eaten=95, target=475, unit="g", ink="vana.power"), Macro(id="protein", name="Protein", eaten=25, target=128, unit="g", ink="vana.heart"), Macro(id="fat", name="Fat", eaten=14, target=68, unit="g", ink="vana.speed")]
+
+fn blocks(): Block[] = [Block(id="warm", name="Warm-up", detail="12 min, building", watts="105–150 W", zone=2), Block(id="openers", name="Openers", detail="3 × 1 min, 1 min easy", watts="231 W", zone=5), Block(id="settle", name="Settle", detail="3 min easy", watts="116 W", zone=1), Block(id="t1", name="Threshold", detail="20 min, cadence 85–95", watts="204 W", zone=4), Block(id="float", name="Recover", detail="5 min, take the gel", watts="116 W", zone=1), Block(id="t2", name="Threshold", detail="20 min, hold the same power", watts="204 W", zone=4), Block(id="cool", name="Cool-down", detail="10 min", watts="105 W", zone=1)]
+
+fn zoneInk(z: number): string = z == 1 ? "vana.zone1" : z == 2 ? "vana.accent" : z == 3 ? "vana.green" : z == 4 ? "vana.power" : z == 5 ? "vana.amber" : z == 6 ? "vana.red" : "vana.z7"
+fn sleepInk(level: number): string = level == 0 ? "vana.deep" : level == 1 ? "vana.sleep" : level == 2 ? "vana.rem" : "vana.awake"
+fn hourLabel(i: number): string = i == 0 ? "08" : i == 1 ? "12" : i == 2 ? "16" : i == 3 ? "20" : i == 4 ? "00" : "04"
+fn motion(still: bool, value: string): string = still ? "none" : value
+fn share(part: number, whole: number): string = `${round(part * 1000 / whole) / 10}%`
+
+keyframes draw
+  from stroke-dashoffset=380
+  to stroke-dashoffset=0
+keyframes fade
+  from opacity=0
+keyframes rise
+  from opacity=0 translate="0px 10px"
+keyframes grow
+  from scale="1 0"
+keyframes fill
+  from scale="0 1"
+keyframes pop
+  0% opacity=0 scale=0.2
+  60% opacity=1 scale=1.3
+  100% opacity=1 scale=1
+
+// The workout's power profile: one bar per step, the FTP line, and where to eat.
+component WorkoutGraph
+  props
+    still: bool
+    tall: bool
+    delay: number
+  view
+    column position="relative" gap=6
+      svg width="100%" height=(tall ? 168 : 104) viewBox="0 0 750 130" preserveAspectRatio="none" aria-label="Workout power profile: warm-up, three openers, two 20-minute threshold efforts, cool-down"
+        line x1=0 y1=30 x2=750 y2=30 stroke="vana.unlit" stroke-width=1.5 stroke-dasharray="6 6" vector-effect="non-scaling-stroke"
+        for s in steps() key=s.at
+          rect x=(s.at * 10 + 1) y=(130 - s.pct) width=(s.min * 10 - 2) height=s.pct rx=3 fill=zoneInk(s.zone)
+            transform-box="fill-box" transform-origin="center bottom"
+            animation=motion(still, `grow 520ms cubic-bezier(0.22, 1, 0.36, 1) ${delay + s.at * 7}ms both`)
+      row position="absolute" top=14 left=0 right=0 height=0 display=(tall ? "flex" : "none")
+        text "FTP" font="-exact-caption2" font-weight=600 color="vana.secondary" position="absolute" right=0 top=-14
+      row position="relative" height=22
+        for f in [0, 42] key=f
+          row position="absolute" left=`${f * 100 / 75}%` gap=4 align-items="center" padding="2px 7px" border-radius=999 background-color="vana.raised"
+            animation=motion(still, `pop 420ms cubic-bezier(0.22, 1, 0.36, 1) ${delay + 520 + f * 7}ms both`)
+            image (f == 0 ? "symbol:sf/waterbottle.fill" : "symbol:sf/bolt.heart.fill") font="-exact-caption2" color="vana.power"
+            text (f == 0 ? "40 g" : "25 g") font="-exact-caption2" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
+        text "1:15" font="-exact-caption2" color="vana.secondary" position="absolute" right=0 top=3 font-variant-numeric="tabular-nums"
+
+// Tonight's session is already on the bike computer: the phone puts it there
+// whenever VANA is in reach, so there is nothing to press.
+component SyncChip
+  view
+    row gap=5 align-items="center" padding="4px 9px" border-radius=999 background-color="vana.greenWash" aria-label="On your VANA" testId="sync"
+      image "symbol:sf/checkmark.circle.fill" font="-exact-caption1" color="vana.green"
+      text "On your VANA" font="-exact-caption1" font-weight=600 color="vana.green" testId="sync-text"
+
+// A section's name above its card, as Health and Fitness do.
+component SectionTitle
+  props
+    label: string
+    note: string
+  view
+    row align-items="baseline" gap=8 padding="0px 4px"
+      text label role="heading" aria-level=2 font="-exact-title-3" font-weight=700 color="vana.white" flex=1
+      text note font="-exact-subheadline" color="vana.secondary" font-variant-numeric="tabular-nums"
+
+component Stat
+  props
+    value: string
+    label: string
+  view
+    column gap=2 flex=1 min-width=0
+      text value font="-exact-headline" color="vana.white" font-variant-numeric="tabular-nums"
+      text label font="-exact-caption1" color="vana.secondary"
+
+component Eyebrow
+  props
+    symbol: string
+    ink: string
+    label: string
+  view
+    row gap=6 align-items="center"
+      image symbol font="-exact-footnote" color=ink
+      text label font="-exact-footnote" font-weight=600 color=ink letter-spacing=0.6
+
+// The morning screen, top to bottom: the next thing to do, tonight's workout,
+// and the day's fuel. Each opens its own screen; the reasons are one tap away.
+component Today
+  props
+    still: bool
+    openDay: action
+    openWorkout: action
+    openFuel: action
+    openWhy: action
+  view
+    column gap=28 padding="8px 16px 40px"
+      // Up next: the day's current step; the card opens the whole day.
+      column gap=10
+        SectionTitle(label="Up Next", note="Now 08:12")
+        button press=openDay appearance="none" testId="open-day" aria-label="Up next at 12:30: lunch, carbs first. Open the day"
+          animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) both")
+          :active
+            -exact-press-scale = 0.98
+          column gap=12 padding="16px 18px" border-radius=24 background-color="vana.card" width="100%" box-sizing="border-box" align-items="stretch" text-align="start"
+            row gap=12 align-items="center"
+              column width=40 height=40 border-radius=20 align-items="center" justify-content="center" background-color="vana.accentWash" flex-shrink=0
+                image "symbol:sf/fork.knife" font="-exact-body" color="vana.accent"
+              column flex=1 min-width=0 gap=1
+                text "12:30" font="-exact-subheadline" font-weight=600 color="vana.accent" font-variant-numeric="tabular-nums"
+                text "Lunch, carbs first" font="-exact-headline" color="vana.white" testId="next-title"
+                text "Rice, chicken, vegetables. 100 g carbs" font="-exact-footnote" color="vana.secondary"
+              image "symbol:forward-chevron" font="-exact-footnote" color="vana.secondary"
+            // Where the day stands: one segment per step, done, next, later.
+            row gap=4 aria-hidden="true"
+              for it, i in dayItems() key=it.id
+                view flex=1 height=4 border-radius=2 background-color=(i == 0 ? "vana.green" : i == 1 ? "vana.accent" : "vana.raised")
+                  transform-origin="left center" animation=motion(still, `fill 420ms cubic-bezier(0.22, 1, 0.36, 1) ${160 + i * 40}ms both`)
+
+      // Tonight's workout: what and when; the card opens its details.
+      column gap=10
+        SectionTitle(label="Tonight's Ride", note="")
+        column border-radius=28 padding="20px 18px 18px" gap=16 background-color="vana.card" testId="call"
+          background-image="radial-gradient(130% 80% at 0% 0%, rgba(255,214,10,0.18) 0%, rgba(255,214,10,0) 70%)"
+          button press=openWorkout appearance="none" testId="open-workout" aria-label="Threshold 2 × 20 at 17:30, workout details"
+            :active
+              -exact-press-scale = 0.98
+            column gap=16 width="100%" align-items="stretch" text-align="start"
+              column gap=4 animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 60ms both")
+                text "Threshold 2 × 20" font-size=34 font-weight=800 letter-spacing=-1 line-height=1.15 color="vana.white" testId="workout-title"
+                text "Starts 17:30 · 1 h 15" font="-exact-body" color="vana.white" opacity=0.85 font-variant-numeric="tabular-nums" testId="workout-when"
+              WorkoutGraph(still=still, tall=false, delay=200)
+          // The reasons, folded into one line.
+          button press=openWhy appearance="none" testId="open-why" aria-label="Why this workout"
+            :active
+              -exact-press-scale = 0.98
+            row gap=10 align-items="center" padding="12px 14px" border-radius=16 background-color="vana.raisedWash" width="100%" box-sizing="border-box"
+              image "symbol:sf/checkmark.seal.fill" font="-exact-body" color="vana.green"
+              column flex=1 min-width=0 gap=1 align-items="flex-start" text-align="start"
+                text "Why this workout" font="-exact-subheadline" font-weight=600 color="vana.white"
+                text "Recovered · HRV ↑ 6 ms · slept 7 h 42" font="-exact-footnote" color="vana.secondary"
+              image "symbol:forward-chevron" font="-exact-footnote" color="vana.secondary"
+
+      // The day's fuel: carbs across the day against the ride, and the macros so far.
+      column gap=10
+        SectionTitle(label="Fuel", note="3,020 kcal")
+        button press=openFuel appearance="none" testId="open-fuel" aria-label="Fuel today: 475 grams of carbs, 3,020 kilocalories"
+          animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both")
+          :active
+            -exact-press-scale = 0.98
+          column gap=16 padding="18px 18px 16px" border-radius=28 background-color="vana.card" width="100%" box-sizing="border-box" align-items="stretch" text-align="start"
+            row align-items="center" gap=8
+              column flex=1 min-width=0 gap=1
+                text "Load carbs before the ride" font="-exact-headline" color="vana.white"
+                text "Most of today's carbs are in by 15:00" font="-exact-footnote" color="vana.secondary"
+              image "symbol:forward-chevron" font="-exact-footnote" color="vana.secondary"
+            column gap=6
+              svg width="100%" height=96 viewBox="0 0 960 100" preserveAspectRatio="none" aria-hidden="true"
+                rect x=690 y=0 width=75 height=100 rx=8 fill="vana.power" fill-opacity=0.12
+                line x1=0 y1=99 x2=960 y2=99 stroke="vana.raised" stroke-width=1 vector-effect="non-scaling-stroke"
+                for m in meals() key=m.id
+                  rect x=(m.at - 18) y=(100 - m.carbs * 0.9) width=36 height=(m.carbs * 0.9) rx=6
+                    fill=(m.kind == "ride" ? "vana.amber" : "vana.power")
+                    transform-box="fill-box" transform-origin="center bottom"
+                    animation=motion(still, `grow 520ms cubic-bezier(0.22, 1, 0.36, 1) ${220 + m.at / 3}ms both`)
+                line x1=132 y1=0 x2=132 y2=100 stroke="vana.white" stroke-width=1.5 stroke-dasharray="3 3" vector-effect="non-scaling-stroke"
+              row position="relative" height=14
+                for h in [0, 4, 8, 12, 16] key=h
+                  text (h == 0 ? "06" : h == 4 ? "10" : h == 8 ? "14" : h == 12 ? "18" : "22") font="-exact-caption2" color="vana.secondary" position="absolute" left=`${h * 100 / 16}%` translate=(h == 0 ? "0px 0px" : h == 16 ? "-100% 0px" : "-50% 0px") font-variant-numeric="tabular-nums"
+                text "Now" font="-exact-caption2" font-weight=600 color="vana.white" position="absolute" left="13.75%" translate="-50% 0px"
+            row gap=14
+              for m in macros() key=m.id
+                column flex=1 min-width=0 gap=5
+                  text m.name font="-exact-caption1" color="vana.secondary"
+                  text `${m.target} ${m.unit}` font="-exact-headline" color="vana.white" font-variant-numeric="tabular-nums"
+                  view height=4 border-radius=2 background-color="vana.raised" overflow="hidden"
+                    view height=4 width=share(m.eaten, m.target) border-radius=2 background-color=m.ink transform-origin="left center"
+                      animation=motion(still, "fill 600ms cubic-bezier(0.22, 1, 0.36, 1) 400ms both")
+                  text `${m.eaten} eaten` font="-exact-caption2" color="vana.secondary" font-variant-numeric="tabular-nums"
+
+// The whole day in order, as the clock runs: done, next, and what comes later.
+component DayDetail
+  props
+    still: bool
+  view
+    column gap=8 padding="4px 16px 40px"
+      row align-items="baseline" padding="0px 4px"
+        text "Breakfast done · lunch next" font="-exact-footnote" color="vana.secondary" flex=1
+        text "Now 08:12" font="-exact-footnote" color="vana.secondary" font-variant-numeric="tabular-nums"
+      column border-radius=24 background-color="vana.card" padding="6px 0px" testId="day"
+        for it, i in dayItems() key=it.id
+          column animation=motion(still, `rise 420ms cubic-bezier(0.22, 1, 0.36, 1) ${60 + i * 40}ms both`) testId=`item-${it.id}` aria-label=`${it.time} ${it.title}, ${it.id == "breakfast" ? "done" : it.id == "lunch" ? "next" : "later"}`
+            row gap=12 align-items="center" padding="10px 10px" margin="0px 6px" border-radius=16 width="calc(100% - 12px)" box-sizing="border-box" text-align="start"
+              background-color=(it.id == "lunch" ? "vana.accentWash" : "transparent") transition="background-color 300ms ease-out"
+              column width=30 height=30 align-items="center" justify-content="center" flex-shrink=0
+                if it.id == "breakfast"
+                  column width=22 height=22 border-radius=11 align-items="center" justify-content="center" background-color="vana.greenWash"
+                    image "symbol:checkmark" font="-exact-caption2" font-weight=700 color="vana.green"
+                else if it.id == "lunch"
+                  view width=12 height=12 border-radius=6 background-color="vana.accent" box-shadow="0px 0px 0px 5px rgba(10,132,255,0.25)"
+                else
+                  view width=8 height=8 border-radius=4 background-color="vana.unlit"
+              column flex=1 min-width=0 gap=1 opacity=(it.id == "breakfast" ? 0.75 : 1) transition="opacity 200ms ease-out"
+                row gap=6 align-items="center"
+                  image it.symbol font="-exact-footnote" color=it.ink
+                  text it.title font="-exact-body" font-weight=600 color="vana.white"
+                text it.detail font="-exact-footnote" color="vana.secondary"
+              text it.time font="-exact-subheadline" font-weight=(it.id == "lunch" ? 700 : 500) color=(it.id == "lunch" ? "vana.white" : "vana.secondary") font-variant-numeric="tabular-nums"
+
+// The reasons behind the call: the night against yesterday's ride, and three signals.
+component WhyDetail
+  props
+    still: bool
+  view
+    column gap=12 padding="4px 16px 40px"
+      row gap=12 align-items="flex-start" padding=16 border-radius=20 background-color="vana.card"
+        image "symbol:sf/checkmark.seal.fill" font="-exact-title-3" color="vana.green"
+        column flex=1 gap=4
+          text "You're recovered" font="-exact-headline" color="vana.white"
+          text "Last night gave back everything yesterday's ride took, and your heart is calmer than this week's average. Form is −9: tired enough to adapt, fresh enough to hold threshold." font="-exact-subheadline" color="vana.secondary"
+      // Body charge: the night undid what yesterday's ride took.
+      column background-color="vana.card" border-radius=24 padding="18px 18px 16px" gap=14 testId="charge"
+        row align-items="flex-start" gap=12
+          column flex=1 gap=2
+            text "Body charge" font="-exact-subheadline" color="vana.secondary"
+            row align-items="baseline" gap=4
+              text "82" font-size=60 font-weight=700 letter-spacing=-2 color="vana.white" font-variant-numeric="tabular-nums" testId="charge-value"
+                animation=motion(still, "fade 300ms ease-out both")
+              text "/100" font="-exact-subheadline" color="vana.secondary"
+          row gap=4 align-items="center" padding="5px 10px" border-radius=999 background-color="vana.greenWash"
+            image "symbol:sf/arrow.up.right" font="-exact-caption1" color="vana.green"
+            text "Recovered" font="-exact-caption1" font-weight=600 color="vana.green"
+        column gap=6
+          svg width="100%" aspect-ratio="352 / 120" viewBox="-6 0 352 120" aria-label="Body charge since 07:00 yesterday: 71, down to 29 after the ride, 20 at bedtime, 82 now"
+            defs
+              linearGradient id="charge-ink" x1=0 y1=30 x2=0 y2=92 gradientUnits="userSpaceOnUse"
+                stop offset=0 stop-color="#30d158"
+                stop offset="55%" stop-color="#ffd60a"
+                stop offset=1 stop-color="#ff6b3d"
+              linearGradient id="charge-fill" x1=0 y1=0 x2=0 y2=1
+                stop offset=0 stop-color="#30d158" stop-opacity=0.32
+                stop offset=1 stop-color="#30d158" stop-opacity=0
+            rect x=40.5 y=4 width=29.3 height=112 rx=7 fill="vana.amber" fill-opacity=0.16
+            rect x=215.9 y=4 width=104.5 height=112 rx=7 fill="vana.sleep" fill-opacity=0.2
+            line x1=-6 y1=116 x2=346 y2=116 stroke="vana.raised" stroke-width=1
+            path d=chargeArea() fill="url(#charge-fill)" animation=motion(still, "fade 700ms ease-out 450ms both")
+            path d=chargeLine() fill="none" stroke="url(#charge-ink)" stroke-width=3 stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="380 380"
+              animation=motion(still, "draw 1200ms cubic-bezier(0.32, 0.72, 0, 1) both")
+            circle cx=340 cy=30 r=9 fill="#30d158" fill-opacity=0.22 transform-box="fill-box" transform-origin="center"
+              animation=motion(still, "pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 1000ms both")
+            circle cx=340 cy=30 r=4.5 fill="vana.white" stroke="#30d158" stroke-width=2 transform-box="fill-box" transform-origin="center"
+              animation=motion(still, "pop 420ms cubic-bezier(0.22, 1, 0.36, 1) 1050ms both")
+          row position="relative" height=14
+            for x, i in [13.5, 67.5, 121.4, 175.4, 229.4, 283.3] key=i
+              text hourLabel(i) font="-exact-caption2" color="vana.secondary" position="absolute" left=share(x + 6, 352) translate="-50% 0px" font-variant-numeric="tabular-nums"
+            text "Now" font="-exact-caption2" font-weight=600 color="vana.white" position="absolute" right=0
+        row gap=8
+          row flex=1 gap=8 align-items="center" padding="10px 12px" border-radius=14 background-color="vana.raised"
+            view width=8 height=8 border-radius=4 background-color="vana.amber"
+            column flex=1 min-width=0
+              text "Ride" font="-exact-caption1" color="vana.secondary"
+              text "2 h 10" font="-exact-footnote" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
+            text "−39" font="-exact-headline" color="vana.amber" font-variant-numeric="tabular-nums"
+          row flex=1 gap=8 align-items="center" padding="10px 12px" border-radius=14 background-color="vana.raised"
+            view width=8 height=8 border-radius=4 background-color="vana.sleep"
+            column flex=1 min-width=0
+              text "Sleep" font="-exact-caption1" color="vana.secondary"
+              text "7 h 42" font="-exact-footnote" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
+            text "+62" font="-exact-headline" color="vana.sleep" font-variant-numeric="tabular-nums"
+
+      // How the body answered: three signals against the week.
+      row gap=10 testId="signals"
+        column flex=1 min-width=0 gap=8 padding=12 border-radius=20 background-color="vana.card"
+          animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both")
+          Eyebrow(symbol="symbol:activity", ink="vana.green", label="HRV")
+          row align-items="baseline" gap=3
+            text "61" font="-exact-title-2" font-weight=700 color="vana.white" font-variant-numeric="tabular-nums"
+            text "ms" font="-exact-caption1" color="vana.secondary"
+          svg width="100%" height=26 viewBox="0 0 70 26" preserveAspectRatio="none" aria-hidden="true"
+            for v, i in hrvWeek() key=i
+              rect x=(i * 10 + 1) y=(26 - (v - 40) * 1.2) width=7 height=((v - 40) * 1.2) rx=2 fill=(i == 6 ? "vana.green" : "vana.raised")
+          text "↑ 6 vs week" font="-exact-caption2" color="vana.green"
+        column flex=1 min-width=0 gap=8 padding=12 border-radius=20 background-color="vana.card"
+          animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 190ms both")
+          Eyebrow(symbol="symbol:sf/heart.fill", ink="vana.heart", label="RESTING")
+          row align-items="baseline" gap=3
+            text "47" font="-exact-title-2" font-weight=700 color="vana.white" font-variant-numeric="tabular-nums"
+            text "bpm" font="-exact-caption1" color="vana.secondary"
+          svg width="100%" height=26 viewBox="0 0 70 26" preserveAspectRatio="none" aria-hidden="true"
+            for v, i in restWeek() key=i
+              rect x=(i * 10 + 1) y=(26 - (v - 42) * 2.6) width=7 height=((v - 42) * 2.6) rx=2 fill=(i == 6 ? "vana.heart" : "vana.raised")
+          text "↓ 2 vs week" font="-exact-caption2" color="vana.green"
+        column flex=1 min-width=0 gap=8 padding=12 border-radius=20 background-color="vana.card"
+          animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 230ms both")
+          Eyebrow(symbol="symbol:sf/moon.stars.fill", ink="vana.sleep", label="SLEEP")
+          row align-items="baseline" gap=3
+            text "7:42" font="-exact-title-2" font-weight=700 color="vana.white" font-variant-numeric="tabular-nums"
+          svg width="100%" height=26 viewBox="0 0 462 26" preserveAspectRatio="none" aria-hidden="true"
+            for s in sleep() key=s.at
+              rect x=s.at y=((3 - s.level) * 7) width=s.min height=6 rx=1.5 fill=sleepInk(s.level)
+          text "1 h 48 deep" font="-exact-caption2" color="vana.secondary"
+
+
+component WorkoutDetail
+  props
+    still: bool
+  view
+    column gap=16 padding="4px 16px 40px"
+      column gap=4 padding="0px 4px"
+        Eyebrow(symbol="symbol:sf/bolt.fill", ink="vana.power", label="TONIGHT · 17:30 · INDOOR OR FLAT ROAD")
+        text "Two long efforts just under FTP. Hold 204 W and keep the cadence steady." font="-exact-body" color="vana.secondary"
+      column background-color="vana.card" border-radius=24 padding=18 gap=16
+        WorkoutGraph(still=still, tall=true, delay=120)
+        row gap=8
+          Stat(value="1:15:00", label="Duration")
+          Stat(value="92", label="TSS")
+          Stat(value="0.86", label="IF")
+          Stat(value="754", label="kJ")
+      row gap=12 align-items="flex-start" padding=16 border-radius=20 background-color="vana.card"
+        image "symbol:sparkles" font="-exact-headline" color="vana.z7"
+        column flex=1 gap=4
+          text "Why today" font="-exact-headline" color="vana.white"
+          text "HRV is 6 ms above your week and you slept 7 h 42. Form is −9: fresh enough to hold threshold. If the first 20 feels harder than 7 out of 10, stop the second at 15." font="-exact-subheadline" color="vana.secondary"
+      column gap=8
+        text "INTERVALS" font="-exact-footnote" font-weight=600 letter-spacing=0.6 color="vana.secondary" padding="0px 4px"
+        column border-radius=20 background-color="vana.card" overflow="hidden"
+          for b, i in blocks() key=b.id
+            row gap=12 align-items="center" padding="12px 16px" border-top-width=(i == 0 ? 0 : 0.5) border-top-style="solid" border-top-color="vana.raised"
+              view width=6 height=30 border-radius=3 background-color=zoneInk(b.zone)
+              column flex=1 min-width=0 gap=1
+                text b.name font="-exact-body" color="vana.white"
+                text b.detail font="-exact-footnote" color="vana.secondary"
+              text b.watts font="-exact-body" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
+      column gap=8
+        text "ON THE BIKE" font="-exact-footnote" font-weight=600 letter-spacing=0.6 color="vana.secondary" padding="0px 4px"
+        column border-radius=20 background-color="vana.card" overflow="hidden"
+          row gap=12 align-items="center" padding="12px 16px"
+            image "symbol:sf/waterbottle.fill" font="-exact-headline" color="vana.power" width=28
+            column flex=1 min-width=0 gap=1
+              text "750 ml bottle, 40 g carbs" font="-exact-body" color="vana.white"
+              text "Sip every 10 minutes from the start" font="-exact-footnote" color="vana.secondary"
+            text "0:00" font="-exact-body" color="vana.secondary" font-variant-numeric="tabular-nums"
+          row gap=12 align-items="center" padding="12px 16px" border-top-width=0.5 border-top-style="solid" border-top-color="vana.raised"
+            image "symbol:sf/bolt.heart.fill" font="-exact-headline" color="vana.power" width=28
+            column flex=1 min-width=0 gap=1
+              text "Gel, 25 g carbs" font="-exact-body" color="vana.white"
+              text "In the recovery between efforts" font="-exact-footnote" color="vana.secondary"
+            text "0:42" font="-exact-body" color="vana.secondary" font-variant-numeric="tabular-nums"
+      row gap=12 align-items="center" padding="14px 16px" border-radius=20 background-color="vana.card"
+        column flex=1 min-width=0 gap=2
+          text "Ready on the bike computer" font="-exact-subheadline" font-weight=600 color="vana.white"
+          text "Turn VANA on and press Start. Targets and fuel reminders come up on their own." font="-exact-footnote" color="vana.secondary"
+        SyncChip()
+
+component FuelDetail
+  props
+    still: bool
+  view
+    column gap=16 padding="4px 16px 40px"
+      column background-color="vana.card" border-radius=24 padding=18 gap=16
+        row align-items="baseline" gap=6
+          text "3,020" font-size=44 font-weight=700 letter-spacing=-1 color="vana.white" font-variant-numeric="tabular-nums"
+          text "kcal today" font="-exact-subheadline" color="vana.secondary"
+        // Where the day's energy comes from, as one bar.
+        row height=12 border-radius=6 overflow="hidden" gap=3
+          view flex=1900 background-color="vana.power" transform-origin="left center" animation=motion(still, "fill 700ms cubic-bezier(0.22, 1, 0.36, 1) 100ms both")
+          view flex=512 background-color="vana.heart" transform-origin="left center" animation=motion(still, "fill 700ms cubic-bezier(0.22, 1, 0.36, 1) 170ms both")
+          view flex=612 background-color="vana.speed" transform-origin="left center" animation=motion(still, "fill 700ms cubic-bezier(0.22, 1, 0.36, 1) 230ms both")
+        row gap=8
+          Stat(value="475 g", label="Carbs · 7.2 g/kg")
+          Stat(value="128 g", label="Protein · 1.9 g/kg")
+          Stat(value="68 g", label="Fat · 1.0 g/kg")
+      row gap=12 align-items="flex-start" padding=16 border-radius=20 background-color="vana.card"
+        image "symbol:sparkles" font="-exact-headline" color="vana.z7"
+        column flex=1 gap=4
+          text "Why so many carbs" font="-exact-headline" color="vana.white"
+          text "Threshold work burns mostly glycogen. Eat most of the carbs before 17:30 and keep fibre and fat low after 15:00, so nothing sits in your stomach on the bike." font="-exact-subheadline" color="vana.secondary"
+      column gap=8
+        text "THE DAY" font="-exact-footnote" font-weight=600 letter-spacing=0.6 color="vana.secondary" padding="0px 4px"
+        column border-radius=20 background-color="vana.card" padding="8px 0px"
+          for m, i in meals() key=m.id
+            row gap=12 padding="8px 16px" align-items="stretch" testId=`meal-${m.id}`
+              animation=motion(still, `rise 420ms cubic-bezier(0.22, 1, 0.36, 1) ${80 + i * 45}ms both`)
+              text m.time font="-exact-subheadline" font-weight=600 color=(m.kind == "done" ? "vana.secondary" : "vana.white") font-variant-numeric="tabular-nums" width=46 padding-top=8
+              column align-items="center" width=28
+                if m.kind == "done"
+                  column width=28 height=28 border-radius=14 align-items="center" justify-content="center" background-color="vana.greenWash"
+                    image "symbol:checkmark" font="-exact-caption1" color="vana.green"
+                else if m.kind == "ride"
+                  column width=28 height=28 border-radius=14 align-items="center" justify-content="center" background-color="vana.power"
+                    image "symbol:sf/bicycle" font="-exact-caption1" color="vana.ground"
+                else if m.kind == "next"
+                  column width=28 height=28 box-sizing="border-box" border-radius=14 align-items="center" justify-content="center" border-width=2 border-style="solid" border-color="vana.accent"
+                    view width=10 height=10 border-radius=5 background-color="vana.accent"
+                else
+                  column width=28 height=28 box-sizing="border-box" border-radius=14 align-items="center" justify-content="center" border-width=2 border-style="solid" border-color="vana.raised"
+                if i < 5
+                  view width=2 flex=1 min-height=12 margin-top=4 border-radius=1 background-color="vana.raised"
+              column flex=1 min-width=0 gap=3 padding-bottom=10 padding-top=4
+                text m.name font="-exact-body" font-weight=600 color=(m.kind == "done" ? "vana.secondary" : "vana.white")
+                text m.detail font="-exact-footnote" color="vana.secondary"
+                row gap=6 padding-top=4
+                  row padding="2px 8px" border-radius=999 background-color="vana.raised"
+                    text `${m.carbs} g carbs` font="-exact-caption1" font-weight=600 color="vana.power" font-variant-numeric="tabular-nums"
+                  if m.protein > 0
+                    row padding="2px 8px" border-radius=999 background-color="vana.raised"
+                      text `${m.protein} g protein` font="-exact-caption1" font-weight=600 color="vana.heart" font-variant-numeric="tabular-nums"

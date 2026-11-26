@@ -1,7 +1,11 @@
 use EmptyState from "exact:content"
+use Today, WorkoutDetail, FuelDetail from "./today.contract"
 
 routes nav
-  tab device "/"
+  tab today "/"
+    workout "/today/workout"
+    fuel "/today/fuel"
+  tab device "/device"
     pair "/pair"
   tab wifi "/wifi"
   tab workouts "/workouts"
@@ -79,6 +83,9 @@ shape Joined
 shape Fit
   path: string
 
+shape Media
+  prefersReducedMotion: bool
+
 fn isOpen(s: string): bool = s == "open"
 fn stateLabel(s: string): string = isOpen(s) ? "Connected" : s == "idle" ? "Not Connected" : s == "failed" ? "Failed" : "Connecting…"
 fn barInk(bars: number): string = bars >= 3 ? "-exact-label" : bars == 2 ? "-exact-secondary-label" : "vana.unlit"
@@ -106,11 +113,22 @@ component Companion
   state problem = ""
   state sharing = ""
   state pasted = ""
+  // The Today demo: the workout's trip to the bike computer, and a pull that replays the day.
+  state sendStatus = "idle"
+  state replays = 0
+  state replaying = false
+  resource media = exactViewport() as shape Media
+  derive still = media.prefersReducedMotion
   derive busy = pending(scanned) or pending(joined) or pending(forgot)
   derive joinOutcome = match joined { case some(j) => j.outcome, case none => "" }
   derive joinText = match joined { case some(j) => j.text, case none => "" }
   derive fitPath = match fit { case some(f) => f.path, case none => "" }
   derive wifiNote = match failure(scanned) { case some(f) => f.message, case none => match failure(joined) { case some(f) => f.message, case none => joinOutcome == "no_internet" and not pending(joined) ? joinText : "2.4 GHz networks only" } }
+
+  task landSend when sendStatus == "sending"
+    after(1100, sendLanded)
+  task endReplay when replaying
+    after(650, replayed)
 
   task scanOnAppear when (open and nav.tab == "wifi")
     after(1, scanNow)
@@ -119,6 +137,20 @@ component Companion
     nav = select(nav, name)
   action follow(url: string)
     nav = go(nav, url)
+  action sendWorkout
+    sendStatus = "sending"
+  action sendLanded
+    sendStatus = "sent"
+    haptic("success")
+  action replay
+    replaying = true
+  action replayed
+    replaying = false
+    replays = replays + 1
+  action openWorkout
+    nav = push(nav, "/today/workout")
+  action openFuel
+    nav = push(nav, "/today/fuel")
   action connectNow
     send connected = connect()
   action dropNow
@@ -130,7 +162,7 @@ component Companion
     pasted = ""
   action pairFrom(link: string)
     send linked = pair(link)
-    nav = go(nav, "/")
+    nav = go(nav, "/device")
   action afterLinked
     if not failed(linked)
       connectNow()
@@ -188,7 +220,23 @@ component Companion
             for e in t.stack key=e.id
               column navigationKey=`${e.id}` navigationScroll=`content-${e.id}` position="absolute" inset=0
                 display="flex" flex-direction="column"
-                if e.name == "device"
+                if e.name == "today"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Today" role="heading" aria-level=1 flex=1
+                  scroll id=`content-${e.id}` flex=1 min-height=0 refresh=replay refreshing=replaying testId="today-view"
+                    for k in [replays] key=k
+                      Today(still=still, status=sendStatus, openWorkout=openWorkout, openFuel=openFuel, send=sendWorkout)
+                else if e.name == "workout"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Threshold 2 × 20" role="heading" aria-level=2
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    WorkoutDetail(still=still, status=sendStatus, send=sendWorkout)
+                else if e.name == "fuel"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Fuel" role="heading" aria-level=2
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    FuelDetail(still=still)
+                else if e.name == "device"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "VANA" role="heading" aria-level=1 flex=1
                   list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
@@ -430,6 +478,10 @@ component Companion
                         footer
                           text match failure(rides) { case some(f) => f.message, case none => (rides.indexing and rides.rides.length > 0 ? "Still looking for older rides." : "") } testId="rides-error"
       row role="tablist" testId="tabs"
+        button role="tab" aria-controls="panel-today" aria-selected=(nav.tab == "today") press=pick("today")
+          testId="tab-today" flex=1
+          image "symbol:sf/sun.max.fill"
+          text "Today"
         button role="tab" aria-controls="panel-device" aria-selected=(nav.tab == "device") press=pick("device")
           testId="tab-device" flex=1
           image "symbol:sf/bicycle"

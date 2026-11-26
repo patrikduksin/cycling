@@ -1,4 +1,7 @@
-test "opens on the device tab, not paired"
+test "opens on Today; the device tab, not paired"
+  expect state nav.tab == "today"
+  expect tree has "charge"
+  tap "tab-device"
   expect state nav.tab == "device"
   expect text "pair-how" == "1. On the bike computer, swipe down and tap Phone."
   expect tree has "paste-link"
@@ -7,6 +10,7 @@ test "opens on the device tab, not paired"
   expect tree missing "battery"
 
 test "paired, not connected: Connect and Forget This Bike Computer"
+  tap "tab-device"
   answer source pairing with {"paired": true, "id": "c6060001"}
   answer source unpair with {"ok": true, "text": "Forgot the bike computer"}
   answer source link with {"state": "idle", "detail": "", "name": "", "psm": 0}
@@ -26,6 +30,7 @@ test "paired, not connected: Connect and Forget This Bike Computer"
   expect text "paired-id" == "Paired with bike computer c6060001."
 
 test "a pasted pairing link pairs and connects at once"
+  tap "tab-device"
   answer source pair with {"ok": true, "text": "Paired"}
   answer source connect with {"ok": true, "text": "Connected to VANA in 840 ms"}
   tap "paste-link"
@@ -63,6 +68,7 @@ test "connected: the bike computer and athlete rows"
   answer source link with {"state": "open", "detail": "VANA, PSM 129, 840 ms", "name": "VANA", "psm": 129}
   answer source bike with {"battery": "82%", "firmware": "0.4.1", "storage": "38 h of recording left", "ftp": "210 W", "lthr": "176 bpm"}
   clock data
+  tap "tab-device"
   expect text "state" == "Connected"
   expect text "name" == "VANA"
   expect tree has "disconnect"
@@ -215,3 +221,18 @@ test "Wi-Fi: forget asks first"
   tap "forget-confirm"
   clock data
   expect text "current-error" == ""
+
+test "Today sends the workout to VANA and opens its details"
+  expect text "charge-value" == "82"
+  tap "send-to-vana"
+  clock +1200
+  expect text "sent" == "On your VANA"
+  tap "open-workout"
+  clock settle
+  expect state nav.tab == "today"
+  expect text "sent" == "On your VANA"
+  back
+  clock settle
+  tap "open-fuel"
+  clock settle
+  expect tree has "meal-lunch"

@@ -16,3 +16,11 @@ theme
   vana.power = #ffd60a  scheme=fixed
   vana.heart = #ff375f  scheme=fixed
   vana.z7 = #bf5af2  scheme=fixed
+  vana.zone1 = #636366  scheme=fixed
+  vana.sleep = #9e9cff  scheme=fixed
+  vana.deep = #5e5ce6  scheme=fixed
+  vana.rem = #64d2ff  scheme=fixed
+  vana.awake = #ff9f0a  scheme=fixed
+  vana.greenWash = #30d15826  scheme=fixed
+  vana.accentWash = #0a84ff2e  scheme=fixed
+  vana.action = #0071e3  scheme=fixed

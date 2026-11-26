@@ -1,10 +1,11 @@
 use EmptyState from "exact:content"
-use Today, WorkoutDetail, FuelDetail from "./today.contract"
+use Today, WorkoutDetail, FuelDetail, WhyDetail from "./today.contract"
 
 routes nav
   tab today "/"
     workout "/today/workout"
     fuel "/today/fuel"
+    why "/today/why"
   tab device "/device"
     pair "/pair"
   tab wifi "/wifi"
@@ -117,8 +118,11 @@ component Companion
   state sendStatus = "idle"
   state replays = 0
   state replaying = false
+  state plan = "hard"
+  state done = ["breakfast"]
   resource media = exactViewport() as shape Media
   derive still = media.prefersReducedMotion
+  derive nextId = match first(["breakfast", "lunch", "snack", "ride", "recover", "dinner", "sleep"].filter(x => not done.includes(x))) { case some(x) => x, case none => "" }
   derive busy = pending(scanned) or pending(joined) or pending(forgot)
   derive joinOutcome = match joined { case some(j) => j.outcome, case none => "" }
   derive joinText = match joined { case some(j) => j.text, case none => "" }
@@ -149,6 +153,20 @@ component Companion
     replays = replays + 1
   action openWorkout
     nav = push(nav, "/today/workout")
+  action openWhy
+    nav = push(nav, "/today/why")
+  action toggle(id: string)
+    let next = done.includes(id) ? done.filter(x => x != id) : done.concat([id])
+    done = next
+    if next.length == 7
+      haptic("success")
+  action swapEasy
+    plan = "easy"
+    sendStatus = "idle"
+    haptic("success")
+  action swapBack
+    plan = "hard"
+    sendStatus = "idle"
   action openFuel
     nav = push(nav, "/today/fuel")
   action connectNow
@@ -225,17 +243,22 @@ component Companion
                     text "Today" role="heading" aria-level=1 flex=1
                   scroll id=`content-${e.id}` flex=1 min-height=0 refresh=replay refreshing=replaying testId="today-view"
                     for k in [replays] key=k
-                      Today(still=still, status=sendStatus, openWorkout=openWorkout, openFuel=openFuel, send=sendWorkout)
+                      Today(still=still, status=sendStatus, plan=plan, done=done, nextId=nextId, openWorkout=openWorkout, openFuel=openFuel, openWhy=openWhy, send=sendWorkout, toggle=toggle, swapEasy=swapEasy, swapBack=swapBack)
                 else if e.name == "workout"
                   header display="flex" align-items="center" padding="8px 16px"
-                    text "Threshold 2 × 20" role="heading" aria-level=2
+                    text (plan == "easy" ? "Endurance, 1 h" : "Threshold 2 × 20") role="heading" aria-level=2
                   scroll id=`content-${e.id}` flex=1 min-height=0
-                    WorkoutDetail(still=still, status=sendStatus, send=sendWorkout)
+                    WorkoutDetail(still=still, status=sendStatus, plan=plan, send=sendWorkout)
                 else if e.name == "fuel"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "Fuel" role="heading" aria-level=2
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     FuelDetail(still=still)
+                else if e.name == "why"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Why this call" role="heading" aria-level=2
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    WhyDetail(still=still)
                 else if e.name == "device"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "VANA" role="heading" aria-level=1 flex=1

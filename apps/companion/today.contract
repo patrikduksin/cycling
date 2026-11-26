@@ -30,6 +30,14 @@ shape Block
   watts: string
   zone: number
 
+shape Item
+  id: string
+  time: string
+  title: string
+  detail: string
+  symbol: string
+  ink: string
+
 shape Macro
   id: string
   name: string
@@ -43,7 +51,7 @@ shape Macro
 fn chargeLine(): string = "M0.0 41.0 C2.2 40.8 9.0 40.0 13.5 40.0 C18.0 40.0 22.5 40.3 27.0 41.0 C31.5 41.7 36.9 41.8 40.5 44.0 C44.1 46.2 45.7 50.3 48.6 54.0 C51.5 57.7 54.4 61.3 58.0 66.0 C61.6 70.7 66.4 79.2 70.2 82.0 C74.0 84.8 77.0 83.0 81.0 83.0 C85.0 83.0 89.9 81.8 94.4 82.0 C98.9 82.2 103.4 83.5 107.9 84.0 C112.4 84.5 116.9 84.8 121.4 85.0 C125.9 85.2 130.4 84.7 134.9 85.0 C139.4 85.3 143.9 86.5 148.4 87.0 C152.9 87.5 157.4 87.7 161.9 88.0 C166.4 88.3 170.9 88.7 175.4 89.0 C179.9 89.3 184.4 89.7 188.9 90.0 C193.4 90.3 197.9 90.7 202.4 91.0 C206.9 91.3 212.5 92.2 215.9 92.0 C219.3 91.8 219.2 92.2 222.6 90.0 C226.0 87.8 231.6 82.8 236.1 79.0 C240.6 75.2 245.1 70.8 249.6 67.0 C254.1 63.2 258.6 59.3 263.1 56.0 C267.6 52.7 272.1 49.7 276.6 47.0 C281.1 44.3 285.6 42.0 290.1 40.0 C294.6 38.0 299.1 36.5 303.6 35.0 C308.1 33.5 313.3 31.8 317.1 31.0 C320.9 30.2 322.7 30.2 326.5 30.0 C330.3 29.8 337.8 30.0 340.0 30.0"
 fn chargeArea(): string = `${chargeLine()} L340.0 116 L0.0 116 Z`
 
-fn steps(): Step[] = [Step(at=0, min=4, pct=50, zone=1), Step(at=4, min=4, pct=62, zone=2), Step(at=8, min=4, pct=72, zone=2), Step(at=12, min=1, pct=110, zone=5), Step(at=13, min=1, pct=50, zone=1), Step(at=14, min=1, pct=110, zone=5), Step(at=15, min=1, pct=50, zone=1), Step(at=16, min=1, pct=110, zone=5), Step(at=17, min=3, pct=55, zone=1), Step(at=20, min=20, pct=97, zone=4), Step(at=40, min=5, pct=55, zone=1), Step(at=45, min=20, pct=97, zone=4), Step(at=65, min=10, pct=50, zone=1)]
+fn steps(plan: string): Step[] = plan == "easy" ? [Step(at=0, min=4, pct=50, zone=1), Step(at=4, min=4, pct=58, zone=2), Step(at=8, min=44, pct=67, zone=2), Step(at=52, min=8, pct=50, zone=1)] : [Step(at=0, min=4, pct=50, zone=1), Step(at=4, min=4, pct=62, zone=2), Step(at=8, min=4, pct=72, zone=2), Step(at=12, min=1, pct=110, zone=5), Step(at=13, min=1, pct=50, zone=1), Step(at=14, min=1, pct=110, zone=5), Step(at=15, min=1, pct=50, zone=1), Step(at=16, min=1, pct=110, zone=5), Step(at=17, min=3, pct=55, zone=1), Step(at=20, min=20, pct=97, zone=4), Step(at=40, min=5, pct=55, zone=1), Step(at=45, min=20, pct=97, zone=4), Step(at=65, min=10, pct=50, zone=1)]
 
 fn sleep(): Stage[] = [Stage(at=0, min=14, level=2), Stage(at=14, min=38, level=1), Stage(at=52, min=46, level=0), Stage(at=98, min=22, level=1), Stage(at=120, min=18, level=2), Stage(at=138, min=4, level=3), Stage(at=142, min=40, level=1), Stage(at=182, min=34, level=0), Stage(at=216, min=30, level=2), Stage(at=246, min=44, level=1), Stage(at=290, min=18, level=0), Stage(at=308, min=36, level=2), Stage(at=344, min=6, level=3), Stage(at=350, min=58, level=1), Stage(at=408, min=40, level=2), Stage(at=448, min=14, level=1)]
 
@@ -52,9 +60,11 @@ fn restWeek(): number[] = [50, 49, 51, 49, 48, 49, 47]
 
 fn meals(): Meal[] = [Meal(id="breakfast", time="07:30", name="Breakfast", detail="Oats, banana, honey, Greek yoghurt", carbs=95, protein=25, kind="done"), Meal(id="lunch", time="12:30", name="Lunch", detail="Rice, chicken, roast vegetables", carbs=100, protein=40, kind="next"), Meal(id="pre", time="15:00", name="Before the ride", detail="Bagel with jam. Low fibre, low fat", carbs=70, protein=10, kind="later"), Meal(id="ride", time="17:30", name="On the bike", detail="One 750 ml bottle and one gel", carbs=65, protein=0, kind="ride"), Meal(id="recovery", time="18:50", name="Recovery", detail="500 ml chocolate milk, within 30 min", carbs=50, protein=18, kind="later"), Meal(id="dinner", time="20:30", name="Dinner", detail="Pasta, salmon, greens", carbs=95, protein=35, kind="later")]
 
+fn dayItems(plan: string): Item[] = [Item(id="breakfast", time="07:30", title="Breakfast", detail="Oats, banana, honey, yoghurt", symbol="symbol:sf/sun.horizon.fill", ink="vana.power"), Item(id="lunch", time="12:30", title=(plan == "easy" ? "Lunch, a normal plate" : "Lunch, carbs first"), detail=(plan == "easy" ? "Rice, chicken, vegetables. 70 g carbs" : "Rice, chicken, vegetables. 100 g carbs"), symbol="symbol:sf/fork.knife", ink="vana.power"), Item(id="snack", time="15:00", title=(plan == "easy" ? "A piece of fruit" : "Bagel with jam"), detail=(plan == "easy" ? "Enough for an easy hour" : "Last fibre and fat until after the ride"), symbol="symbol:sf/carrot.fill", ink="vana.power"), Item(id="ride", time="17:30", title=(plan == "easy" ? "Endurance, 1 h" : "Threshold 2 × 20"), detail=(plan == "easy" ? "140 W, conversational. One bottle" : "Bottle from the start, gel at 0:42"), symbol="symbol:sf/bicycle", ink=(plan == "easy" ? "vana.accent" : "vana.green")), Item(id="recover", time="18:50", title=(plan == "easy" ? "Glass of milk" : "Chocolate milk"), detail=(plan == "easy" ? "Protein with dinner is enough today" : "500 ml within 30 minutes"), symbol="symbol:sf/drop.fill", ink="vana.heart"), Item(id="dinner", time="20:30", title="Pasta and salmon", detail=(plan == "easy" ? "Smaller pasta, more greens" : "Refill for tomorrow"), symbol="symbol:sf/fork.knife", ink="vana.power"), Item(id="sleep", time="22:30", title="Lights out", detail="Aim for 8 h. Tomorrow is a rest day", symbol="symbol:sf/moon.stars.fill", ink="vana.sleep")]
+
 fn macros(): Macro[] = [Macro(id="carbs", name="Carbs", eaten=95, target=475, unit="g", ink="vana.power"), Macro(id="protein", name="Protein", eaten=25, target=128, unit="g", ink="vana.heart"), Macro(id="fat", name="Fat", eaten=14, target=68, unit="g", ink="vana.speed")]
 
-fn blocks(): Block[] = [Block(id="warm", name="Warm-up", detail="12 min, building", watts="105–150 W", zone=2), Block(id="openers", name="Openers", detail="3 × 1 min, 1 min easy", watts="231 W", zone=5), Block(id="settle", name="Settle", detail="3 min easy", watts="116 W", zone=1), Block(id="t1", name="Threshold", detail="20 min, cadence 85–95", watts="204 W", zone=4), Block(id="float", name="Recover", detail="5 min, take the gel", watts="116 W", zone=1), Block(id="t2", name="Threshold", detail="20 min, hold the same power", watts="204 W", zone=4), Block(id="cool", name="Cool-down", detail="10 min", watts="105 W", zone=1)]
+fn blocks(plan: string): Block[] = plan == "easy" ? [Block(id="warm", name="Warm-up", detail="8 min, building", watts="105–120 W", zone=1), Block(id="ride", name="Endurance", detail="44 min, chatting pace", watts="140 W", zone=2), Block(id="cool", name="Cool-down", detail="8 min", watts="105 W", zone=1)] : [Block(id="warm", name="Warm-up", detail="12 min, building", watts="105–150 W", zone=2), Block(id="openers", name="Openers", detail="3 × 1 min, 1 min easy", watts="231 W", zone=5), Block(id="settle", name="Settle", detail="3 min easy", watts="116 W", zone=1), Block(id="t1", name="Threshold", detail="20 min, cadence 85–95", watts="204 W", zone=4), Block(id="float", name="Recover", detail="5 min, take the gel", watts="116 W", zone=1), Block(id="t2", name="Threshold", detail="20 min, hold the same power", watts="204 W", zone=4), Block(id="cool", name="Cool-down", detail="10 min", watts="105 W", zone=1)]
 
 fn zoneInk(z: number): string = z == 1 ? "vana.zone1" : z == 2 ? "vana.accent" : z == 3 ? "vana.green" : z == 4 ? "vana.power" : z == 5 ? "vana.amber" : z == 6 ? "vana.red" : "vana.z7"
 fn sleepInk(level: number): string = level == 0 ? "vana.deep" : level == 1 ? "vana.sleep" : level == 2 ? "vana.rem" : "vana.awake"
@@ -84,23 +94,24 @@ component WorkoutGraph
     still: bool
     tall: bool
     delay: number
+    plan: string
   view
     column position="relative" gap=6
-      svg width="100%" height=(tall ? 168 : 112) viewBox="0 0 750 130" preserveAspectRatio="none" aria-label="Workout power profile: warm-up, three openers, two 20-minute threshold efforts, cool-down"
-        line x1=0 y1=30 x2=750 y2=30 stroke="vana.unlit" stroke-width=1.5 stroke-dasharray="6 6" vector-effect="non-scaling-stroke"
-        for s in steps() key=s.at
+      svg width="100%" height=(tall ? 168 : 104) viewBox=(plan == "easy" ? "0 0 600 130" : "0 0 750 130") preserveAspectRatio="none" aria-label=(plan == "easy" ? "Workout power profile: one hour steady in zone 2" : "Workout power profile: warm-up, three openers, two 20-minute threshold efforts, cool-down")
+        line x1=0 y1=30 x2=(plan == "easy" ? 600 : 750) y2=30 stroke="vana.unlit" stroke-width=1.5 stroke-dasharray="6 6" vector-effect="non-scaling-stroke"
+        for s in steps(plan) key=s.at
           rect x=(s.at * 10 + 1) y=(130 - s.pct) width=(s.min * 10 - 2) height=s.pct rx=3 fill=zoneInk(s.zone)
             transform-box="fill-box" transform-origin="center bottom"
             animation=motion(still, `grow 520ms cubic-bezier(0.22, 1, 0.36, 1) ${delay + s.at * 7}ms both`)
-      row position="absolute" top=(tall ? 14 : 4) left=0 right=0 height=0
+      row position="absolute" top=14 left=0 right=0 height=0 display=(tall ? "flex" : "none")
         text "FTP" font="-exact-caption2" font-weight=600 color="vana.secondary" position="absolute" right=0 top=-14
       row position="relative" height=22
-        for f in [0, 42] key=f
+        for f in (plan == "easy" ? [0] : [0, 42]) key=f
           row position="absolute" left=`${f * 100 / 75}%` gap=4 align-items="center" padding="2px 7px" border-radius=999 background-color="vana.raised"
             animation=motion(still, `pop 420ms cubic-bezier(0.22, 1, 0.36, 1) ${delay + 520 + f * 7}ms both`)
             image (f == 0 ? "symbol:sf/waterbottle.fill" : "symbol:sf/bolt.heart.fill") font="-exact-caption2" color="vana.power"
             text (f == 0 ? "40 g" : "25 g") font="-exact-caption2" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
-        text "1:15" font="-exact-caption2" color="vana.secondary" position="absolute" right=0 top=3 font-variant-numeric="tabular-nums"
+        text (plan == "easy" ? "1:00" : "1:15") font="-exact-caption2" color="vana.secondary" position="absolute" right=0 top=3 font-variant-numeric="tabular-nums"
 
 // Sending the workout to the bike computer: one capsule whose face changes in place.
 component SendButton
@@ -145,21 +156,117 @@ component Eyebrow
       image symbol font="-exact-footnote" color=ink
       text label font="-exact-footnote" font-weight=600 color=ink letter-spacing=0.6
 
+// The morning screen: the call first, then the day's actions; the reasons
+// are one tap away, never in the way.
 component Today
   props
     still: bool
     status: string
+    plan: string
+    done: string[]
+    nextId: string
     openWorkout: action
     openFuel: action
+    openWhy: action
     send: action
+    toggle: action
+    swapEasy: action
+    swapBack: action
   view
-    column gap=12 padding="4px 16px 40px"
+    column gap=14 padding="4px 16px 40px"
       row align-items="center" gap=8 padding="0px 4px"
         text "THURSDAY, 26 NOVEMBER" font="-exact-footnote" font-weight=600 letter-spacing=0.6 color="vana.secondary" flex=1
         row gap=5 align-items="center" padding="5px 10px" border-radius=999 backgroundMaterial="glass" aria-label="VANA connected, battery 84 percent"
           image "symbol:sf/bicycle" font="-exact-caption1" color="vana.green"
           text "84%" font="-exact-caption1" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
 
+      // The call: what to do today, and the one action that does it.
+      column border-radius=28 padding="20px 18px 18px" gap=16 background-color="vana.card" testId="call"
+        background-image=(plan == "easy" ? "radial-gradient(130% 80% at 0% 0%, rgba(10,132,255,0.28) 0%, rgba(10,132,255,0) 70%)" : "radial-gradient(130% 80% at 0% 0%, rgba(48,209,88,0.26) 0%, rgba(48,209,88,0) 70%)")
+        for k in [plan] key=k
+          column gap=16
+            column gap=6 animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) both")
+              text "TODAY'S CALL" font="-exact-footnote" font-weight=700 letter-spacing=0.8 color=(plan == "easy" ? "vana.speed" : "vana.green")
+              text (plan == "easy" ? "Take it easy tonight." : "Go hard tonight.") font-size=36 font-weight=800 letter-spacing=-1 line-height=1.15 color="vana.white" testId="call-title"
+              text (plan == "easy" ? "One hour of endurance at 17:30. Keep it at 140 W, chatting pace." : "Threshold 2 × 20 at 17:30. Hold 204 W on both efforts.") font="-exact-body" color="vana.white" opacity=0.85
+            button press=openWorkout appearance="none" testId="open-workout" aria-label="Workout details"
+              :active
+                -exact-press-scale = 0.98
+              column gap=8 width="100%" align-items="stretch" text-align="start"
+                WorkoutGraph(still=still, tall=false, delay=200, plan=plan)
+                row gap=6 align-items="center"
+                  text (plan == "easy" ? "1 h 00 · 45 TSS · zone 2" : "1 h 15 · 92 TSS · threshold") font="-exact-footnote" color="vana.secondary" flex=1 font-variant-numeric="tabular-nums"
+                  text "Details" font="-exact-footnote" font-weight=600 color="vana.secondary"
+                  image "symbol:forward-chevron" font="-exact-caption2" color="vana.secondary"
+        SendButton(status=status, send=send)
+        // The reasons, folded into one line.
+        button press=openWhy appearance="none" testId="open-why" aria-label="Why this call"
+          :active
+            -exact-press-scale = 0.98
+          row gap=10 align-items="center" padding="12px 14px" border-radius=16 background-color="vana.raisedWash" width="100%" box-sizing="border-box"
+            image "symbol:sf/checkmark.seal.fill" font="-exact-body" color="vana.green"
+            column flex=1 min-width=0 gap=1 align-items="flex-start" text-align="start"
+              text "Why this call" font="-exact-subheadline" font-weight=600 color="vana.white"
+              text (plan == "easy" ? "Your choice · threshold moves to Saturday" : "Recovered · HRV ↑ 6 ms · slept 7 h 42") font="-exact-footnote" color="vana.secondary"
+            image "symbol:forward-chevron" font="-exact-footnote" color="vana.secondary"
+        if plan == "easy"
+          button press=swapBack appearance="none" testId="swap-back"
+            text "Back to threshold" font="-exact-subheadline" font-weight=600 color="vana.accent" text-align="center" width="100%"
+        else
+          button commandfor="swap" command="show-modal" appearance="none" testId="swap"
+            text "Not feeling it? Swap for an easy hour" font="-exact-subheadline" color="vana.secondary" text-align="center" width="100%"
+
+      // The day as things to do, in order; the next one stands out.
+      column gap=8 padding-top=6
+        row align-items="baseline" padding="0px 4px"
+          text "YOUR DAY" font="-exact-footnote" font-weight=700 letter-spacing=0.8 color="vana.secondary" flex=1
+          text `${done.length} of 7 done` font="-exact-footnote" color="vana.secondary" font-variant-numeric="tabular-nums" testId="done-count"
+        column border-radius=24 background-color="vana.card" padding="6px 0px" testId="day"
+          for it, i in dayItems(plan) key=it.id
+            button press=toggle(it.id) appearance="none" -exact-press-haptic="selection" testId=`item-${it.id}` aria-label=`${it.time} ${it.title}, ${done.includes(it.id) ? "done" : "to do"}`
+              :active
+                -exact-press-scale = 0.98
+              row gap=12 align-items="center" padding="10px 10px" margin="0px 6px" border-radius=16 width="calc(100% - 12px)" box-sizing="border-box" text-align="start"
+                background-color=(it.id == nextId ? "vana.accentWash" : "transparent") transition="background-color 300ms ease-out"
+                column width=30 height=30 box-sizing="border-box" border-radius=15 align-items="center" justify-content="center" flex-shrink=0
+                  background-color=(done.includes(it.id) ? "vana.green" : "transparent") border-width=(done.includes(it.id) ? 0 : 2) border-style="solid" border-color=(it.id == nextId ? "vana.accent" : "vana.unlit")
+                  transition="background-color 200ms ease-out"
+                  if done.includes(it.id)
+                    image "symbol:checkmark" font="-exact-caption1" font-weight=700 color="vana.ground" animation=motion(still, "pop 360ms cubic-bezier(0.22, 1, 0.36, 1) both")
+                column flex=1 min-width=0 gap=1 opacity=(done.includes(it.id) ? 0.75 : 1) transition="opacity 200ms ease-out"
+                  row gap=6 align-items="center"
+                    image it.symbol font="-exact-footnote" color=it.ink
+                    text it.title font="-exact-body" font-weight=600 color="vana.white"
+                  text it.detail font="-exact-footnote" color="vana.secondary"
+                text it.time font="-exact-subheadline" font-weight=(it.id == nextId ? 700 : 500) color=(it.id == nextId ? "vana.white" : "vana.secondary") font-variant-numeric="tabular-nums"
+        button press=openFuel appearance="none" testId="open-fuel"
+          :active
+            -exact-press-scale = 0.98
+          row gap=10 align-items="center" padding="14px 16px" border-radius=20 background-color="vana.card" width="100%" box-sizing="border-box"
+            image "symbol:sf/fork.knife" font="-exact-body" color="vana.power"
+            column flex=1 min-width=0 gap=1 align-items="flex-start" text-align="start"
+              text "Fuel plan" font="-exact-subheadline" font-weight=600 color="vana.white"
+              text (plan == "easy" ? "330 g carbs · 2,450 kcal" : "475 g carbs · 3,020 kcal") font="-exact-footnote" color="vana.secondary" font-variant-numeric="tabular-nums"
+            image "symbol:forward-chevron" font="-exact-footnote" color="vana.secondary"
+
+      dialog id="swap" role="alertdialog" aria-label="Swap for an easy hour?"
+        text "Tonight becomes one hour at 140 W, and the day's food follows. Threshold moves to Saturday."
+        button press=swapEasy commandfor="swap" command="close" testId="swap-confirm"
+          text "Swap"
+        button commandfor="swap" command="close" testId="swap-cancel"
+          text "Keep threshold"
+
+// The reasons behind the call: the night against yesterday's ride, and three signals.
+component WhyDetail
+  props
+    still: bool
+  view
+    column gap=12 padding="4px 16px 40px"
+      row gap=12 align-items="flex-start" padding=16 border-radius=20 background-color="vana.card"
+        image "symbol:sf/checkmark.seal.fill" font="-exact-title-3" color="vana.green"
+        column flex=1 gap=4
+          text "You're recovered" font="-exact-headline" color="vana.white"
+          text "Last night gave back everything yesterday's ride took, and your heart is calmer than this week's average. Form is −9: tired enough to adapt, fresh enough to hold threshold." font="-exact-subheadline" color="vana.secondary"
       // Body charge: the night undid what yesterday's ride took.
       column background-color="vana.card" border-radius=24 padding="18px 18px 16px" gap=14 testId="charge"
         row align-items="flex-start" gap=12
@@ -172,7 +279,6 @@ component Today
           row gap=4 align-items="center" padding="5px 10px" border-radius=999 background-color="vana.greenWash"
             image "symbol:sf/arrow.up.right" font="-exact-caption1" color="vana.green"
             text "Recovered" font="-exact-caption1" font-weight=600 color="vana.green"
-        text "Last night gave back everything yesterday's ride took. Your body is ready for threshold work." font="-exact-callout" color="vana.white"
         column gap=6
           svg width="100%" aspect-ratio="352 / 120" viewBox="-6 0 352 120" aria-label="Body charge since 07:00 yesterday: 71, down to 29 after the ride, 20 at bedtime, 82 now"
             defs
@@ -243,83 +349,34 @@ component Today
               rect x=s.at y=((3 - s.level) * 7) width=s.min height=6 rx=1.5 fill=sleepInk(s.level)
           text "1 h 48 deep" font="-exact-caption2" color="vana.secondary"
 
-      // Tonight's session, with the fuel it needs drawn on it.
-      column background-color="vana.card" border-radius=24 padding=18 gap=14 testId="workout"
-        button press=openWorkout appearance="none" testId="open-workout"
-          :active
-            -exact-press-scale = 0.98
-          column gap=12 width="100%" align-items="stretch" text-align="start"
-            row align-items="center" gap=8
-              Eyebrow(symbol="symbol:sf/bolt.fill", ink="vana.power", label="TONIGHT · 17:30")
-              view flex=1
-              image "symbol:forward-chevron" font="-exact-footnote" color="vana.secondary"
-            column gap=4
-              text "Threshold 2 × 20" font="-exact-title-2" font-weight=700 color="vana.white"
-              text "Two long efforts just under FTP. Hold 204 W and keep the cadence steady." font="-exact-subheadline" color="vana.secondary"
-            WorkoutGraph(still=still, tall=false, delay=250)
-            row gap=8
-              Stat(value="1:15", label="Duration")
-              Stat(value="92", label="TSS")
-              Stat(value="0.86", label="IF")
-              Stat(value="754", label="kJ")
-        SendButton(status=status, send=send)
-
-      // The day's fuel, led by carbohydrate for tonight's work.
-      button press=openFuel appearance="none" testId="open-fuel"
-        :active
-          -exact-press-scale = 0.98
-        column background-color="vana.card" border-radius=24 padding=18 gap=14 width="100%" box-sizing="border-box" align-items="stretch" text-align="start" testId="fuel"
-          row align-items="center" gap=8
-            Eyebrow(symbol="symbol:sf/fork.knife", ink="vana.power", label="FUEL")
-            view flex=1
-            text "3,020 kcal" font="-exact-footnote" font-weight=600 color="vana.secondary" font-variant-numeric="tabular-nums"
-            image "symbol:forward-chevron" font="-exact-footnote" color="vana.secondary"
-          column gap=4
-            text "High-carb day" font="-exact-title-2" font-weight=700 color="vana.white"
-            text "7.2 g of carbs per kilo, front-loaded so tonight runs on a full tank." font="-exact-subheadline" color="vana.secondary"
-          column gap=12
-            for m, i in macros() key=m.id
-              column gap=6
-                row align-items="baseline"
-                  text m.name font="-exact-subheadline" font-weight=600 color="vana.white" flex=1
-                  text `${m.eaten}` font="-exact-subheadline" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
-                  text `/ ${m.target} ${m.unit}` margin-left=4 font="-exact-subheadline" color="vana.secondary" font-variant-numeric="tabular-nums"
-                view height=8 border-radius=4 background-color="vana.raised" overflow="hidden"
-                  view height=8 width=share(m.eaten, m.target) border-radius=4 background-color=m.ink transform-origin="left center"
-                    animation=motion(still, `fill 700ms cubic-bezier(0.22, 1, 0.36, 1) ${380 + i * 70}ms both`)
-          row gap=12 align-items="center" padding="12px 14px" border-radius=16 background-color="vana.raised"
-            column align-items="center" justify-content="center" width=36 height=36 border-radius=18 background-color="vana.accentWash"
-              image "symbol:sf/clock.fill" font="-exact-subheadline" color="vana.accent"
-            column flex=1 min-width=0 gap=1
-              text "Next · Lunch at 12:30" font="-exact-subheadline" font-weight=600 color="vana.white"
-              text "100 g carbs · 40 g protein" font="-exact-footnote" color="vana.secondary"
 
 component WorkoutDetail
   props
     still: bool
     status: string
+    plan: string
     send: action
   view
     column gap=16 padding="4px 16px 40px"
       column gap=4 padding="0px 4px"
         Eyebrow(symbol="symbol:sf/bolt.fill", ink="vana.power", label="TONIGHT · 17:30 · INDOOR OR FLAT ROAD")
-        text "Two long efforts just under FTP. Hold 204 W and keep the cadence steady." font="-exact-body" color="vana.secondary"
+        text (plan == "easy" ? "One steady hour. If you can't hold a conversation, ease off." : "Two long efforts just under FTP. Hold 204 W and keep the cadence steady.") font="-exact-body" color="vana.secondary"
       column background-color="vana.card" border-radius=24 padding=18 gap=16
-        WorkoutGraph(still=still, tall=true, delay=120)
+        WorkoutGraph(still=still, tall=true, delay=120, plan=plan)
         row gap=8
-          Stat(value="1:15:00", label="Duration")
-          Stat(value="92", label="TSS")
-          Stat(value="0.86", label="IF")
-          Stat(value="754", label="kJ")
+          Stat(value=(plan == "easy" ? "1:00:00" : "1:15:00"), label="Duration")
+          Stat(value=(plan == "easy" ? "45" : "92"), label="TSS")
+          Stat(value=(plan == "easy" ? "0.66" : "0.86"), label="IF")
+          Stat(value=(plan == "easy" ? "480" : "754"), label="kJ")
       row gap=12 align-items="flex-start" padding=16 border-radius=20 background-color="vana.card"
         image "symbol:sparkles" font="-exact-headline" color="vana.z7"
         column flex=1 gap=4
           text "Why today" font="-exact-headline" color="vana.white"
-          text "HRV is 6 ms above your week and you slept 7 h 42. Form is −9: fresh enough to hold threshold. If the first 20 feels harder than 7 out of 10, stop the second at 15." font="-exact-subheadline" color="vana.secondary"
+          text (plan == "easy" ? "You chose an easier day. An hour in zone 2 keeps the legs moving without adding fatigue; threshold moves to Saturday." : "HRV is 6 ms above your week and you slept 7 h 42. Form is −9: fresh enough to hold threshold. If the first 20 feels harder than 7 out of 10, stop the second at 15.") font="-exact-subheadline" color="vana.secondary"
       column gap=8
         text "INTERVALS" font="-exact-footnote" font-weight=600 letter-spacing=0.6 color="vana.secondary" padding="0px 4px"
         column border-radius=20 background-color="vana.card" overflow="hidden"
-          for b, i in blocks() key=b.id
+          for b, i in blocks(plan) key=b.id
             row gap=12 align-items="center" padding="12px 16px" border-top-width=(i == 0 ? 0 : 0.5) border-top-style="solid" border-top-color="vana.raised"
               view width=6 height=30 border-radius=3 background-color=zoneInk(b.zone)
               column flex=1 min-width=0 gap=1

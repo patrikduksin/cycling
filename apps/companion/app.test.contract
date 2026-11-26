@@ -1,6 +1,6 @@
 test "opens on Today; the device tab, not paired"
   expect state nav.tab == "today"
-  expect tree has "charge"
+  expect text "call-title" == "Go hard tonight."
   tap "tab-device"
   expect state nav.tab == "device"
   expect text "pair-how" == "1. On the bike computer, swipe down and tap Phone."
@@ -222,17 +222,27 @@ test "Wi-Fi: forget asks first"
   clock data
   expect text "current-error" == ""
 
-test "Today sends the workout to VANA and opens its details"
-  expect text "charge-value" == "82"
+test "Today makes the call: send it, see why, tick the day, or swap"
+  expect text "call-title" == "Go hard tonight."
   tap "send-to-vana"
   clock +1200
   expect text "sent" == "On your VANA"
-  tap "open-workout"
+  tap "open-why"
   clock settle
-  expect state nav.tab == "today"
-  expect text "sent" == "On your VANA"
+  expect text "charge-value" == "82"
   back
   clock settle
+  expect text "done-count" == "1 of 7 done"
+  tap "item-lunch"
+  expect text "done-count" == "2 of 7 done"
+  tap "swap"
+  clock settle
+  tap "swap-confirm"
+  clock settle
+  expect text "call-title" == "Take it easy tonight."
+  tap "swap-back"
+  clock settle
+  expect text "call-title" == "Go hard tonight."
   tap "open-fuel"
   clock settle
   expect tree has "meal-lunch"

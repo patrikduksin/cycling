@@ -22,5 +22,6 @@ theme
   vana.rem = #64d2ff  scheme=fixed
   vana.awake = #ff9f0a  scheme=fixed
   vana.greenWash = #30d15826  scheme=fixed
-  vana.accentWash = #0a84ff2e  scheme=fixed
+  vana.accentWash = #0a84ff24  scheme=fixed
   vana.action = #0071e3  scheme=fixed
+  vana.raisedWash = #ffffff12  scheme=fixed

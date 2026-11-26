@@ -115,22 +115,20 @@ component Companion
   state sharing = ""
   state pasted = ""
   // The Today demo: the workout's trip to the bike computer, and a pull that replays the day.
-  state sendStatus = "idle"
+  state sendStatus = "synced"
   state replays = 0
   state replaying = false
   state plan = "hard"
-  state done = ["breakfast"]
   resource media = exactViewport() as shape Media
   derive still = media.prefersReducedMotion
-  derive nextId = match first(["breakfast", "lunch", "snack", "ride", "recover", "dinner", "sleep"].filter(x => not done.includes(x))) { case some(x) => x, case none => "" }
   derive busy = pending(scanned) or pending(joined) or pending(forgot)
   derive joinOutcome = match joined { case some(j) => j.outcome, case none => "" }
   derive joinText = match joined { case some(j) => j.text, case none => "" }
   derive fitPath = match fit { case some(f) => f.path, case none => "" }
   derive wifiNote = match failure(scanned) { case some(f) => f.message, case none => match failure(joined) { case some(f) => f.message, case none => joinOutcome == "no_internet" and not pending(joined) ? joinText : "2.4 GHz networks only" } }
 
-  task landSend when sendStatus == "sending"
-    after(1100, sendLanded)
+  task landSync when sendStatus == "syncing"
+    after(1400, syncLanded)
   task endReplay when replaying
     after(650, replayed)
 
@@ -141,11 +139,8 @@ component Companion
     nav = select(nav, name)
   action follow(url: string)
     nav = go(nav, url)
-  action sendWorkout
-    sendStatus = "sending"
-  action sendLanded
-    sendStatus = "sent"
-    haptic("success")
+  action syncLanded
+    sendStatus = "synced"
   action replay
     replaying = true
   action replayed
@@ -155,18 +150,12 @@ component Companion
     nav = push(nav, "/today/workout")
   action openWhy
     nav = push(nav, "/today/why")
-  action toggle(id: string)
-    let next = done.includes(id) ? done.filter(x => x != id) : done.concat([id])
-    done = next
-    if next.length == 7
-      haptic("success")
   action swapEasy
     plan = "easy"
-    sendStatus = "idle"
-    haptic("success")
+    sendStatus = "syncing"
   action swapBack
     plan = "hard"
-    sendStatus = "idle"
+    sendStatus = "syncing"
   action openFuel
     nav = push(nav, "/today/fuel")
   action connectNow
@@ -243,12 +232,12 @@ component Companion
                     text "Today" role="heading" aria-level=1 flex=1
                   scroll id=`content-${e.id}` flex=1 min-height=0 refresh=replay refreshing=replaying testId="today-view"
                     for k in [replays] key=k
-                      Today(still=still, status=sendStatus, plan=plan, done=done, nextId=nextId, openWorkout=openWorkout, openFuel=openFuel, openWhy=openWhy, send=sendWorkout, toggle=toggle, swapEasy=swapEasy, swapBack=swapBack)
+                      Today(still=still, status=sendStatus, plan=plan, openWorkout=openWorkout, openFuel=openFuel, openWhy=openWhy, swapEasy=swapEasy, swapBack=swapBack)
                 else if e.name == "workout"
                   header display="flex" align-items="center" padding="8px 16px"
                     text (plan == "easy" ? "Endurance, 1 h" : "Threshold 2 × 20") role="heading" aria-level=2
                   scroll id=`content-${e.id}` flex=1 min-height=0
-                    WorkoutDetail(still=still, status=sendStatus, plan=plan, send=sendWorkout)
+                    WorkoutDetail(still=still, status=sendStatus, plan=plan)
                 else if e.name == "fuel"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "Fuel" role="heading" aria-level=2

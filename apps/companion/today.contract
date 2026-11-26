@@ -113,29 +113,21 @@ component WorkoutGraph
             text (f == 0 ? "40 g" : "25 g") font="-exact-caption2" font-weight=600 color="vana.white" font-variant-numeric="tabular-nums"
         text (plan == "easy" ? "1:00" : "1:15") font="-exact-caption2" color="vana.secondary" position="absolute" right=0 top=3 font-variant-numeric="tabular-nums"
 
-// Sending the workout to the bike computer: one capsule whose face changes in place.
-component SendButton
+// Where tonight's session stands on the bike computer. Nothing to press: the
+// phone puts it there whenever VANA is in reach.
+component SyncChip
   props
     status: string
-    send: action
   view
-    button press=send disabled=(status != "idle") appearance="none" -exact-press-haptic="impact-medium" testId="send-to-vana"
-      aria-label=(status == "sent" ? "On your VANA" : status == "sending" ? "Sending to VANA" : "Send to VANA")
-      :active
-        -exact-press-scale = 0.97
-      row gap=8 align-items="center" justify-content="center" width="100%" height=50 border-radius=25
-        background-color=(status == "sent" ? "vana.greenWash" : status == "sending" ? "vana.raised" : "vana.action")
-        transition="background-color 320ms ease-out"
-        if status == "sent"
-          image "symbol:sf/checkmark.circle.fill" font="-exact-headline" color="vana.green" -exact-symbol-effect="bounce" symbolEffectValue=status
-            animation="pop 420ms cubic-bezier(0.22, 1, 0.36, 1) both"
-          text "On your VANA" font="-exact-headline" color="vana.green" testId="sent" animation="fade 240ms ease-out both"
-        else if status == "sending"
-          image "symbol:sf/antenna.radiowaves.left.and.right" font="-exact-headline" color="vana.white" -exact-symbol-effect="variable-color"
-          text "Sending to VANA…" font="-exact-headline" color="vana.white" animation="fade 200ms ease-out both"
-        else
-          image "symbol:sf/arrow.down.to.line.compact" font="-exact-headline" color="vana.white"
-          text "Send to VANA" font="-exact-headline" color="vana.white"
+    row gap=5 align-items="center" padding="4px 9px" border-radius=999 testId="sync"
+      background-color=(status == "syncing" ? "vana.raised" : "vana.greenWash") transition="background-color 320ms ease-out"
+      aria-label=(status == "syncing" ? "Updating your VANA" : "On your VANA")
+      if status == "syncing"
+        image "symbol:sf/antenna.radiowaves.left.and.right" font="-exact-caption1" color="vana.secondary" -exact-symbol-effect="variable-color"
+        text "Updating VANA" font="-exact-caption1" font-weight=600 color="vana.secondary" testId="sync-text"
+      else
+        image "symbol:sf/checkmark.circle.fill" font="-exact-caption1" color="vana.green" -exact-symbol-effect="bounce" symbolEffectValue=status
+        text "On your VANA" font="-exact-caption1" font-weight=600 color="vana.green" testId="sync-text"
 
 component Stat
   props
@@ -163,13 +155,9 @@ component Today
     still: bool
     status: string
     plan: string
-    done: string[]
-    nextId: string
     openWorkout: action
     openFuel: action
     openWhy: action
-    send: action
-    toggle: action
     swapEasy: action
     swapBack: action
   view
@@ -186,7 +174,9 @@ component Today
         for k in [plan] key=k
           column gap=16
             column gap=6 animation=motion(still, "rise 480ms cubic-bezier(0.22, 1, 0.36, 1) both")
-              text "TODAY'S CALL" font="-exact-footnote" font-weight=700 letter-spacing=0.8 color=(plan == "easy" ? "vana.speed" : "vana.green")
+              row align-items="center" gap=8
+                text "TODAY'S CALL" font="-exact-footnote" font-weight=700 letter-spacing=0.8 color=(plan == "easy" ? "vana.speed" : "vana.green") flex=1
+                SyncChip(status=status)
               text (plan == "easy" ? "Take it easy tonight." : "Go hard tonight.") font-size=36 font-weight=800 letter-spacing=-1 line-height=1.15 color="vana.white" testId="call-title"
               text (plan == "easy" ? "One hour of endurance at 17:30. Keep it at 140 W, chatting pace." : "Threshold 2 × 20 at 17:30. Hold 204 W on both efforts.") font="-exact-body" color="vana.white" opacity=0.85
             button press=openWorkout appearance="none" testId="open-workout" aria-label="Workout details"
@@ -198,7 +188,6 @@ component Today
                   text (plan == "easy" ? "1 h 00 · 45 TSS · zone 2" : "1 h 15 · 92 TSS · threshold") font="-exact-footnote" color="vana.secondary" flex=1 font-variant-numeric="tabular-nums"
                   text "Details" font="-exact-footnote" font-weight=600 color="vana.secondary"
                   image "symbol:forward-chevron" font="-exact-caption2" color="vana.secondary"
-        SendButton(status=status, send=send)
         // The reasons, folded into one line.
         button press=openWhy appearance="none" testId="open-why" aria-label="Why this call"
           :active
@@ -220,25 +209,26 @@ component Today
       column gap=8 padding-top=6
         row align-items="baseline" padding="0px 4px"
           text "YOUR DAY" font="-exact-footnote" font-weight=700 letter-spacing=0.8 color="vana.secondary" flex=1
-          text `${done.length} of 7 done` font="-exact-footnote" color="vana.secondary" font-variant-numeric="tabular-nums" testId="done-count"
+          text "Now 08:12" font="-exact-footnote" color="vana.secondary" font-variant-numeric="tabular-nums"
         column border-radius=24 background-color="vana.card" padding="6px 0px" testId="day"
           for it, i in dayItems(plan) key=it.id
-            button press=toggle(it.id) appearance="none" -exact-press-haptic="selection" testId=`item-${it.id}` aria-label=`${it.time} ${it.title}, ${done.includes(it.id) ? "done" : "to do"}`
-              :active
-                -exact-press-scale = 0.98
+            column testId=`item-${it.id}` aria-label=`${it.time} ${it.title}, ${it.id == "breakfast" ? "done" : it.id == "lunch" ? "next" : "later"}`
               row gap=12 align-items="center" padding="10px 10px" margin="0px 6px" border-radius=16 width="calc(100% - 12px)" box-sizing="border-box" text-align="start"
-                background-color=(it.id == nextId ? "vana.accentWash" : "transparent") transition="background-color 300ms ease-out"
-                column width=30 height=30 box-sizing="border-box" border-radius=15 align-items="center" justify-content="center" flex-shrink=0
-                  background-color=(done.includes(it.id) ? "vana.green" : "transparent") border-width=(done.includes(it.id) ? 0 : 2) border-style="solid" border-color=(it.id == nextId ? "vana.accent" : "vana.unlit")
-                  transition="background-color 200ms ease-out"
-                  if done.includes(it.id)
-                    image "symbol:checkmark" font="-exact-caption1" font-weight=700 color="vana.ground" animation=motion(still, "pop 360ms cubic-bezier(0.22, 1, 0.36, 1) both")
-                column flex=1 min-width=0 gap=1 opacity=(done.includes(it.id) ? 0.75 : 1) transition="opacity 200ms ease-out"
+                background-color=(it.id == "lunch" ? "vana.accentWash" : "transparent") transition="background-color 300ms ease-out"
+                column width=30 height=30 align-items="center" justify-content="center" flex-shrink=0
+                  if it.id == "breakfast"
+                    column width=22 height=22 border-radius=11 align-items="center" justify-content="center" background-color="vana.greenWash"
+                      image "symbol:checkmark" font="-exact-caption2" font-weight=700 color="vana.green"
+                  else if it.id == "lunch"
+                    view width=12 height=12 border-radius=6 background-color="vana.accent" box-shadow="0px 0px 0px 5px rgba(10,132,255,0.25)"
+                  else
+                    view width=8 height=8 border-radius=4 background-color="vana.unlit"
+                column flex=1 min-width=0 gap=1 opacity=(it.id == "breakfast" ? 0.75 : 1) transition="opacity 200ms ease-out"
                   row gap=6 align-items="center"
                     image it.symbol font="-exact-footnote" color=it.ink
                     text it.title font="-exact-body" font-weight=600 color="vana.white"
                   text it.detail font="-exact-footnote" color="vana.secondary"
-                text it.time font="-exact-subheadline" font-weight=(it.id == nextId ? 700 : 500) color=(it.id == nextId ? "vana.white" : "vana.secondary") font-variant-numeric="tabular-nums"
+                text it.time font="-exact-subheadline" font-weight=(it.id == "lunch" ? 700 : 500) color=(it.id == "lunch" ? "vana.white" : "vana.secondary") font-variant-numeric="tabular-nums"
         button press=openFuel appearance="none" testId="open-fuel"
           :active
             -exact-press-scale = 0.98
@@ -355,7 +345,6 @@ component WorkoutDetail
     still: bool
     status: string
     plan: string
-    send: action
   view
     column gap=16 padding="4px 16px 40px"
       column gap=4 padding="0px 4px"
@@ -398,7 +387,11 @@ component WorkoutDetail
               text "Gel, 25 g carbs" font="-exact-body" color="vana.white"
               text "In the recovery between efforts" font="-exact-footnote" color="vana.secondary"
             text "0:42" font="-exact-body" color="vana.secondary" font-variant-numeric="tabular-nums"
-      SendButton(status=status, send=send)
+      row gap=12 align-items="center" padding="14px 16px" border-radius=20 background-color="vana.card"
+        column flex=1 min-width=0 gap=2
+          text "Ready on the bike computer" font="-exact-subheadline" font-weight=600 color="vana.white"
+          text "Turn VANA on and press Start. Targets and fuel reminders come up on their own." font="-exact-footnote" color="vana.secondary"
+        SyncChip(status=status)
 
 component FuelDetail
   props

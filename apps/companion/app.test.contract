@@ -222,24 +222,22 @@ test "Wi-Fi: forget asks first"
   clock data
   expect text "current-error" == ""
 
-test "Today makes the call: send it, see why, tick the day, or swap"
+test "Today makes the call, already on VANA; see why, or swap"
   expect text "call-title" == "Go hard tonight."
-  tap "send-to-vana"
-  clock +1200
-  expect text "sent" == "On your VANA"
+  expect text "sync-text" == "On your VANA"
   tap "open-why"
   clock settle
   expect text "charge-value" == "82"
   back
   clock settle
-  expect text "done-count" == "1 of 7 done"
-  tap "item-lunch"
-  expect text "done-count" == "2 of 7 done"
   tap "swap"
   clock settle
   tap "swap-confirm"
   clock settle
   expect text "call-title" == "Take it easy tonight."
+  expect text "sync-text" == "Updating VANA"
+  clock +1500
+  expect text "sync-text" == "On your VANA"
   tap "swap-back"
   clock settle
   expect text "call-title" == "Go hard tonight."

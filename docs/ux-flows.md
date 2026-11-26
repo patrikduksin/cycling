@@ -121,11 +121,11 @@ fields, the summary and the profile show depends on the road:
 - **On the flat**: ALTITUDE M and ASCENT M. The summary and the profile are
   the last 2 km: LAST, AVG and MAX grade. All of it is behind the rider, so
   all of it is dimmed.
-- **Climbing** without a map: the barometer's climb. CLIMB DIST KM and CLIMB
-  ELEV M so far. The summary and the profile are the climb from its foot:
+- **Climbing** without a map: the barometer's climb. LENGTH KM and HEIGHT M
+  so far. The summary and the profile are the climb from its foot:
   CLIMB, its average and steepest grade, all dimmed.
 - **On a course**: a climb from the map, ahead within 500 m or under way.
-  DIST TO TOP KM and ELEV TO TOP M. The summary describes the whole climb.
+  TO TOP KM and TO TOP M. The summary describes the whole climb.
   The profile runs from the foot, or from the rider short of it, to the top.
   What is behind the rider is dimmed.
 

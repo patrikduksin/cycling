@@ -30,20 +30,23 @@ fn a_low_battery_turns_sensors_amber_on_their_pages() {
 
     sim.home("SENSORS");
     sim.open_sensor_detail("HEART RATE");
-    sim.expect_text("2.4");
-    assert_eq!(run_color(&sim, "2.4"), AMBER);
+    let theme = vana::screens::theme::DARK;
+    assert!(shows(&sim, theme.warn), "the battery glyph fills amber");
     sim.checkpoint("heart rate detail with a low battery");
     sim.press(Role::Back);
     sim.open_sensor_detail("POWER METER");
-    sim.expect_text("2.9");
-    assert_eq!(run_color(&sim, "2.9"), WHITE);
+    assert!(!shows(&sim, theme.warn), "a good battery fills in text");
     sim.checkpoint("power meter detail with a good battery");
+}
+
+fn shows(sim: &Sim, color: u16) -> bool {
+    sim.screen().pixels.contains(&color)
 }
 
 /// Whether Home's status widget shows `color`, as its sensors' dots do.
 fn widget_shows(sim: &Sim, color: u16) -> bool {
     let screen = sim.screen();
-    let (left, right, top, bottom) = (8, 170, 105, 142);
+    let (left, right, top, bottom) = (8, 170, 113, 150);
     (top..bottom).any(|y| (left..right).any(|x| screen.pixels[y * screen.width + x] == color))
 }
 

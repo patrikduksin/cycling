@@ -2,9 +2,7 @@ use super::menu::{Mine, SETTLE_MS, View};
 use super::*;
 use crate::compose::Flags;
 use crate::compose::builtin::{Laid, ScreenId};
-use crate::compose::registry::{
-    SENSOR_BACK, SENSOR_FACTS, SENSOR_LIST, SENSOR_SEARCH, SENSOR_TITLE,
-};
+use crate::compose::registry::{NAV_HEADER, SENSOR_FACTS, SENSOR_LIST, SENSOR_SEARCH};
 use crate::compose::tiles::sensor_list;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::Rect;
@@ -181,10 +179,10 @@ fn opening_with_nothing_saved_goes_straight_to_nearby_and_searches() {
     menu.refresh(nearby(&[peer(10)]), [None; SAVED_CAPACITY], false);
     assert_eq!(menu.open(), Some(Action::Scan));
     assert_eq!(page(&menu), Page::Nearby);
-    let title = run(&menu, "NEARBY").expect("NEARBY titles the page");
+    let title = run(&menu, "Nearby").expect("Nearby titles the page");
     let heading = C606.scaled.face(crate::screens::theme::LAYOUT.face.heading);
     assert!(core::ptr::eq(title.line.face(), heading));
-    assert!(!canvas(&menu).shows("ADD SENSOR"));
+    assert!(!canvas(&menu).shows("Add sensor"));
     let mut menu = Menu::new();
     menu.refresh(
         nearby(&[peer(10)]),
@@ -194,10 +192,10 @@ fn opening_with_nothing_saved_goes_straight_to_nearby_and_searches() {
     assert_eq!(menu.open(), None);
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, Some(strap(1)));
-    let sensors = run(&menu, "SENSORS").expect("SENSORS titles the page");
+    let sensors = run(&menu, "Sensors").expect("Sensors titles the page");
     assert_eq!((sensors.left, sensors.top), (title.left, title.top));
-    assert!(canvas(&menu).shows("HEART RATE"));
-    assert!(canvas(&menu).shows("ADD SENSOR"));
+    assert!(canvas(&menu).shows("Heart rate"));
+    assert!(canvas(&menu).shows("Add sensor"));
 }
 
 #[test]
@@ -317,7 +315,7 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     assert_eq!(menu.diagnostics().focus, Some(cadence));
     rider.focus(&mut menu, None);
     assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
-    assert_eq!(search(&menu).0, "TAP HERE TO SEARCH");
+    assert_eq!(search(&menu).0, "TAP TO SEARCH");
     rider.press(&mut menu, Role::Back);
     assert_eq!(menu.diagnostics().focus, None);
 }
@@ -367,7 +365,7 @@ fn sensors_added_from_one_search_fold_into_short_rows_then_say_new_on_sensors() 
         "an added row is short"
     );
     assert_eq!(menu.focus(List::Nearby), Some(1), "past the added row");
-    assert!(canvas(&menu).shows("LIVE"));
+    assert!(canvas(&menu).shows("Live"));
     let check = crate::screens::icons::Symbol::CheckDisc;
     let check = C606.scaled.art.symbol(check);
     assert!(canvas(&menu).shapes.iter().any(|shape| matches!(
@@ -391,7 +389,7 @@ fn sensors_added_from_one_search_fold_into_short_rows_then_say_new_on_sensors() 
         .filter(|row| matches!(row, Row::Saved { new: true, .. }))
         .count();
     assert_eq!(news, 2);
-    assert!(canvas(&menu).shows("NEW · LIVE"));
+    assert!(canvas(&menu).shows("New · Live"));
     rider.focus(&mut menu, None);
     rider.press(&mut menu, Role::Act);
     assert!(menu.added_peers().is_empty());
@@ -442,7 +440,7 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
     assert_eq!(search(&menu).0, "FULL - FORGET ONE");
     let mut menu = opened(&[peer(10)], &[]);
     menu.refresh([None; DISCOVERY_CAPACITY], [None; SAVED_CAPACITY], false);
-    assert!(canvas(&menu).shows("NOT SEEN"));
+    assert!(canvas(&menu).shows("Not seen"));
     assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(menu.diagnostics().message, Some(MenuMessage::NotSeen));
 }
@@ -454,7 +452,7 @@ fn the_search_line_says_how_the_search_goes() {
         let (text, tone, _) = search(menu);
         (text, tone)
     };
-    assert_eq!(line(&menu), ("TAP HERE TO SEARCH".into(), Tone::Sub));
+    assert_eq!(line(&menu), ("TAP TO SEARCH".into(), Tone::Sub));
     menu.refresh([None; DISCOVERY_CAPACITY], [None; SAVED_CAPACITY], true);
     menu.set_message(MenuMessage::Scanning);
     assert_eq!(line(&menu), ("SEARCHING".into(), Tone::Info));
@@ -475,7 +473,7 @@ fn the_search_line_says_how_the_search_goes() {
 fn sensors_names_trouble_with_the_radio_or_saving_in_its_title() {
     let mut menu = opened(&[], &[(strap(1), Connection::Live)]);
     menu.set_message(MenuMessage::ScanFailed);
-    assert_eq!(run(&menu, "SENSORS").map(|r| r.color), Some(DARK.text));
+    assert_eq!(run(&menu, "Sensors").map(|r| r.color), Some(DARK.text));
     menu.set_message(MenuMessage::RadioUnavailable);
     let trouble = run(&menu, "RADIO UNAVAILABLE").map(|r| r.color);
     assert_eq!(trouble, Some(DARK.warn));
@@ -500,8 +498,7 @@ fn rows_name_each_state_in_its_tone_and_a_battery_after_it() {
     ];
     for (connection, text, color) in cases {
         let menu = opened(&[], &[(strap(1), connection)]);
-        let caps = text.to_uppercase();
-        assert_eq!(run(&menu, &caps).map(|r| r.color), Some(color), "{text}");
+        assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
     }
     let batteries = [
         (BatteryStatus::New, Some(3_100), "Live · 3.1 V", DARK.good),
@@ -520,8 +517,7 @@ fn rows_name_each_state_in_its_tone_and_a_battery_after_it() {
         let mut menu = Menu::new();
         menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
         menu.open();
-        let caps = text.to_uppercase();
-        assert_eq!(run(&menu, &caps).map(|r| r.color), Some(color), "{text}");
+        assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
     }
 }
 
@@ -540,14 +536,23 @@ fn a_live_row_shows_its_reading_and_one_not_in_use_shows_dashes() {
         .map(|run| run.color)
         .collect();
     assert_eq!(readings, [DARK.sub, DARK.sub], "no power reading yet");
+    let units = canvas.runs.iter().filter(|run| run.line.text() == b"W");
+    assert_eq!(units.count(), 0, "dashes stand without a unit");
+    let mut tiles = saved(&meters);
+    tiles[0].as_mut().unwrap().reading = Some(250);
+    let mut live = Menu::new();
+    live.refresh([None; DISCOVERY_CAPACITY], tiles, false);
+    live.open();
+    let canvas = self::canvas(&live);
+    let (number, unit) = (canvas.find("250").unwrap(), canvas.find("W").unwrap());
+    assert_eq!(number.color, DARK.power);
+    assert_eq!(unit.color, DARK.sub);
     assert_eq!(
-        canvas
-            .runs
-            .iter()
-            .filter(|run| run.line.text() == b"W")
-            .count(),
-        2
+        number.top + number.line.face().fit_height(),
+        unit.top + unit.line.face().fit_height(),
+        "one baseline"
     );
+    assert!(number.left < unit.left, "the unit after the number");
     let names: std::vec::Vec<_> = menu
         .rows(List::Sensors)
         .filter_map(|row| match row {
@@ -575,7 +580,7 @@ fn ten_saved_sensors_scroll_so_the_focus_stays_in_view() {
         rider.press(&mut menu, Role::Move);
     }
     rider.focus(&mut menu, None);
-    assert!(canvas(&menu).shows("SENSORS"));
+    assert!(canvas(&menu).shows("Sensors"));
     let (x, y) = middle(focused(&menu, &C606));
     assert_eq!(tap(&mut menu, &C606, x, y, rider.now), Some(Action::Scan));
 }
@@ -706,14 +711,11 @@ fn taps_act_on(device: &'static Device) {
     };
     let title = |menu: &Menu| {
         let laid = laid(menu, device);
-        let rect = laid.box_of(SENSOR_TITLE).or(laid.box_of(SENSOR_BACK));
-        let rect = rect.expect("a title to tap");
+        let rect = laid.box_of(NAV_HEADER).expect("a header to tap");
         (rect.left + 12, rect.top.midpoint(rect.bottom))
     };
     let now = 50_000;
     let tap = |menu: &mut Menu, (x, y): (usize, usize), now| tap(menu, device, x, y, now);
-    let width = device.scaled.panel.width;
-    assert_eq!(tap(&mut menu, (width / 2, 2), now), None, "the bar is none");
     let second = middle(row(&menu, device, 1).expect("the second row"));
     assert_eq!(tap(&mut menu, second, now), None);
     assert_eq!(page(&menu), Page::Detail);
@@ -738,7 +740,7 @@ fn taps_act_on(device: &'static Device) {
     let back = title(&menu);
     assert_eq!(tap(&mut menu, back, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Sensors);
-    let add = middle(row(&menu, device, 2).expect("ADD SENSOR"));
+    let add = middle(row(&menu, device, 2).expect("Add sensor"));
     assert_eq!(tap(&mut menu, add, now), Some(Action::Scan));
     assert_eq!(page(&menu), Page::Nearby);
     let first = middle(row(&menu, device, 0).expect("a found sensor"));
@@ -773,7 +775,7 @@ fn cancel_holds_act_until_move_and_debounce_drops_repeats() {
     assert_eq!(menu.input(press(Role::Act), 800), None);
     assert_eq!(page(&menu), Page::Sensors);
     menu.input(press(Role::Move), 1_200);
-    assert!(canvas(&menu).shows("SENSORS"));
+    assert!(canvas(&menu).shows("Sensors"));
     assert_eq!(menu.input(press(Role::Act), 1_549), None);
     assert_eq!(page(&menu), Page::Sensors);
     menu.input(Input::Cancel, 2_000);
@@ -806,24 +808,15 @@ fn home_glance_lists_selected_sensors_with_their_state() {
 }
 
 #[test]
-fn the_page_lists_status_reading_battery_id_and_link() {
+fn the_page_shows_the_sensor_its_state_its_battery_as_a_glyph_and_its_id() {
+    use crate::compose::registry::SENSOR_HEAD;
     let cases = [
-        (
-            Some(BatteryStatus::Good),
-            Some(2_898),
-            "Good · 2.9 V",
-            DARK.text,
-        ),
-        (
-            Some(BatteryStatus::Low),
-            Some(2_449),
-            "Low · 2.4 V",
-            DARK.warn,
-        ),
-        (Some(BatteryStatus::Critical), None, "Critical", DARK.bad),
-        (None, None, "--", DARK.sub),
+        (Some(BatteryStatus::Good), Some(2_898), Some(DARK.text)),
+        (Some(BatteryStatus::Low), Some(2_449), Some(DARK.warn)),
+        (Some(BatteryStatus::Critical), None, Some(DARK.bad)),
+        (None, None, None),
     ];
-    for (status, millivolts, text, color) in cases {
+    for (status, millivolts, fill) in cases {
         let mut tiles = saved(&[(strap(100), Connection::Live)]);
         tiles[0].as_mut().unwrap().battery = status.map(|status| Battery {
             status,
@@ -836,21 +829,29 @@ fn the_page_lists_status_reading_battery_id_and_link() {
         menu.open();
         Rider::new().press(&mut menu, Role::Act);
         assert_eq!(page(&menu), Page::Detail);
-        assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
         let canvas = canvas(&menu);
-        for shown in [
-            "Heart rate",
-            "Polar",
-            "Status",
-            "Live",
-            "Reading",
-            "Battery",
-            "ID",
-            "100",
-            "Link",
-            "ANT+",
-        ] {
-            assert!(canvas.shows(shown), "{shown}");
+        let header = run(&menu, "Heart rate").expect("the header names the sensor");
+        let head = laid(&menu, &C606).box_of(SENSOR_HEAD).expect("the head");
+        assert!(header.top < head.top, "the name is in the header");
+        assert_eq!(run(&menu, "Live").map(|r| r.color), Some(DARK.good));
+        assert_eq!(run(&menu, "--").map(|r| r.color), Some(DARK.sub));
+        assert!(canvas.shows("ID 100 · ANT+"));
+        for gone in ["Polar", "Status", "Battery", "Link", "2.9 V"] {
+            assert!(!canvas.shows(gone), "{gone}");
+        }
+        let bars = |color: u16| {
+            canvas
+                .shapes
+                .iter()
+                .filter(|shape| matches!(shape, Shape::Bar { color: c, .. } if *c == color))
+                .count()
+        };
+        match fill {
+            Some(fill) => {
+                assert_eq!(bars(DARK.sub), 2, "the glyph's outline and nub");
+                assert!(bars(fill) >= 1, "{status:?} fills it in its tone");
+            }
+            None => assert_eq!(bars(DARK.sub), 0, "no battery reported, no glyph"),
         }
     }
 }
@@ -902,10 +903,10 @@ fn the_day_look_writes_words_black_and_keeps_state_colours() {
     view.prepare();
     let canvas = view.canvas();
     let color = |text: &str| canvas.find(text).map(|run| run.color);
-    assert_eq!(color("SENSORS"), Some(LIGHT.text));
-    assert_eq!(color("HEART RATE"), Some(LIGHT.text));
-    assert_eq!(color("LIVE"), Some(LIGHT.good));
-    assert_eq!(color("ADD SENSOR"), Some(LIGHT.good));
+    assert_eq!(color("Sensors"), Some(LIGHT.text));
+    assert_eq!(color("Heart rate"), Some(LIGHT.text));
+    assert_eq!(color("Live"), Some(LIGHT.good));
+    assert_eq!(color("Add sensor"), Some(LIGHT.good));
     assert_eq!(view.pixel(2, 300), LIGHT.bg, "the page fills in its look");
 }
 
@@ -1057,9 +1058,9 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
         for (what, menu) in crowded() {
             let canvas = canvas_on(&menu, device);
             let want: &[&str] = match (what.as_str(), menu.state.view) {
-                ("sensors 0", _) => &["SENSORS", "POWER", "LIGHTS", "RADIO UNAVAILABLE"],
-                ("add 0", _) => &["NOT SAVED", "POWER", "LIGHTS", "ID 65535 · ANT+"],
-                (_, View::Detail(_)) => &["Battery", "ID", "Link"],
+                ("sensors 0", _) => &["Sensors", "Power", "Lights", "Radio unavailable"],
+                ("add 0", _) => &["NOT SAVED", "Power", "Lights", "ID 65535 · ANT+"],
+                (_, View::Detail(_)) => &[],
                 (_, View::Forget(_)) => &["FORGET", "Sensor"],
                 _ => &[],
             };
@@ -1074,6 +1075,13 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
                     "{what} on {:?}: {text} in {shown:?}",
                     device.scaled.panel
                 );
+            }
+            if let View::Detail(_) = menu.state.view {
+                let id = canvas
+                    .runs
+                    .iter()
+                    .any(|run| run.line.text().starts_with(b"ID "));
+                assert!(id, "{what} on {:?}: its ID", device.scaled.panel);
             }
             menu.frame(device).prepare().check_layout();
             canvas.assert_laid_out_at(&device.scaled, device.scaled.screen(), want, &what);

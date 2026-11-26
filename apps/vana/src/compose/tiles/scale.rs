@@ -21,7 +21,7 @@ const BASELINE_UNITS: usize = 19;
 /// Between the bar and its label.
 const GAP_UNITS: usize = 6;
 /// The room for "KM" and the gap before it.
-const KM_ROOM: usize = 25;
+pub(crate) const KM_ROOM: usize = 26;
 
 impl Tile for Scale {
     type Arg = ();

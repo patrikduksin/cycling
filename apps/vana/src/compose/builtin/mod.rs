@@ -245,11 +245,6 @@ impl ScreenId {
     }
 }
 
-/// The rows a static screen keeps for the status bar and the black under
-/// it. The scene paints the bar, or leaves it out when a cue sits at the
-/// top, so the band holds no tile a cue could crowd.
-const BAR_UNITS: u8 = 24;
-
 /// A screen's nodes, preorder.
 pub type Nodes = heapless::Vec<Node, MAX_NODES>;
 

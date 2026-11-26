@@ -309,7 +309,7 @@ pub(crate) mod scenes {
         while sim.world().distance_m < 1600.0 {
             sim.advance(seconds(1));
         }
-        sim.expect_text("CLIMB DIST KM");
+        sim.expect_text("LENGTH KM");
         sim
     }
 
@@ -325,8 +325,8 @@ pub(crate) mod scenes {
     fn sensors() -> Sim {
         let mut sim = rider(false);
         sim.home("SENSORS");
-        sim.wait_for("LIVE", seconds(20)).unwrap();
-        sim.expect_text("SENSORS");
+        sim.wait_for("Live", seconds(20)).unwrap();
+        sim.expect_text("Sensors");
         sim
     }
 
@@ -505,7 +505,7 @@ pub(crate) mod scenes {
     fn sensor_detail() -> Sim {
         let mut sim = rider(false);
         sim.home("SENSORS");
-        sim.wait_for("LIVE", seconds(20)).unwrap();
+        sim.wait_for("Live", seconds(20)).unwrap();
         sim.open_sensor_detail("POWER METER");
         sim
     }

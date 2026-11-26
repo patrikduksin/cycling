@@ -76,7 +76,7 @@ SYMBOLS = [
     ("sun", 18),
     ("sun-large", 22),
     ("moon", 18),
-    ("chevron-right", 18),
+    ("chevron-right", 16),
     ("phone", 22),
     ("add", 18),
 ]

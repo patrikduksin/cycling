@@ -1,5 +1,6 @@
 //! An idle screen draws at its page's pace and no faster: once a second for
-//! still pages, twice while something animates.
+//! still pages, twice while something animates, such as the battery glyph's
+//! fill while it charges.
 use device_api::input::Role;
 use shell_simulator::ant::device_type;
 use shell_simulator::sim::{Sim, seconds};
@@ -53,7 +54,7 @@ fn idle_menus_draw_once_a_second() {
     expect_pace(&mut sim, "sensors", STILL);
     go_home(&mut sim);
     sim.set_battery(60, true);
-    expect_pace(&mut sim, "home charging", STILL);
+    expect_pace(&mut sim, "home charging", ANIMATED);
 }
 
 #[test]
@@ -78,7 +79,7 @@ fn saved_sensors_out_of_range_do_not_add_frames() {
     // VANA keeps asking for each saved sensor while it is away.
     expect_pace(&mut sim, "home, 4 sensors away", STILL);
     sim.set_battery(80, true);
-    expect_pace(&mut sim, "home charging, 4 sensors away", STILL);
+    expect_pace(&mut sim, "home charging, 4 sensors away", ANIMATED);
 }
 
 #[test]
@@ -131,13 +132,13 @@ fn a_still_home_draws_only_when_what_it_shows_changes() {
     sim.set_battery(12, true);
     let frames = frames_over(&mut sim, seconds(30));
     assert!(
-        frames <= 2,
-        "{frames} frames in 30 s: plugging in recolours 12%"
+        frames <= ANIMATED,
+        "{frames} frames in 30 s: plugging in fills the glyph as it charges"
     );
 }
 
 #[test]
-fn a_battery_on_usb_leaves_home_still() {
+fn a_full_battery_on_usb_leaves_home_still_and_a_charging_one_fills_its_glyph() {
     let mut sim = device();
     sim.set_battery(100, true);
     let next_minute_ms = 1_800_000_000_000;
@@ -145,11 +146,14 @@ fn a_battery_on_usb_leaves_home_still() {
     sim.advance(seconds(5));
     assert_eq!(frames_over(&mut sim, seconds(30)), 0, "still Home");
     sim.set_battery(50, true);
-    assert_eq!(
-        frames_over(&mut sim, seconds(5)),
-        1,
-        "the percentage changes once"
+    let frames = frames_over(&mut sim, seconds(5));
+    assert!(
+        frames > 1,
+        "the glyph's fill climbs while it charges: {frames}"
     );
+    sim.set_battery(50, false);
+    sim.advance(seconds(1));
+    assert_eq!(frames_over(&mut sim, seconds(5)), 0, "still again off USB");
 }
 
 #[test]

@@ -40,7 +40,7 @@ pub const LAYOUT: Layout = Layout {
         digits_mid: FaceRole::Digits34,
         percent_mid: FaceRole::Digits22,
         summary: FaceRole::Digits19,
-        line: FaceRole::Digits15,
+        line: FaceRole::Digits17,
         heading: FaceRole::Heading,
         label: FaceRole::Label,
         note: FaceRole::Note,

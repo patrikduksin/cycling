@@ -195,7 +195,7 @@ fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
     assert_eq!(connects(&sim, device_type::POWER), [POWER]);
 
     sim.home("SENSORS");
-    sim.expect_text("LIVE");
+    sim.expect_text("Live");
     sim.checkpoint("sensors after reboot");
     go_home(&mut sim);
 
@@ -225,9 +225,9 @@ fn sensor_that_wakes_late_connects_after_boot() {
     sim.home("SENSORS");
     let screen = sim.screen();
     assert!(
-        screen.contains("SEARCHING")
-            || screen.contains("NOT FOUND YET")
-            || screen.contains("WAITING FOR RADIO"),
+        screen.contains("Searching")
+            || screen.contains("Not found yet")
+            || screen.contains("Waiting for radio"),
         "{}",
         screen.text()
     );
@@ -260,7 +260,7 @@ fn disconnect_is_remembered_across_reboot() {
             .count_of(device_type::HEART_RATE),
         0
     );
-    sim.expect_no_text("HEART RATE");
+    sim.expect_no_text("Heart rate");
     sim.checkpoint("heart rate disconnected");
     // The channel closes once the cancelled discovery has released the radio.
     let mut waited = 0;
@@ -271,7 +271,7 @@ fn disconnect_is_remembered_across_reboot() {
     }
     sim.nearby_page();
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
-    sim.expect_text("HEART RATE");
+    sim.expect_text("Heart rate");
     sim.checkpoint("heart rate offered as nearby");
     go_home(&mut sim);
 

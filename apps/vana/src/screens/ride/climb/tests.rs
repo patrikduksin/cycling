@@ -129,7 +129,7 @@ fn on_the_flat_the_page_shows_the_altitude_ascent_and_the_last_2_km() {
     for text in ["ALTITUDE M", "ASCENT M", "LAST", "2 km", "AVG", "MAX"] {
         assert!(canvas.shows(text), "{text}");
     }
-    assert!(!canvas.shows("CLIMB DIST KM"));
+    assert!(!canvas.shows("LENGTH KM"));
     let frame = chart(&view);
     let columns = frame.columns();
     assert!(frame.tops()[..columns].iter().all(Option::is_some));
@@ -147,7 +147,7 @@ fn climbing_without_a_map_shows_the_climb_so_far_from_its_foot() {
     let mut view = Ride::new().ridden(2600, hill).view();
     view.prepare();
     let canvas = view.canvas();
-    for text in ["CLIMB DIST KM", "CLIMB ELEV M", "CLIMB"] {
+    for text in ["LENGTH KM", "HEIGHT M", "CLIMB"] {
         assert!(canvas.shows(text), "{text}");
     }
     assert!(!canvas.shows("ALTITUDE M"));
@@ -175,7 +175,7 @@ fn on_a_course_the_whole_climb_shows_and_the_road_behind_is_dimmed() {
     let mut view = Ride::new().mapped(5, mapped_climb).on(700).view();
     view.prepare();
     let canvas = view.canvas();
-    for text in ["DIST TO TOP KM", "ELEV TO TOP M", "CLIMB", "1 km", "8.0%"] {
+    for text in ["TO TOP KM", "TO TOP M", "CLIMB", "1 km", "8.0%"] {
         assert!(canvas.shows(text), "{text}");
     }
     let frame = chart(&view);
@@ -200,7 +200,7 @@ fn on_a_course_the_whole_climb_shows_and_the_road_behind_is_dimmed() {
 fn ahead_of_a_mapped_climb_the_chart_runs_from_the_rider_to_its_top() {
     let mut view = Ride::new().mapped(5, mapped_climb).view();
     view.prepare();
-    assert!(view.canvas().shows("DIST TO TOP KM"));
+    assert!(view.canvas().shows("TO TOP KM"));
     let frame = chart(&view);
     assert_eq!(frame.rider, 0);
     assert!(

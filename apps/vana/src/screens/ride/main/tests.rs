@@ -137,11 +137,13 @@ fn the_page_shows_the_approved_grid_with_its_titles() {
     ] {
         assert!(canvas.shows(title), "{title}");
     }
-    for value in [
-        "200", "142", "31.3", "92", "2.4", "%", "42.7", "1:23:45", "82%",
-    ] {
+    for value in ["200", "142", "31.3", "92", "2.4", "%", "42.7", "1:23:45"] {
         assert!(canvas.shows(value), "{value}");
     }
+    assert!(
+        !canvas.shows("82%"),
+        "above 20% the battery is its glyph alone"
+    );
     let field = |text: &str| canvas.find(text).unwrap();
     let (power, heart) = (field("200"), field("142"));
     let (speed, cadence, distance) = (field("31.3"), field("92"), field("42.7"));

@@ -784,7 +784,8 @@ fn small(at: &Scaled, text: &[u8], x: usize, align: Align, color: u16) -> Small 
 ///
 /// Items are laid out with measured widths in priority order: the ride mark,
 /// the clock, the battery (a red percentage once low), GPS, then page dots,
-/// which close up before they are dropped. An item that does not fit is left
+/// which close up before they are dropped; GPS, then a low percentage,
+/// give way to them. An item that does not fit is left
 /// out; nothing overlaps.
 #[derive(Clone, Copy, Hash)]
 pub struct StatusBar {
@@ -794,6 +795,7 @@ pub struct StatusBar {
     battery: Option<Battery>,
     battery_left: usize,
     percent: Option<Small>,
+    low_battery: Option<Battery>,
     gps: Option<Small>,
     mark: Mark,
     mark_label: Small,
@@ -854,6 +856,7 @@ impl StatusBar {
             battery: None,
             battery_left: 0,
             percent: None,
+            low_battery: None,
             gps: None,
             mark,
             mark_label,
@@ -876,6 +879,7 @@ impl StatusBar {
                 if fits(label.left) {
                     bar.right_limit = label.left;
                     bar.percent = Some(label);
+                    bar.low_battery = fits(battery_left).then_some(battery);
                 }
             }
             Some(battery) if battery.charging && fits(bolt_left) => {
@@ -944,6 +948,17 @@ impl StatusBar {
                 found = pitch(self.limit_without_gps);
                 if found.is_some() {
                     self.gps = None;
+                }
+            }
+            if let Some(battery) = self.low_battery.filter(|_| found.is_none()) {
+                let icon_left = self.clock.left.saturating_sub(gap + BATTERY_WIDTH);
+                found = pitch(icon_left);
+                if found.is_some() {
+                    self.gps = None;
+                    self.percent = None;
+                    self.battery = Some(battery);
+                    self.battery_left = icon_left;
+                    self.right_limit = icon_left;
                 }
             }
             self.dots = found.map(|pitch| (left, pitch));

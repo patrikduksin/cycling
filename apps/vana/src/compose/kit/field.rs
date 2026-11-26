@@ -239,7 +239,7 @@ specs! {
             ladder: Ladder::Medium,
         },
         ClimbDist = 38 => Spec {
-            title: "CLIMB DIST KM",
+            title: "LENGTH KM",
             symbol: Some(Symbol::Span),
             metric: Metric::ClimbDistance,
             digits: Digits::Km,
@@ -249,7 +249,7 @@ specs! {
             ladder: Ladder::Medium,
         },
         ClimbElev = 39 => Spec {
-            title: "CLIMB ELEV M",
+            title: "HEIGHT M",
             symbol: Some(Symbol::Up),
             metric: Metric::ClimbGain,
             digits: Digits::Metric,
@@ -259,7 +259,7 @@ specs! {
             ladder: Ladder::Medium,
         },
         ToTop = 40 => Spec {
-            title: "DIST TO TOP KM",
+            title: "TO TOP KM",
             symbol: Some(Symbol::Flag),
             metric: Metric::ToTop,
             digits: Digits::Km,
@@ -269,7 +269,7 @@ specs! {
             ladder: Ladder::Medium,
         },
         UpToGo = 41 => Spec {
-            title: "ELEV TO TOP M",
+            title: "TO TOP M",
             symbol: Some(Symbol::Peak),
             metric: Metric::UpToGo,
             digits: Digits::Metric,
@@ -381,11 +381,20 @@ fn title_width(spec: &Spec, look: Look, at: &Scaled) -> usize {
         Some(symbol) => at.art.symbol(symbol).ink(0, 0).width() + px(at, LAYOUT.space.tight),
         None => 0,
     };
-    let zone = match spec.fill {
-        Fill::Zone(_) => px(at, LAYOUT.space.tight) + tag_face.fit_width(b"Z7"),
+    let zone = match (spec.fill, look.margins) {
+        (Fill::Zone(_), Margins::Wide) => px(at, LAYOUT.space.tight) + tag_face.fit_width(b"Z7"),
         _ => 0,
     };
     symbol + tag_face.fit_width(spec.title.as_bytes()) + zone
+}
+
+fn zone_beside_number(spec: &Spec, look: Look, at: &Scaled) -> usize {
+    match (spec.fill, look.margins) {
+        (Fill::Zone(_), Margins::Tight) => {
+            px(at, LAYOUT.space.tight) + at.face(LAYOUT.face.tag).fit_width(b"Z7")
+        }
+        _ => 0,
+    }
 }
 
 fn number_width(spec: &Spec, look: Look, at: &Scaled) -> usize {
@@ -404,6 +413,7 @@ fn number_width(spec: &Spec, look: Look, at: &Scaled) -> usize {
             width(LAYOUT.face.digits_small, text.as_bytes())
         })
         .fold(slot, usize::max)
+        + zone_beside_number(spec, look, at)
 }
 
 /// The box `look` of `spec` needs: its width and height.
@@ -493,20 +503,33 @@ impl Tile for FieldTile {
             x += ink_box.width() + px(at, space.tight);
         }
         let mut title_right = right;
+        let mut number_right = right;
+        let title = spec.title.as_bytes();
+        let beside = tag_face.width(title) + px(at, space.tight);
         if let Some(zone) = zone.filter(|_| filled.is_some()) {
             let tag = tag(zone);
+            let above = x + beside + tag_face.fit_width(tag.as_bytes()) <= right;
+            let line = if above {
+                base
+            } else {
+                rect.bottom - px(at, space.pad)
+            };
             let run = out.fit(
                 &[tag_face],
                 tag.as_bytes(),
                 right - x,
                 right,
-                base,
+                line,
                 Align::Right,
                 ink,
             );
-            title_right = run.left.saturating_sub(px(at, space.tight));
+            let left_of = run.left.saturating_sub(px(at, space.tight));
+            if above {
+                title_right = left_of;
+            } else {
+                number_right = left_of;
+            }
         }
-        let title = spec.title.as_bytes();
         out.fit(
             &[tag_face],
             title,
@@ -516,7 +539,15 @@ impl Tile for FieldTile {
             Align::Left,
             ink,
         );
-        number(spec, look, at, data, (left, right, rect.bottom), ink, out);
+        number(
+            spec,
+            look,
+            at,
+            data,
+            (left, number_right, rect.bottom),
+            ink,
+            out,
+        );
     }
 }
 

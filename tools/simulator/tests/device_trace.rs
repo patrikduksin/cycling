@@ -55,7 +55,7 @@ fn recorded(dir: &Path) -> PathBuf {
     sim.start_ride();
     sim.ride_page("ride/climb");
     sim.ride_at(14.0, 240.0, 0.0, 80.0);
-    while !["CLIMB DIST KM", "DIST TO TOP KM"]
+    while !["LENGTH KM", "TO TOP KM"]
         .iter()
         .any(|words| sim.screen().contains(words))
     {

@@ -763,7 +763,8 @@ fn a_record_names_what_it_refuses() {
         }
     );
     let gauges = [
-        Node::col(4, Size::CONTENT),
+        Node::col(5, Size::CONTENT),
+        tile(GAUGE, 0, Size::CONTENT),
         tile(GAUGE, 0, Size::CONTENT),
         tile(GAUGE, 0, Size::CONTENT),
         tile(GAUGE, 0, Size::CONTENT),
@@ -772,7 +773,7 @@ fn a_record_names_what_it_refuses() {
     assert_eq!(
         screen(&gauges),
         Why::Canvas {
-            shapes: 28,
+            shapes: 35,
             runs: 0,
             flags: Flags::NONE
         }
@@ -1387,7 +1388,8 @@ fn a_stack_costs_the_canvas_what_its_costliest_slide_does() {
         nodes[4],
         gauge,
         gauge,
-        Node::col(2, Size::CONTENT),
+        Node::col(3, Size::CONTENT),
+        gauge,
         gauge,
         gauge,
     ];
@@ -1396,7 +1398,7 @@ fn a_stack_costs_the_canvas_what_its_costliest_slide_does() {
             .unwrap_err()
             .why,
         Why::Canvas {
-            shapes: 28,
+            shapes: 35,
             runs: 0,
             flags: Flags::NONE
         }

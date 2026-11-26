@@ -65,15 +65,6 @@ pub fn placed(
     shown
 }
 
-pub(super) fn caps(text: &str) -> Text<24> {
-    let mut out = Text::new();
-    let mut buffer = [0; 4];
-    for character in text.chars() {
-        let _ = out.push_str(character.to_ascii_uppercase().encode_utf8(&mut buffer));
-    }
-    out
-}
-
 pub(super) fn rule_under(out: &mut Canvas, at: &Scaled, theme: &Theme, rect: Rect) {
     out.shape(Shape::Bar {
         rect: Rect {
@@ -95,6 +86,10 @@ pub(super) fn icon_at(out: &mut Canvas, icon: &'static Icon, left: usize, rect: 
     });
 }
 
+fn right_edge(rect: Rect, at: &Scaled) -> usize {
+    rect.right - px(at, LAYOUT.space.gutter) - px(at, LAYOUT.space.ring)
+}
+
 fn baselines(rect: Rect, name: &Face, under: &Face, at: &Scaled) -> (usize, usize) {
     let gap = px(at, LAYOUT.space.gap);
     let block = usize::from(name.cap) + gap + usize::from(under.cap);
@@ -102,20 +97,30 @@ fn baselines(rect: Rect, name: &Face, under: &Face, at: &Scaled) -> (usize, usiz
     (first, first + gap + usize::from(under.cap))
 }
 
-fn state_line(sensor: Selected, new: bool) -> (Text<32>, Tone) {
+fn state_line(sensor: Selected, new: bool, fits: impl Fn(&[u8]) -> bool) -> (Text<32>, Tone) {
     let mut line = Text::new();
     if let Some((word, warning)) = sensor.battery_warning().filter(|_| sensor.live()) {
-        // Beside a live reading, LIVE goes without saying.
         let _ = write!(line, "Battery {word}");
+        if !fits(line.as_bytes()) {
+            line = Text::new();
+            let _ = write!(line, "Batt. {word}");
+        }
         return (line, warning);
     }
     let (state, tone) = sensor.state();
-    if new {
-        let _ = line.push_str("New · ");
-    }
-    let _ = line.push_str(state);
-    if let Some(volts) = sensor.volts().filter(|_| sensor.live()) {
-        let _ = write!(line, " · {} V", volts.as_str());
+    let volts = sensor.volts().filter(|_| sensor.live());
+    for (new, volts) in [(new, volts), (new, None), (false, None)] {
+        line = Text::new();
+        if new {
+            let _ = line.push_str("New · ");
+        }
+        let _ = line.push_str(state);
+        if let Some(volts) = volts {
+            let _ = write!(line, " · {} V", volts.as_str());
+        }
+        if fits(line.as_bytes()) {
+            break;
+        }
     }
     (line, tone)
 }
@@ -132,20 +137,21 @@ impl Draw<'_> {
         let icon = self.at.art.sensor(sensor, Size::Small);
         let left = rect.left + px(self.at, LAYOUT.space.gutter);
         icon_at(out, icon, left, rect, self.theme.tone(sensor.tone()));
-        left + usize::from(icon.size) + px(self.at, LAYOUT.space.gutter)
+        left + usize::from(icon.size) + px(self.at, LAYOUT.space.pad)
     }
 
     fn saved(&self, out: &mut Canvas, sensor: Selected, new: bool, rect: Rect) {
         let at = self.at;
         let face = &LAYOUT.face;
-        let (label, tag, digits) = (
+        let (label, note, tag, digits) = (
             self.at.face(face.label),
+            self.at.face(face.note),
             self.at.face(face.tag),
             self.at.face(face.digits_small),
         );
         let text = self.sensor_icon(out, sensor.identity.device_type, rect);
-        let right = rect.right - px(at, LAYOUT.space.gutter);
-        let (name_base, under_base) = baselines(rect, label, tag, at);
+        let right = right_edge(rect, at);
+        let (name_base, under_base) = baselines(rect, label, note, at);
         let mut end = right;
         if let Some(reading) = reading(sensor.identity.device_type) {
             let mut value = Text::<12>::new();
@@ -156,30 +162,35 @@ impl Draw<'_> {
             } else {
                 self.theme.sub
             };
+            let base = rect.top + (rect.height() + usize::from(digits.cap)) / 2;
+            let mut number_right = right;
+            if shown.is_some() {
+                let unit = out.fit(
+                    &[tag],
+                    reading.tag.as_bytes(),
+                    right - text,
+                    right,
+                    base,
+                    Align::Right,
+                    self.theme.sub,
+                );
+                number_right = unit.left.saturating_sub(px(at, LAYOUT.space.tight));
+            }
             let shown = out.fit(
                 &[digits],
                 value.as_bytes(),
-                right - text,
-                right,
-                under_base,
+                number_right - text,
+                number_right,
+                base,
                 Align::Right,
                 color,
             );
-            out.fit(
-                &[tag],
-                reading.tag.as_bytes(),
-                right - text,
-                right,
-                under_base - usize::from(digits.top + digits.cap) - px(at, LAYOUT.space.tight),
-                Align::Right,
-                self.theme.sub,
-            );
             end = shown.left.saturating_sub(px(at, LAYOUT.space.gap));
         }
-        let name = caps(self.menu.row_name(sensor).as_str());
+        let name = self.menu.row_name(sensor);
         let room = end.saturating_sub(text);
         out.fit(
-            &[label, tag],
+            &[label, note],
             name.as_bytes(),
             room,
             text,
@@ -187,9 +198,9 @@ impl Draw<'_> {
             Align::Left,
             self.theme.text,
         );
-        let (line, tone) = state_line(sensor, new);
+        let (line, tone) = state_line(sensor, new, |line| note.fit_width(line) <= room);
         out.fit(
-            &[tag],
+            &[note],
             line.as_bytes(),
             room,
             text,
@@ -205,21 +216,21 @@ impl Draw<'_> {
         let left = rect.left + px(at, LAYOUT.space.gutter);
         let good = self.theme.good;
         icon_at(out, plus, left, rect, good);
-        let text = left + usize::from(plus.size) + px(at, LAYOUT.space.gutter);
+        let text = left + usize::from(plus.size) + px(at, LAYOUT.space.pad);
         let label = self.at.face(LAYOUT.face.label);
         let base = rect.top + (rect.height() + usize::from(label.cap)) / 2;
         let room = rect.right.saturating_sub(text);
-        out.fit(&[label], b"ADD SENSOR", room, text, base, Align::Left, good);
+        out.fit(&[label], b"Add sensor", room, text, base, Align::Left, good);
     }
 
     fn added(&self, out: &mut Canvas, sensor: Selected, rect: Rect) {
         let at = self.at;
-        let (label, tag) = (
+        let (label, note) = (
             self.at.face(LAYOUT.face.label),
-            self.at.face(LAYOUT.face.tag),
+            self.at.face(LAYOUT.face.note),
         );
         let text = self.sensor_icon(out, sensor.identity.device_type, rect);
-        let mut right = rect.right - px(at, LAYOUT.space.gutter);
+        let mut right = right_edge(rect, at);
         let (state, tone) = sensor.state();
         if sensor.live() {
             let check = at.art.symbol(Symbol::CheckDisc);
@@ -229,18 +240,18 @@ impl Draw<'_> {
         }
         let middle = |face: &Face| rect.top + (rect.height() + usize::from(face.cap)) / 2;
         let shown = out.fit(
-            &[tag],
+            &[note],
             state.as_bytes(),
             right - text,
             right,
-            middle(tag),
+            middle(note),
             Align::Right,
             self.theme.tone(tone),
         );
-        let name = caps(self.menu.row_name(sensor).as_str());
+        let name = self.menu.row_name(sensor);
         let room = shown.left.saturating_sub(text + px(at, LAYOUT.space.gap));
         out.fit(
-            &[label, tag],
+            &[label, note],
             name.as_bytes(),
             room,
             text,
@@ -252,13 +263,13 @@ impl Draw<'_> {
 
     fn found(&self, out: &mut Canvas, identity: Identity, present: bool, bars: u8, rect: Rect) {
         let at = self.at;
-        let (label, tag) = (
+        let (label, note) = (
             self.at.face(LAYOUT.face.label),
-            self.at.face(LAYOUT.face.tag),
+            self.at.face(LAYOUT.face.note),
         );
         let text = self.sensor_icon(out, identity.device_type, rect);
         let all = at.art.symbol(Symbol::Bars);
-        let left = rect.right - px(at, LAYOUT.space.gutter) - usize::from(all.size);
+        let left = right_edge(rect, at) - usize::from(all.size);
         let lit = match bars {
             0 | 1 => Symbol::Bars1,
             2 => Symbol::Bars2,
@@ -270,10 +281,10 @@ impl Draw<'_> {
         }
         icon_at(out, at.art.symbol(lit), left, rect, self.theme.text);
         let room = left.saturating_sub(text + px(at, LAYOUT.space.gap));
-        let (name_base, under_base) = baselines(rect, label, tag, at);
-        let name = caps(names(identity.device_type).short);
+        let (name_base, under_base) = baselines(rect, label, note, at);
+        let name = names(identity.device_type).short;
         out.fit(
-            &[label, tag],
+            &[label, note],
             name.as_bytes(),
             room,
             text,
@@ -286,10 +297,10 @@ impl Draw<'_> {
             let id = self.menu.identity_label(identity);
             let _ = write!(line, "ID {} · ANT+", id.as_str());
         } else {
-            let _ = line.push_str("NOT SEEN");
+            let _ = line.push_str("Not seen");
         }
         out.fit(
-            &[tag],
+            &[note, self.at.face(LAYOUT.face.tag)],
             line.as_bytes(),
             room,
             text,
@@ -317,19 +328,41 @@ impl Draw<'_> {
     }
 }
 
-fn widest_reading(face: &Face) -> usize {
+fn widest_saved(at: &Scaled) -> usize {
     use crate::sensors::ant::device_type;
+    let face = &LAYOUT.face;
+    let (label, tag, digits) = (
+        at.face(face.label),
+        at.face(face.tag),
+        at.face(face.digits_small),
+    );
     let kinds = [
+        device_type::RADAR,
         device_type::POWER,
         device_type::HEART_RATE,
+        device_type::SPEED_CADENCE,
         device_type::CADENCE,
         device_type::SPEED,
+        device_type::SHIFTING,
+        device_type::FITNESS_EQUIPMENT,
+        device_type::BIKE_LIGHTS,
+        0,
     ];
     kinds
         .into_iter()
-        .filter_map(reading)
-        .flat_map(|reading| reading.metric.extremes())
-        .map(|text| face.fit_width(text.as_bytes()))
+        .map(|kind| {
+            let name = label.fit_width(names(kind).short.as_bytes());
+            let value = reading(kind).map_or(0, |reading| {
+                let extremes = reading.metric.extremes();
+                let number = extremes.iter().map(|text| digits.width(text.as_bytes()));
+                let unit = tag.fit_width(reading.tag.as_bytes());
+                px(at, LAYOUT.space.gap)
+                    + number.max().unwrap_or(0)
+                    + px(at, LAYOUT.space.tight)
+                    + unit
+            });
+            name + value
+        })
         .max()
         .unwrap_or(0)
 }
@@ -341,19 +374,22 @@ impl Tile for SensorList {
     fn forms(list: List, at: &Scaled) -> Forms {
         let face = &LAYOUT.face;
         let space = &LAYOUT.space;
-        let (label, tag) = (at.face(face.label), at.face(face.tag));
-        let names = crate::screens::sensors::NAMES.map(|names| caps(names.short));
-        let name = widest::of(label, names.iter().map(|name| name.as_bytes()));
+        let (label, note) = (at.face(face.label), at.face(face.note));
         let icon = usize::from(at.art.sensor(Sensor::Generic, Size::Small).size);
-        let right = match list {
-            List::Sensors => widest_reading(at.face(face.digits_small)),
-            List::Nearby => usize::from(at.art.symbol(Symbol::Bars).size),
+        let row = match list {
+            List::Sensors => widest_saved(at),
+            List::Nearby => {
+                let names = crate::screens::sensors::NAMES.map(|names| names.short.as_bytes());
+                let name = widest::of(label, names);
+                let tag = at.face(face.tag);
+                let line = note
+                    .fit_width(b"ID 65535 \xc2\xb7 ANT+")
+                    .max(tag.fit_width(b"ID  \xc2\xb7 ANT+") + widest::identity(tag));
+                let bars = usize::from(at.art.symbol(Symbol::Bars).size);
+                name.max(line) + px(at, space.gap) + bars
+            }
         };
-        let line = match list {
-            List::Sensors => 0,
-            List::Nearby => tag.fit_width(b"ID  \xc2\xb7 ANT+") + widest::identity(tag),
-        };
-        let width = 3 * px(at, space.gutter) + icon + name.max(line) + px(at, space.gap) + right;
+        let width = 2 * px(at, space.gutter) + px(at, space.pad) + px(at, space.ring) + icon + row;
         let (shapes, runs) = match list {
             List::Sensors => (2 * SHOWN + 2, 4 * SHOWN),
             List::Nearby => (4 * SHOWN + 2, 2 * SHOWN),

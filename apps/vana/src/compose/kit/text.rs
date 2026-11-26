@@ -197,11 +197,11 @@ specs! {
             words: Words::Day,
             style: Style::Note,
             tone: Tone::Sub,
-            align: Align::Right,
+            align: Align::Left,
         },
         ScanWith = 192 => Spec {
             name: "SCAN WITH",
-            words: Words::Fixed("Scan with the "),
+            words: Words::Fixed("Scan with "),
             style: Style::Label,
             tone: Tone::Text,
             align: Align::Left,

@@ -214,7 +214,7 @@ fn a_recorded_tap_replays_as_the_same_tap() {
     let mut sim = Sim::new();
     sim.wait_usable();
     sim.tap(40, 125);
-    sim.expect_text("NEARBY");
+    sim.expect_text("Nearby");
     let lifted = lift(&sim.trace()).unwrap();
     assert!(
         !lifted.left_out.contains_key("touch"),
@@ -223,7 +223,7 @@ fn a_recorded_tap_replays_as_the_same_tap() {
     );
     let replay = replayed(&lifted.plan);
     assert!(
-        replay.screen().contains("NEARBY"),
+        replay.screen().contains("Nearby"),
         "{}",
         replay.screen().text()
     );

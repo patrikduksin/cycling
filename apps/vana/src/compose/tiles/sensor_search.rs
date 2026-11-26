@@ -12,7 +12,7 @@ use core::fmt::Write;
 
 pub struct SensorSearch;
 
-const LINES: [&[u8]; 2] = [b"NO SENSORS FOUND", b"TAP HERE TO SEARCH"];
+const LINES: [&[u8]; 2] = [b"NO SENSORS FOUND", b"TAP TO SEARCH"];
 const WAKE: &[u8] = b"WAKE A SENSOR";
 
 impl Tile for SensorSearch {
@@ -23,14 +23,13 @@ impl Tile for SensorSearch {
         let space = &LAYOUT.space;
         let tag = at.face(LAYOUT.face.tag);
         let line = widest::message(tag).max(widest::of(tag, LINES));
-        let added = (widest::digits(tag, 2) + tag.fit_width(b" ADDED")).max(tag.fit_width(WAKE));
-        let width = 2 * px(at, space.gutter) + px(at, space.dot) + px(at, space.gap) + line;
+        let added = widest::digits(tag, 2) + tag.fit_width(b" ADDED");
+        let lead = 2 * px(at, space.gutter) + px(at, space.dot) + px(at, space.gap);
+        let width = lead + line;
         let searching = tag.fit_width(b"SEARCHING");
-        let beside = 2 * px(at, space.gutter)
-            + px(at, space.dot)
-            + 2 * px(at, space.gap)
-            + searching
-            + added;
+        let aside =
+            (searching + tag.fit_width(WAKE)).max(searching.max(tag.fit_width(LINES[1])) + added);
+        let beside = lead + px(at, space.gap) + aside;
         forms(&[Form {
             width: width.max(beside) as u16,
             height: (tag.fit_height() + px(at, space.pad)) as u16,

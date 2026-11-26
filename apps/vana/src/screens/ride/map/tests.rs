@@ -1,4 +1,5 @@
 use super::*;
+use crate::compose::tiles::scale::KM_ROOM;
 use crate::ride::breadcrumb::{Breadcrumb, Reported};
 use crate::ride::course::nav::Distance;
 use crate::ride::course::route_leg::{self, RouteLeg};
@@ -6,8 +7,7 @@ use crate::ride::geo::TURN;
 use crate::screens::C606;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::{HEIGHT, WIDTH};
-use crate::screens::ride::RidePage;
-use crate::screens::ride::kilometres;
+use crate::screens::ride::{RidePage, kilometres};
 use crate::screens::workout::{Page, Text, View};
 use firmware_shell::rendering::font::FaceRole;
 
@@ -61,7 +61,7 @@ fn laid(device: &'static crate::screens::Device) -> Laid {
                 bottom: top + at.unit(3),
             },
             gap: at.unit(6),
-            distance_right: rect.right - at.unit(12) - at.unit(25),
+            distance_right: rect.right - at.unit(12) - at.unit(KM_ROOM),
         },
     }
 }

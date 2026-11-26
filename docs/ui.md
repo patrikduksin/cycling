@@ -47,10 +47,15 @@ below). Other screens follow the rules in the rest of this document.
   tabular digits (34 px where a chart shares the page), filled by zone or
   steepness with black ink, and a `%` at two-thirds size on the baseline.
   Beside a radar a field drops its symbol, then its wide margins, before
-  its digits shrink. `road field` is a field that follows the road: a
+  its digits shrink; with tight margins a zone tag that does not fit
+  beside the title stands right of the number, on its baseline. `road field` is a field that follows the road: a
   different field on the flat, on a climb and on a course's climb. `road
   profile` is a three-column summary over the climb chart. `top line` shows the recording dot and
-  time, and the satellite and battery coloured by state. `rule` is a 1 px
+  time, the satellite coloured by the fix and the battery glyph: a 19 × 10
+  pill with a nub, its outline in `sub` and its fill as full as the charge,
+  in `text`, `warn` at 30% or less, `bad` under 20% (with the red
+  percentage left of it) and `good` while it charges, its fill climbing to
+  full. Home draws the same glyph. `rule` is a 1 px
   line in the rule colour. `text` is one line of words or a metric, in
   sentence case where the face has lowercase. `symbol` is one icon in a
   tone. `item` is an Apple-Watch-style rounded button with a focus ring and
@@ -68,9 +73,9 @@ below). Other screens follow the rules in the rest of this document.
 ### Home and the swipe-down sheet
 
 Home is a watch face (`compose/builtin/home.rs`, tiles in
-`compose/tiles/home.rs`, ids 107–110). The battery percentage sits top
-right in its level's colour, then the date (`Tuesday 24 Nov`) and the time
-in the 64 px clock face. Under them, one status widget: the satellite with
+`compose/tiles/home.rs`, ids 107–110). The battery glyph sits top right,
+then the date (`Tuesday 24 Nov`) in `HEADING` and `sub` and the time in the
+64 px clock face. Under them, one status widget: the satellite with
 a dot for the fix, a rule, and the first three saved sensors in their metric
 colours, each with a dot: green when live, amber while not yet or with a low
 battery, red with a critical one (the sheet's Sensors row does the same). The start
@@ -86,8 +91,9 @@ There is no Ready page and no fix to wait for. Rolling off on Home starts
 nothing. BACK asks to turn off, and a refused turn-off shows as a toast.
 
 The swipe-down sheet (`compose/tiles/sheet.rs`) paints its card in the
-look's own colours over the dimmed screen. It shows the brightness bar with a
-small sun and a big one, the Sensors row with each sensor's live dot and a
+look's own colours over the dimmed screen. It shows the brightness bar, lit
+in `info` up to the level over a `raised` track, with a small sun and a big
+one in `text`, so both read in either look, the Sensors row with each sensor's live dot and a
 chevron, and the Day/Night tile, which names the look in force.
 
 ## Principles
@@ -150,7 +156,7 @@ not jitter as they change.
 
 | Face | Nunito | Height | Use |
 | --- | --- | --- | --- |
-| `CAPTION` | 800, 13 px | 14 px, caps 11 | Units, labels, the status bar, chart annotations |
+| `CAPTION` | 800, 14 px | 15 px, caps 11 | Units, labels, the status bar, chart annotations |
 | `BODY` | 800, 18 px | 19 px, caps 14 | Card titles, toasts, sensor names, the clock |
 | `TITLE` | 900, 34 px | 37 px, caps 26 | One headline per screen (RIDE, SENSORS) |
 | `VALUE` | 700, 34 px | 29 px, digits 26 | Secondary readings: elapsed time, cadence, distance, grade |
@@ -164,12 +170,12 @@ draw and holding only the characters it shows: `SIGN_50`, `SIGN_32`,
 sign, `TOTAL_60`, `TOTAL_30` (700) and `TOTAL_11` (900) for the totals, and
 `FOOT_20` (700) for the distance in the map's footer. See Course sign below.
 
-The kit has its own faces. `NOTE` (700, 13 px), `LABEL` (800, 15 px) and
+The kit has its own faces. `NOTE` (700, 15 px), `LABEL` (800, 17 px) and
 `HEADING` (800, 21 px) hold printable ASCII, lowercase included, for
 sentence-case subtitles and list labels, list values and button labels, and
-a phone-style screen's title. `TAG` (800, 11 px, capitals) is for ride-page
+a phone-style screen's title. `TAG` (800, 13 px, capitals) is for ride-page
 field titles, zone tags and the top line's battery. `DIGITS_40`, `DIGITS_26`
-and `DIGITS_15` (700) hold the value characters for ride-grid digits, the %
+and `DIGITS_17` (700) hold the value characters for ride-grid digits, the %
 beside them and mid-size values, and the top line's elapsed time. A face
 without lowercase draws a lowercase letter as its capital. `TAG`, `NOTE`,
 `LABEL` and `HEADING` draw a middle dot in the caret's slot, and
@@ -359,38 +365,46 @@ pixel of each other at any size; `--zoom DIR` writes 8x sheets to review.
 
 ## Sensors
 
-The sensor screens are kit pages in both looks (`ScreenId::themed`). The
-two lists are glance rows under the status bar; a sensor's page and
-FORGET? are phone style.
+The sensor screens are kit pages in both looks (`ScreenId::themed`). Every
+page but FORGET? opens with one `nav header`: the back chevron in `sub`, the
+page's title in `HEADING` (Sensors, Nearby, or the sensor's long name) and
+the clock on the right in the top line's face. A tap on it goes back.
+FORGET? is a question, phone style, like the other confirmations.
 
-- SENSORS lists the saved sensors under a back chevron and its `HEADING`
-  title. A row is an icon in its metric's tone, the name in `LABEL`
-  capitals over a `TAG` state line in its state's tone (LIVE in `good`,
-  SEARCHING in `warn`, NOT IN RANGE in `sub`), and on the right the unit
-  over the live reading in `DIGITS_26`, or `--` while the sensor sends
-  nothing. A live sensor's line adds its voltage, or a battery that wants
-  changing in its tone. A sensor the search just added says NEW. Two saved
-  sensors of one kind take their maker's name. ADD SENSOR, in `good` with
-  a plus, is the last row and opens NEARBY. A save or radio problem takes
-  the title's place in `warn`.
+- SENSORS lists the saved sensors. A row is an icon in its metric's tone,
+  the name in `LABEL` over a `NOTE` state line in its state's tone (Live in
+  `good`, Searching in `warn`, Not in range in `sub`), and at the right,
+  clear of the focus ring, the live reading in `DIGITS_26` with its unit in
+  `TAG` on one baseline, centred down the row, or `--` alone while the
+  sensor sends nothing. A live sensor's line adds its voltage, or a
+  battery that wants changing in its tone; a sensor the search just added
+  says New. Where the line runs into the reading, the voltage, then New,
+  give way, and Battery shortens to Batt. Two saved sensors of one kind
+  take their maker's name. Add sensor, in `good` with a plus, is the last
+  row and opens NEARBY. A save or radio problem takes the title's place
+  in `warn`, and the clock's room.
 - NEARBY is the only page that searches: it asks for a search as it opens,
-  and leaving it stops the search. A `TAG` line under its title says how
+  and leaving it stops the search. A `TAG` line under its header says how
   the search goes behind a dot (SEARCHING in `info`, or a problem in
   `warn`); a tap on it searches again. Its right end says WAKE A SENSOR
   until the search added one, then how many, such as 2 ADDED in `good`.
   Found sensors are listed strongest signal first with signal bars; each
-  sensor added folds into a short row at the top that says LIVE with a
+  sensor added folds into a short row at the top that says Live with a
   check. The hint under the list says what to do next.
 - Both lists are plain focus lists (`compose::tiles::sensor_list`): MOVE
   steps the focus, a tap selects, and the rows start at the first that
   lets the focused one show whole, at most five at once.
-- A sensor's page has its top line (back chevron, SENSORS and the clock),
-  its icon on a `raised` tile, its long name in `HEADING` and its maker in
-  `NOTE`, then a card of Status, Reading, Battery, ID and Link. Forget sits
-  over MOVE and, on a power meter, Zero over ACT; while a zero runs or just
-  ran, Status says how it went. FORGET? asks with a trash disc, says which
+- A sensor's page shows its icon large on a `raised` disc ringed in its
+  state's tone, the live reading under it in `DIGITS_34` and the metric's
+  tone with its unit, then two chips: its battery as the top line's glyph,
+  filled by the status it reports in that status's tone (none when it
+  reports none), and a dot and its state, or how the last zero went on a
+  power meter. "ID 1234 · ANT+" in `NOTE` and `sub` closes it. Forget sits
+  over MOVE and, on a power meter, Zero over ACT; on any other sensor
+  Forget takes the whole row. FORGET? asks with a trash disc, says which
   sensor, and puts Back over MOVE and Forget over ACT. Each button is the
-  kit's `item`; a tap on one acts as its key.
+  kit's `item`, whose chevron is in `sub` as the header's is; a tap on one
+  acts as its key.
 
 ## Spacing and chrome
 
@@ -428,7 +442,7 @@ the rider may need at any moment:
 - which page is showing;
 - GPS: grey while searching, green when fixed;
 - battery: an icon filled to the charge, white, amber at 30% or less; below
-  20% a red percentage replaces the icon. On USB power a green bolt sits
+  20% a red percentage replaces the icon, unless page dots need its room. On USB power a green bolt sits
   left of the icon, which stays even when low, and its green fill climbs
   from the charge to full in four steps, one per frame, then starts again;
 - the clock.
@@ -437,7 +451,8 @@ Items are laid out with measured widths, in priority order: the ride mark,
 the clock, the battery, then the page dots and GPS. The ride mark drops its
 word (REC, PAUSED, AUTO) where the word would reach the clock. Page dots
 close up from an 11 px to an 8 px and then a 7 px pitch. If they still do
-not fit, GPS gives way to them, and only then are they dropped. Any other
+not fit, GPS gives way to them, then a low percentage to its red icon,
+and only then are they dropped. Any other
 item that does not fit is left out. Items never overlap. While recording,
 every combination fits.
 

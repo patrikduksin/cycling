@@ -339,7 +339,7 @@ fn the_sensor_pages_draw_on_both_test_panels() {
         let name = model.name;
         let mut twin = Twin::paired(model, sensors, &KINDS[..2]);
         twin.guide(|sim| sim.home("SENSORS"));
-        shows(&twin.sim, &["SENSORS", "HEART RATE", "POWER", "ADD SENSOR"]);
+        shows(&twin.sim, &["Sensors", "Heart rate", "Power", "Add sensor"]);
         twin.sim.checkpoint(&format!("sensors on {name}"));
         twin.guide(|sim| sim.open_sensor_detail("POWER METER"));
         shows(&twin.sim, &["Power meter", "Live", "1234", "ANT+"]);
@@ -348,18 +348,18 @@ fn the_sensor_pages_draw_on_both_test_panels() {
             sim.press(Role::Back);
             sim.nearby_page();
         });
-        shows(&twin.sim, &["NEARBY"]);
+        shows(&twin.sim, &["Nearby"]);
         twin.sim.checkpoint(&format!("scanning on {name}"));
         twin.guide(|sim| sim.wait_for("ID 31", seconds(20)).map(drop).unwrap());
-        shows(&twin.sim, &["NEARBY", "RADAR", "31", "777"]);
+        shows(&twin.sim, &["Nearby", "Radar", "31", "777"]);
         twin.sim.checkpoint(&format!("nearby on {name}"));
 
         twin.sim.press(Role::Back);
-        twin.sim.expect_text("ADD SENSOR");
+        twin.sim.expect_text("Add sensor");
         let row = twin
             .sim
             .screen()
-            .run("POWER")
+            .run("Power")
             .expect("the power meter's row");
         twin.sim.tap(row.x as u16, row.y as u16 + 4);
         twin.sim.advance(seconds(1));

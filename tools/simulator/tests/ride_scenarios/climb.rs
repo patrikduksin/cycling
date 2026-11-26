@@ -140,7 +140,7 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
     ride_to(&mut sim, 1200.0);
     sim.expect_text("ALTITUDE M");
-    let confirmed = ride_until_shown(&mut sim, "CLIMB DIST KM", 1600.0);
+    let confirmed = ride_until_shown(&mut sim, "LENGTH KM", 1600.0);
     assert!(
         (1300.0..1450.0).contains(&confirmed),
         "climb confirmed at {confirmed:.0} m"
@@ -148,15 +148,15 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
 
     ride_to(&mut sim, 1750.0);
     expect_grade(&mut sim, 6.0, 0.5);
-    expect_near(&mut sim, "CLIMB ELEV M", 45.0, 4.0);
-    expect_near(&mut sim, "CLIMB DIST KM", 0.75, 0.1);
+    expect_near(&mut sim, "HEIGHT M", 45.0, 4.0);
+    expect_near(&mut sim, "LENGTH KM", 0.75, 0.1);
     sim.expect_text("260");
     sim.checkpoint("climb page mid-climb");
 
     ride_to(&mut sim, 2510.0);
-    sim.expect_text("CLIMB DIST KM");
-    expect_near(&mut sim, "CLIMB ELEV M", 90.0, 4.0);
-    expect_near(&mut sim, "CLIMB DIST KM", 1.5, 0.1);
+    sim.expect_text("LENGTH KM");
+    expect_near(&mut sim, "HEIGHT M", 90.0, 4.0);
+    expect_near(&mut sim, "LENGTH KM", 1.5, 0.1);
     sim.checkpoint("climb page at the top");
 
     // Over the top at 40 km/h the climb ends within about 200 m.
@@ -181,7 +181,7 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     ride_page(&mut sim, "ride/climb");
     ride_to(&mut sim, 1000.0);
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    ride_until_shown(&mut sim, "CLIMB DIST KM", 1600.0);
+    ride_until_shown(&mut sim, "LENGTH KM", 1600.0);
     ride_to(&mut sim, 1600.0);
 
     // 400 m of climbing without pressure readings: the climb page stays.
@@ -189,13 +189,13 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     while sim.world().distance_m < 2000.0 {
         sim.advance(seconds(1));
         assert_eq!(sim.ride_page_name().as_deref(), Some("ride/climb"));
-        sim.expect_text("CLIMB DIST KM");
+        sim.expect_text("LENGTH KM");
     }
     sim.checkpoint("climbing through a barometer gap");
     sim.set_barometer(true);
     ride_to(&mut sim, 2400.0);
-    sim.expect_text("CLIMB DIST KM");
-    expect_near(&mut sim, "CLIMB ELEV M", 84.0, 5.0);
+    sim.expect_text("LENGTH KM");
+    expect_near(&mut sim, "HEIGHT M", 84.0, 5.0);
     sim.checkpoint("climbing after the barometer returns");
 }
 

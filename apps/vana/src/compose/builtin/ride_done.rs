@@ -1,7 +1,7 @@
-//! Ride done, full screen after a ride is saved: a green tick, "Ride saved"
-//! and the day across the top, the picture (`screens::done`) taking most of
-//! the screen, three numbers under it and the time in each power zone along
-//! the foot. Any key or a tap goes Home.
+//! Ride done, full screen after a ride is saved: a green tick beside "Ride
+//! saved" over the day, the picture (`screens::done`) taking most of the
+//! screen, one number big under it and two beside each other under that,
+//! and the time in each power zone along the foot. Any key or a tap goes Home.
 use super::{Builtin, Nodes};
 use crate::compose::input::{Action, Button, Buttons};
 use crate::compose::kit::bar::Gauge;
@@ -35,29 +35,31 @@ pub const BUILTIN: &Builtin = &Builtin {
 fn tree() -> Nodes {
     let space = &LAYOUT.space;
     let (content, grow) = (Size::CONTENT, Size::grow(1));
-    let side = space.gutter + space.tight;
+    let side = space.gutter;
     [
-        Node::col(9, grow),
+        Node::col(10, grow),
         self::space(2 * space.pad),
-        Node::row(7, content),
+        Node::row(4, content),
         self::space(side),
         Node::leaf(SYMBOL, Mark::Saved as u8, content),
         self::space(space.pad),
+        Node::col(3, grow),
         Node::leaf(TEXT, Say::RideSaved as u8, content),
-        Node::leaf(SPACE, 0, grow),
+        self::space(space.tight),
         Node::leaf(TEXT, Say::SavedOn as u8, content),
-        self::space(side),
         self::space(space.gutter),
         Node::row(3, Size::grow(3)),
         self::space(space.tight),
         Node::leaf(PICTURE, Frame::Done as u8, grow),
         self::space(space.tight),
         self::space(space.pad),
-        Node::row(5, content),
+        Node::row(2, content),
         self::space(side),
-        Node::leaf(STAT, Slot::First as u8, Size::grow(5)),
-        Node::leaf(STAT, Slot::Second as u8, Size::grow(4)),
-        Node::leaf(STAT, Slot::Third as u8, Size::grow(4)),
+        Node::leaf(STAT, Slot::First as u8, grow),
+        Node::row(4, content),
+        self::space(side),
+        Node::leaf(STAT, Slot::Second as u8, grow),
+        Node::leaf(STAT, Slot::Third as u8, grow),
         self::space(side),
         Node::leaf(SPACE, 0, grow),
         Node::row(3, content),

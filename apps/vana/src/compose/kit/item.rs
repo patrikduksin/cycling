@@ -108,7 +108,7 @@ fn shared_width(at: &Scaled) -> usize {
         let (symbol, label) = group(button.spec(), at);
         symbol + label
     });
-    2 * px(at, LAYOUT.space.gutter) + widest.max().unwrap_or(0)
+    2 * px(at, LAYOUT.space.pad) + widest.max().unwrap_or(0)
 }
 
 /// The symbol's ink width and the label's, as one centred group.
@@ -162,11 +162,16 @@ fn draw(
     if let Some(symbol) = spec.symbol {
         let icon = at.art.symbol(symbol);
         let ink_box = icon.ink(0, 0);
+        let color = if symbol == Symbol::Chevron && !spec.solid {
+            theme.sub
+        } else {
+            ink
+        };
         out.shape(Shape::Icon {
             icon: StaticIcon(icon),
             left: x.saturating_sub(ink_box.left),
             top: middle.saturating_sub(ink_box.top + ink_box.height() / 2),
-            color: ink,
+            color,
         });
         x += ink_box.width() + px(at, LAYOUT.space.tight);
     }

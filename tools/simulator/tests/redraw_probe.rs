@@ -18,16 +18,26 @@ fn a_still_page_submits_no_frame() {
     assert!(result.changes.len() <= 1, "{}", result.changes.len());
 }
 
+/// Seconds each charging case runs, and the glyph's fills a second.
+const SECONDS: u64 = 30;
+const FILLS_A_SECOND: usize = 2;
+
 #[test]
-fn home_on_usb_draws_only_when_its_percentage_changes() {
-    for charging in [
-        "home, charging at 50%",
-        "home, charging at 99%",
-        "home, charging at 100%",
+fn home_on_usb_draws_once_a_step_while_its_battery_glyph_fills() {
+    for (charging, most) in [
+        (
+            "home, charging at 50%",
+            FILLS_A_SECOND * SECONDS as usize + 2,
+        ),
+        (
+            "home, charging at 99%",
+            FILLS_A_SECOND * SECONDS as usize + 2,
+        ),
+        ("home, charging at 100%", 2),
     ] {
-        let result = run(case(charging), 30);
+        let result = run(case(charging), SECONDS);
         assert!(
-            result.changes.len() <= 2,
+            result.changes.len() <= most,
             "{charging}: {}",
             result.changes.len()
         );

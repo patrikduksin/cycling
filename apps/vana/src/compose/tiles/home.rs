@@ -1,6 +1,6 @@
 use crate::compose::data::{Data, PageData};
 use crate::compose::input::{Action, Go, Plan};
-use crate::compose::kit::top_line::{battery_color, gps_color};
+use crate::compose::kit::top_line::{BATTERY_SHAPES, battery, battery_width, gps_color};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Arg, Form, Forms, Tile, forms};
 use crate::screens::canvas::{Canvas, Shape};
@@ -10,18 +10,17 @@ use crate::screens::icons::{Icon, Sensor, Size, StaticIcon, Symbol};
 use crate::screens::scaled::Scaled;
 use crate::screens::sensors::Glance;
 use crate::screens::theme::{LAYOUT, Theme, Tone};
-use crate::screens::workout::{Page, Text};
+use crate::screens::workout::Page;
 use crate::sensors::ant::{BatteryStatus, device_type};
-use core::fmt::Write;
 
 const RING_GAP: usize = 2;
 const CARD_RADIUS: usize = 18;
 const CARD_PAD: usize = 12;
 const DISC_GAP: usize = 10;
 
-pub const FACE_UNITS: u8 = 100;
-const DATE_BASE: usize = 39;
-const TIME_BASE: usize = 96;
+pub const FACE_UNITS: u8 = 108;
+const DATE_BASE: usize = 44;
+const TIME_BASE: usize = 103;
 const BATTERY_LINE: usize = 24;
 const FACE_INSET: usize = 14;
 const BATTERY_INSET: usize = 12;
@@ -101,12 +100,13 @@ impl Tile for Face {
     const NAME: &'static str = "face";
 
     fn forms((): (), at: &Scaled) -> Forms {
-        let date = at.face(LAYOUT.face.note).fit_width(b"Wednesday 30 Sep");
+        let date = at.face(LAYOUT.face.heading).fit_width(b"Wednesday 30 Sep");
         let time = at.face(LAYOUT.face.clock).fit_width(b"12:59");
+        let widest = date.max(time).max(battery_width(at));
         forms(&[Form {
-            width: (2 * at.unit(FACE_INSET) + date.max(time)) as u16,
+            width: (2 * at.unit(FACE_INSET) + widest) as u16,
             height: at.unit(usize::from(FACE_UNITS)) as u16,
-            shapes: 0,
+            shapes: BATTERY_SHAPES,
             runs: 3,
         }])
     }
@@ -118,29 +118,17 @@ impl Tile for Face {
         let theme = data.theme();
         let rect = placed.rect.rect();
         let (left, width) = (rect.left + at.unit(FACE_INSET), rect.width());
-        if let Some(battery) = data.status().battery {
-            let tag = at.face(LAYOUT.face.tag);
-            let mut percent = Text::<5>::new();
-            let _ = write!(percent, "{}%", battery.percent.min(100));
-            let base = rect.top + (at.unit(BATTERY_LINE) + usize::from(tag.cap)) / 2;
+        if let Some(level) = data.status().battery {
+            let middle = rect.top + at.unit(BATTERY_LINE) / 2;
             let right = rect.right - at.unit(BATTERY_INSET);
-            let color = battery_color(theme, battery);
-            out.fit(
-                &[tag],
-                percent.as_bytes(),
-                width,
-                right,
-                base,
-                Align::Right,
-                color,
-            );
+            battery(out, at, theme, level, (right, middle), theme.bg);
         }
         if let Some(local) = home.local {
             let date = home::date(local);
             let base = rect.top + at.unit(DATE_BASE);
-            let note = at.face(LAYOUT.face.note);
+            let heading = at.face(LAYOUT.face.heading);
             out.fit(
-                &[note],
+                &[heading],
                 date.as_bytes(),
                 width,
                 left,

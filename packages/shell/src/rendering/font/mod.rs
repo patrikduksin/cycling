@@ -13,7 +13,7 @@ use super::work;
 use core::ops::Range;
 
 pub use faces::{
-    BODY, CAPTION, CLOCK, DIGITS_15, DIGITS_19, DIGITS_22, DIGITS_26, DIGITS_34, DIGITS_40, FACES,
+    BODY, CAPTION, CLOCK, DIGITS_17, DIGITS_19, DIGITS_22, DIGITS_26, DIGITS_34, DIGITS_40, FACES,
     FOOT_20, HEADING, HERO, LABEL, LARGE, NOTE, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27,
     SIGN_32, SIGN_50, TAG, TITLE, TOTAL_11, TOTAL_30, TOTAL_60, VALUE,
 };
@@ -45,7 +45,7 @@ pub enum FaceRole {
     Heading,
     Digits40,
     Digits26,
-    Digits15,
+    Digits17,
     Digits34,
     Digits22,
     Digits19,
@@ -654,7 +654,7 @@ mod tests {
             assert_eq!(face.glyph(b'~').advance, face.glyph(b' ').advance);
             assert_eq!(Line::<8>::new(face, b"Ride").text(), b"RIDE");
         }
-        for face in [&DIGITS_40, &DIGITS_26, &DIGITS_15] {
+        for face in [&DIGITS_40, &DIGITS_26, &DIGITS_17] {
             assert!(b"0123456789:.-%".iter().all(|&c| face.glyph(c).w > 0));
         }
     }

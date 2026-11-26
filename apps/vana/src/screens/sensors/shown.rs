@@ -5,7 +5,7 @@ use super::slot::Selected;
 use super::{CalibrationNote, MenuMessage, names};
 use crate::compose::builtin::{Laid, ScreenId};
 use crate::compose::data::Metric;
-use crate::compose::registry::{self, ITEM, SENSOR_BACK, SENSOR_LIST, SENSOR_SEARCH, SENSOR_TITLE};
+use crate::compose::registry::{self, ITEM, NAV_HEADER, SENSOR_LIST, SENSOR_SEARCH};
 use crate::compose::tile::Arg;
 use crate::compose::tiles::sensor_list;
 use crate::screens::Device;
@@ -212,8 +212,8 @@ impl Menu {
         let trouble = state.notice.or(state.message.filter(|m| m.on_sensors()));
         match (list, trouble) {
             (List::Sensors, Some(problem)) => (problem.short(), Tone::Warn),
-            (List::Sensors, None) => ("SENSORS", Tone::Text),
-            (List::Nearby, _) => ("NEARBY", Tone::Text),
+            (List::Sensors, None) => ("Sensors", Tone::Text),
+            (List::Nearby, _) => ("Nearby", Tone::Text),
         }
     }
 
@@ -231,7 +231,7 @@ impl Menu {
             Some(MenuMessage::Added | MenuMessage::Scanning) | None if state.scanning => {
                 ("SEARCHING", Tone::Info)
             }
-            Some(MenuMessage::Added) | None => ("TAP HERE TO SEARCH", Tone::Sub),
+            Some(MenuMessage::Added) | None => ("TAP TO SEARCH", Tone::Sub),
             Some(message) => (message.short(), Tone::Info),
         };
         let mut line = Text::new();
@@ -337,7 +337,7 @@ impl Menu {
             return Some(Target::Key(cue.role));
         }
         let under = |component| laid.box_of(component).is_some_and(|b| b.contains(x, y));
-        if under(SENSOR_TITLE) || under(SENSOR_BACK) {
+        if under(NAV_HEADER) {
             return Some(Target::Key(Role::Back));
         }
         if under(SENSOR_SEARCH) {

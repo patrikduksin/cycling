@@ -30,12 +30,13 @@ TEXT = "".join(chr(c) for c in range(FIRST, CAPS_LAST + 1))
 PRINTABLE = "".join(chr(c) for c in range(FIRST, LAST + 1))
 NUMBERS = " +-./0123456789:%"
 DOT_SLOT, DOT = "^", "·"
+ALWAYS_SOLID = ":+"  # a clock's colon and the plus of ANT+
 KIT_TEXT = TEXT.replace(DOT_SLOT, DOT)
 KIT_PRINTABLE = PRINTABLE.replace(DOT_SLOT, DOT)
 
 # name, weight, em size in pixels, characters, extra tracking in pixels, doc
 FACES = [
-    ("CAPTION", 800, 13, TEXT, 1, "Small capitals for labels, units and the status bar."),
+    ("CAPTION", 800, 14, TEXT, 1, "Small capitals for labels, units and the status bar."),
     ("BODY", 800, 18, TEXT, 0, "Titles inside cards, toasts and sensor names."),
     ("TITLE", 900, 34, TEXT, 1, "One headline per screen, such as RIDE."),
     ("VALUE", 700, 34, NUMBERS, 0, "Secondary readings."),
@@ -52,13 +53,13 @@ FACES = [
     ("TOTAL_30", 700, 30, NUMBERS, 0, "The ride's averages when a course is done."),
     ("TOTAL_11", 900, 11, "ABCDEGHIKMNPRSTVW /", 0.6, "The captions over those totals."),
     ("FOOT_20", 700, 20, NUMBERS, 0, "The distance left in the map's footer."),
-    ("TAG", 800, 11, KIT_TEXT, 0, "Ride-page field titles, zone tags and the top line's battery."),
-    ("NOTE", 700, 13, KIT_PRINTABLE, 0, "Sentence-case subtitles and list labels."),
-    ("LABEL", 800, 15, KIT_PRINTABLE, 0, "List values and button labels."),
+    ("TAG", 800, 13, KIT_TEXT, 0, "Ride-page field titles, zone tags and the top line's battery."),
+    ("NOTE", 700, 15, KIT_PRINTABLE, 0, "Sentence-case subtitles and list labels."),
+    ("LABEL", 800, 17, KIT_PRINTABLE, 0, "List values and button labels."),
     ("HEADING", 800, 21, KIT_PRINTABLE, 0, "A phone-style screen's title."),
     ("DIGITS_40", 700, 40, NUMBERS, 0, "Ride-grid field digits."),
     ("DIGITS_26", 700, 26, NUMBERS, 0, "The % beside 40 px digits, and mid-size values."),
-    ("DIGITS_15", 700, 15, NUMBERS, 0, "The ride top line's elapsed time."),
+    ("DIGITS_17", 700, 17, NUMBERS, 0, "The ride top line's elapsed time."),
     ("DIGITS_34", 700, 34, NUMBERS, 0, "Ride-grid field digits where a chart shares the page."),
     ("DIGITS_22", 700, 22, NUMBERS, 0, "The % beside 34 px digits."),
     ("DIGITS_19", 700, 19, NUMBERS + "km", 0, "A chart's summary: lengths in km and grades."),
@@ -98,9 +99,8 @@ def rasterize(weight: int, size: int, chars: str, tracking: float, faint: FaintG
             top += box[1] - 2
             data = canvas.tobytes()
             pixels = [quantize(data[y * width + x]) for y in range(height) for x in range(width)]
-            if 15 not in pixels and not faint.allowed:
+            if 15 not in pixels and (not faint.allowed or char in ALWAYS_SOLID):
                 # A stroke that straddles pixel rows, as a small "-" does, has
-                # no solid pixel; at scale 1 its strongest pixels become solid.
                 strongest = max(pixels)
                 pixels = [(p * 15 + strongest // 2) // strongest for p in pixels]
             if 15 not in pixels:

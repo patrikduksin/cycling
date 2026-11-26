@@ -247,7 +247,7 @@ const fn fitted(rect: Rect, radius: usize) -> usize {
 /// Runs and shapes in paint order: shapes first, then text over them.
 #[derive(Clone, Default, Hash)]
 pub struct Canvas {
-    pub shapes: Vec<Shape, 24>,
+    pub shapes: Vec<Shape, 28>,
     pub runs: Vec<Run, 28>,
     cover: Option<(u8, u8)>,
     /// Shapes and runs that found the canvas full: the layout check fails a

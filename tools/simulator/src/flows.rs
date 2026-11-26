@@ -9,7 +9,7 @@ pub fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
 }
 
-const WIDGET_RING: (usize, usize) = (40, 109);
+const WIDGET_RING: (usize, usize) = (40, vana::compose::tiles::home::FACE_UNITS as usize + 9);
 
 impl Sim {
     /// The host reads its last outcome (`RIDE STATUS`) before VANA accepts another ride action.
@@ -62,7 +62,7 @@ impl Sim {
                 return;
             }
             let screen = self.screen();
-            let row = screen.run("ADD SENSOR");
+            let row = screen.run("Add sensor");
             let act = row.is_some_and(|row| focused(&screen, &row));
             self.press(if act { Role::Act } else { Role::Move });
         }
@@ -464,29 +464,25 @@ impl Sim {
     }
 }
 
-/// NEARBY names itself in its title.
 fn on_nearby(screen: &crate::sim::Screen) -> bool {
-    screen.run("NEARBY").is_some()
+    screen.run("Nearby").is_some()
 }
 
-/// The row name, in the capitals a list draws, of the sensor whose page
-/// title is `kind` in capitals, such as "POWER" for "POWER METER".
 fn row_name(kind: &str) -> String {
     let names = vana::screens::sensors::NAMES.iter();
-    let named = names
-        .into_iter()
-        .find(|names| names.long.eq_ignore_ascii_case(kind));
-    named.map_or(kind, |names| names.short).to_ascii_uppercase()
+    let named = names.into_iter().find(|names| {
+        names.long.eq_ignore_ascii_case(kind) || names.short.eq_ignore_ascii_case(kind)
+    });
+    named.map_or(kind, |names| names.short).to_string()
 }
 
-/// The state line under `kind`'s name reads LIVE.
 fn row_live(screen: &crate::sim::Screen, kind: &str) -> bool {
     let runs = screen.frame().read();
     let Some(name) = runs.iter().find(|run| run.text == row_name(kind)) else {
         return false;
     };
     runs.iter().any(|run| {
-        run.text.contains("LIVE")
+        run.text.contains("Live")
             && run.x.abs_diff(name.x) < 4
             && (name.y + 8..name.y + 30).contains(&run.y)
     })

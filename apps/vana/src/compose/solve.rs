@@ -10,7 +10,7 @@ use crate::screens::chrome::Rect;
 use crate::screens::scaled::Scaled;
 
 pub const MAX_LEAVES: usize = 24;
-pub const MAX_SHAPES: u16 = 24;
+pub const MAX_SHAPES: u16 = 28;
 pub const MAX_RUNS: u16 = 28;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

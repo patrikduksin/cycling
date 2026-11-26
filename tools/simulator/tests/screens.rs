@@ -1,6 +1,6 @@
 use device_api::input::Role;
 use device_api::server::Method;
-use shell_simulator::ant::device_type;
+use shell_simulator::ant::{BatteryReport, device_type};
 use shell_simulator::artifacts::Canvas;
 use shell_simulator::bulk::Presence;
 use shell_simulator::devices::Model;
@@ -135,10 +135,18 @@ fn origin() -> Point {
 
 fn sensors(model: Model) -> Sim {
     let mut sim = Sim::on(model);
+    sim.set_battery(64, false);
     sim.ant_sensor(device_type::HEART_RATE, 4242);
-    sim.ant_sensor(device_type::POWER, 1234);
+    sim.ant_sensor(device_type::POWER, 1234).battery = Some(BatteryReport::new(2, 2_900));
     sim.ant_sensor(device_type::SPEED_CADENCE, 777);
     sim.ant_sensor(device_type::RADAR, 31);
+    sim
+}
+
+fn low_batteries(model: Model) -> Sim {
+    let mut sim = sensors(model);
+    sim.set_battery(12, false);
+    sim.ant_sensor(device_type::HEART_RATE, 4242).battery = Some(BatteryReport::new(4, 2_450));
     sim
 }
 
@@ -221,6 +229,18 @@ fn menus() {
     walk.cell("sensors", "scanning");
     walk.guide(|sim| sim.wait_for("ID 31", seconds(20)).map(drop).unwrap());
     walk.cell("sensors", "nearby");
+}
+
+#[test]
+fn low_batteries_show() {
+    let mut walk = Walk::paired(low_batteries, &KINDS[..1]);
+    walk.advance(seconds(12));
+    walk.cell("home", "low-battery");
+    walk.guide(|sim| {
+        sim.home("SENSORS");
+        sim.open_sensor_detail("HEART RATE");
+    });
+    walk.cell("sensors", "detail-low-battery");
 }
 
 impl Walk {

@@ -97,22 +97,15 @@ fn the_map_shows_the_climbs_up_g21_before_and_while_riding_them() {
     sim.ride_at(14.0, 240.0, 0.0, 80.0);
     // G-21 starts on a short rise to about 410 m: the map has the rider on
     // a climb from the first fixes, and brings up the climb page.
-    ride_until_shown(&mut sim, "DIST TO TOP KM", 100.0);
+    ride_until_shown(&mut sim, "TO TOP KM", 100.0);
     assert_eq!(sim.ride_page_name().as_deref(), Some("ride/climb"));
     // Ahead of the first ramp, 700 m from the start, and on it, the page
     // shows that climb to its top.
     let shown = 650.0;
     ride_to(&mut sim, shown);
-    sim.expect_text("DIST TO TOP KM");
+    sim.expect_text("TO TOP KM");
     assert_eq!(sim.ride_page_name().as_deref(), Some("ride/climb"));
-    for label in [
-        "CLIMB",
-        "AVG",
-        "MAX",
-        "ELEV TO TOP M",
-        "CAD RPM",
-        "HEART BPM",
-    ] {
+    for label in ["CLIMB", "AVG", "MAX", "TO TOP M", "CAD RPM", "HEART BPM"] {
         assert!(
             sim.screen().contains(label),
             "{label}:\n{}",
@@ -123,11 +116,11 @@ fn the_map_shows_the_climbs_up_g21_before_and_while_riding_them() {
 
     // On the ramp the page counts down to its top.
     ride_to(&mut sim, shown + 250.0);
-    let first = field(&sim, "ELEV TO TOP M");
+    let first = field(&sim, "TO TOP M");
     sim.checkpoint("climb page counting down to the top");
     ride_to(&mut sim, shown + 400.0);
-    sim.expect_text("DIST TO TOP KM");
-    let later = field(&sim, "ELEV TO TOP M");
+    sim.expect_text("TO TOP KM");
+    let later = field(&sim, "TO TOP M");
     assert!(later < first, "{later} m to go, was {first}");
     sim.checkpoint("climb page nearer the top");
 }

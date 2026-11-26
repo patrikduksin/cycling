@@ -68,15 +68,15 @@ impl Tile for Level {
             rect,
             radius: at.unit(BAR_RADIUS),
             split,
-            colors: [theme.text, theme.raised],
+            colors: [theme.info, theme.raised],
         });
         let middle = (rect.top + rect.bottom) / 2;
         let pad = at.unit(SUN_INSET);
         let small = at.art.symbol(Symbol::SunSmall);
-        icon_centred(out, small, (rect.left + pad, middle), theme.bg);
+        icon_centred(out, small, (rect.left + pad, middle), theme.text);
         let large = at.art.symbol(Symbol::SunLarge);
         let width = large.ink(0, 0).width();
-        icon_centred(out, large, (rect.right - pad - width, middle), theme.sub);
+        icon_centred(out, large, (rect.right - pad - width, middle), theme.text);
     }
 
     fn action((): ()) -> Option<Action> {

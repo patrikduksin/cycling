@@ -62,16 +62,16 @@ fn home_shows_the_time_the_battery_and_the_sensors_at_a_glance() {
 fn tapping_home_s_widget_and_a_sensor_pairs_it_and_ride_starts() {
     let mut sim = rider();
     sim.tap(40, 125);
-    sim.expect_text("NEARBY");
+    sim.expect_text("Nearby");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.expect_no_text("NEXT");
     sim.checkpoint("sensors menu");
     sim.tap(120, 118);
     sim.expect_text("1 ADDED");
-    sim.expect_text("POWER");
+    sim.expect_text("Power");
     sim.checkpoint("sensor connected by tap");
     sim.press(Role::Back);
-    sim.wait_for("LIVE", seconds(15)).unwrap();
+    sim.wait_for("Live", seconds(15)).unwrap();
     sim.press(Role::Back);
     assert!(sim.on_home(), "{}", sim.screen().text());
     sim.checkpoint("home after tapping a sensor");

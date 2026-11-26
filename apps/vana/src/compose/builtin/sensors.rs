@@ -1,11 +1,11 @@
-use super::{BAR_UNITS, Builtin, Nodes};
+use super::{Builtin, Nodes};
 use crate::compose::input::{Action, Button, Buttons, ListAct, OnPage};
 use crate::compose::kit::item::Button as Item;
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::{
-    ITEM, SENSOR_BACK, SENSOR_FACTS, SENSOR_HEAD, SENSOR_HINT, SENSOR_LIST, SENSOR_SEARCH,
-    SENSOR_TITLE, SPACE, STATUS,
+    ITEM, NAV_HEADER, SENSOR_FACTS, SENSOR_HEAD, SENSOR_HINT, SENSOR_LIST, SENSOR_SEARCH, SPACE,
 };
+use crate::compose::tiles::nav_header::Titled;
 use crate::screens::cue::Icon;
 use crate::screens::sensors::{List, Part};
 use crate::screens::theme::LAYOUT;
@@ -42,7 +42,7 @@ pub const NEARBY: &Builtin = &Builtin {
 };
 
 pub const DETAIL: &Builtin = &Builtin {
-    tree: || page(Part::Detail, [Some(Item::Forget), None]),
+    tree: || page(Part::Detail, Item::Forget, None),
     buttons: Buttons {
         act: Some(Button {
             action: Action::Page(OnPage::Forget),
@@ -55,7 +55,7 @@ pub const DETAIL: &Builtin = &Builtin {
 };
 
 pub const POWER_METER: &Builtin = &Builtin {
-    tree: || page(Part::Detail, [Some(Item::Forget), Some(Item::Zero)]),
+    tree: || page(Part::Detail, Item::Forget, Some(Item::Zero)),
     buttons: Buttons {
         act: button(Action::Page(OnPage::Calibrate), Icon::Calibrate),
         back: Some(BACK),
@@ -65,7 +65,7 @@ pub const POWER_METER: &Builtin = &Builtin {
 };
 
 pub const FORGET: &Builtin = &Builtin {
-    tree: || page(Part::Forget, [Some(Item::Keep), Some(Item::ForgetNow)]),
+    tree: || page(Part::Forget, Item::Keep, Some(Item::ForgetNow)),
     buttons: Buttons {
         act: button(Action::Page(OnPage::Answer(true)), Icon::Trash),
         back: Some(BACK),
@@ -80,12 +80,16 @@ const fn space(size: Size) -> Node {
 
 fn glance(list: List) -> Nodes {
     let nearby = list == List::Nearby;
+    let titled = if nearby {
+        Titled::Nearby
+    } else {
+        Titled::Sensors
+    };
     let search = nearby.then_some(Node::leaf(SENSOR_SEARCH, 0, Size::CONTENT));
     let hint = nearby.then_some(Node::leaf(SENSOR_HINT, 0, Size::CONTENT));
     [
-        Node::col(3 + 2 * u8::from(nearby), Size::grow(1)),
-        Node::leaf(STATUS, 0, Size::units(BAR_UNITS)),
-        Node::leaf(SENSOR_TITLE, list as u8, Size::CONTENT),
+        Node::col(2 + 2 * u8::from(nearby), Size::grow(1)),
+        Node::leaf(NAV_HEADER, titled as u8, Size::CONTENT),
     ]
     .into_iter()
     .chain(search)
@@ -94,36 +98,48 @@ fn glance(list: List) -> Nodes {
     .collect()
 }
 
-fn page(part: Part, buttons: [Option<Item>; 2]) -> Nodes {
+fn page(part: Part, first: Item, second: Option<Item>) -> Nodes {
     let units = &LAYOUT.space;
-    let top = match part {
-        Part::Detail => Node::leaf(SENSOR_BACK, 0, Size::CONTENT),
-        Part::Forget => space(Size::units(units.top_line)),
-    };
-    let margin = || space(Size::units(units.pad));
     let gap = || space(Size::units(units.gap));
-    let half = |item: Option<Item>| match item {
-        Some(item) => Node::leaf(ITEM, item as u8, Size::grow(1)),
-        None => space(Size::grow(1)),
+    let item = |item: Item| Node::leaf(ITEM, item as u8, Size::grow(1));
+    let body: &[Node] = match part {
+        Part::Detail => &[
+            Node::leaf(NAV_HEADER, Titled::Sensor as u8, Size::CONTENT),
+            space(Size::grow(1)),
+            Node::leaf(SENSOR_HEAD, part as u8, Size::CONTENT),
+            space(Size::units(units.gutter)),
+            Node::leaf(SENSOR_FACTS, part as u8, Size::CONTENT),
+            space(Size::grow(1)),
+        ],
+        Part::Forget => &[
+            space(Size::units(units.top_line)),
+            Node::leaf(SENSOR_HEAD, part as u8, Size::CONTENT),
+            space(Size::units(units.gutter)),
+            Node::row(3, Size::CONTENT),
+            space(Size::units(units.gap)),
+            Node::leaf(SENSOR_FACTS, part as u8, Size::grow(1)),
+            space(Size::units(units.gap)),
+            space(Size::grow(1)),
+        ],
     };
-    [
-        Node::col(7, Size::grow(1)),
-        top,
-        Node::leaf(SENSOR_HEAD, part as u8, Size::CONTENT),
-        space(Size::units(units.gutter)),
-        Node::row(3, Size::CONTENT),
-        margin(),
-        Node::leaf(SENSOR_FACTS, part as u8, Size::grow(1)),
-        margin(),
-        space(Size::grow(1)),
-        Node::row(5, Size::CONTENT),
-        gap(),
-        half(buttons[0]),
-        gap(),
-        half(buttons[1]),
-        gap(),
-        gap(),
-    ]
-    .into_iter()
-    .collect()
+    let row: &[Node] = match second {
+        Some(second) => &[
+            Node::row(5, Size::CONTENT),
+            gap(),
+            item(first),
+            gap(),
+            item(second),
+            gap(),
+        ],
+        None => &[Node::row(3, Size::CONTENT), gap(), item(first), gap()],
+    };
+    let children = match part {
+        Part::Detail => 8,
+        Part::Forget => 7,
+    };
+    core::iter::once(Node::col(children, Size::grow(1)))
+        .chain(body.iter().copied())
+        .chain(row.iter().copied())
+        .chain([gap()])
+        .collect()
 }

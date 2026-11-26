@@ -6,11 +6,11 @@ routes nav
     workout "/today/workout"
     fuel "/today/fuel"
     why "/today/why"
+  tab activities "/activities"
+    ride "/activities/ride/:id"
   tab device "/device"
     pair "/pair"
-  tab wifi "/wifi"
-  tab workouts "/workouts"
-    ride "/workouts/ride/:id"
+    wifi "/device/wifi"
 
 shape Link
   state: string
@@ -114,11 +114,9 @@ component Companion
   state problem = ""
   state sharing = ""
   state pasted = ""
-  // The Today demo: the workout's trip to the bike computer, and a pull that replays the day.
-  state sendStatus = "synced"
+  // The Today demo: a pull replays the day.
   state replays = 0
   state replaying = false
-  state plan = "hard"
   resource media = exactViewport() as shape Media
   derive still = media.prefersReducedMotion
   derive busy = pending(scanned) or pending(joined) or pending(forgot)
@@ -127,20 +125,16 @@ component Companion
   derive fitPath = match fit { case some(f) => f.path, case none => "" }
   derive wifiNote = match failure(scanned) { case some(f) => f.message, case none => match failure(joined) { case some(f) => f.message, case none => joinOutcome == "no_internet" and not pending(joined) ? joinText : "2.4 GHz networks only" } }
 
-  task landSync when sendStatus == "syncing"
-    after(1400, syncLanded)
   task endReplay when replaying
     after(650, replayed)
 
-  task scanOnAppear when (open and nav.tab == "wifi")
+  task scanOnAppear when (open and nav.tab == "device" and top(nav).name == "wifi")
     after(1, scanNow)
 
   action pick(name: string)
     nav = select(nav, name)
   action follow(url: string)
     nav = go(nav, url)
-  action syncLanded
-    sendStatus = "synced"
   action replay
     replaying = true
   action replayed
@@ -150,12 +144,8 @@ component Companion
     nav = push(nav, "/today/workout")
   action openWhy
     nav = push(nav, "/today/why")
-  action swapEasy
-    plan = "easy"
-    sendStatus = "syncing"
-  action swapBack
-    plan = "hard"
-    sendStatus = "syncing"
+  action openWifi
+    nav = push(nav, "/device/wifi")
   action openFuel
     nav = push(nav, "/today/fuel")
   action connectNow
@@ -229,15 +219,15 @@ component Companion
                 display="flex" flex-direction="column"
                 if e.name == "today"
                   header display="flex" align-items="center" padding="8px 16px"
-                    text "Today" role="heading" aria-level=1 flex=1
+                    text "Thursday, 26 Nov" role="heading" aria-level=1 flex=1 testId="today-date"
                   scroll id=`content-${e.id}` flex=1 min-height=0 refresh=replay refreshing=replaying testId="today-view"
                     for k in [replays] key=k
-                      Today(still=still, status=sendStatus, plan=plan, openWorkout=openWorkout, openFuel=openFuel, openWhy=openWhy, swapEasy=swapEasy, swapBack=swapBack)
+                      Today(still=still, openWorkout=openWorkout, openFuel=openFuel, openWhy=openWhy)
                 else if e.name == "workout"
                   header display="flex" align-items="center" padding="8px 16px"
-                    text (plan == "easy" ? "Endurance, 1 h" : "Threshold 2 × 20") role="heading" aria-level=2
+                    text "Threshold 2 × 20" role="heading" aria-level=2
                   scroll id=`content-${e.id}` flex=1 min-height=0
-                    WorkoutDetail(still=still, status=sendStatus, plan=plan)
+                    WorkoutDetail(still=still)
                 else if e.name == "fuel"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "Fuel" role="heading" aria-level=2
@@ -245,7 +235,7 @@ component Companion
                     FuelDetail(still=still)
                 else if e.name == "why"
                   header display="flex" align-items="center" padding="8px 16px"
-                    text "Why this call" role="heading" aria-level=2
+                    text "Why this workout" role="heading" aria-level=2
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     WhyDetail(still=still)
                 else if e.name == "device"
@@ -304,6 +294,11 @@ component Companion
                         footer
                           text match failure(bike) { case some(f) => f.message, case none => "" } testId="bike-error"
                       section
+                        button press=openWifi gap=8 align-items="center" testId="open-wifi"
+                          text "Wi-Fi" flex=1
+                          text (wifi.configured ? wifi.ssid : "Not Connected") color="-exact-secondary-label" testId="wifi-summary"
+                          image "symbol:forward-chevron"
+                      section
                         header
                           text "Athlete"
                         row
@@ -346,9 +341,9 @@ component Companion
                         text "Pair"
                 else if e.name == "wifi"
                   header display="flex" align-items="center" padding="8px 16px"
-                    text "Wi-Fi" role="heading" aria-level=1 flex=1
+                    text "Wi-Fi" role="heading" aria-level=2
                   if not open
-                    EmptyState(symbol="symbol:sf/wifi", title="Not Connected", message="Connect the bike computer on the Device tab to put it on Wi-Fi.")
+                    EmptyState(symbol="symbol:sf/wifi", title="Not Connected", message="Connect the bike computer to put it on Wi-Fi.")
                   else
                     list id=`content-${e.id}` appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
                       refresh=reloadWifi refreshing=pending(wifi)
@@ -455,7 +450,7 @@ component Companion
                           text match failure(fit) { case some(f) => f.message, case none => "" } testId="share-error"
                 else
                   header display="flex" align-items="center" padding="8px 16px"
-                    text "Workouts" role="heading" aria-level=1 flex=1
+                    text "Activities" role="heading" aria-level=1 flex=1
                   if not open
                     EmptyState(symbol="symbol:sf/bicycle", title="Not Connected", message="Connect the bike computer on the Device tab to see today's workout and your rides.")
                   else
@@ -494,15 +489,11 @@ component Companion
           testId="tab-today" flex=1
           image "symbol:sf/sun.max.fill"
           text "Today"
+        button role="tab" aria-controls="panel-activities" aria-selected=(nav.tab == "activities") press=pick("activities")
+          testId="tab-activities" flex=1
+          image "symbol:sf/figure.outdoor.cycle"
+          text "Activities"
         button role="tab" aria-controls="panel-device" aria-selected=(nav.tab == "device") press=pick("device")
           testId="tab-device" flex=1
           image "symbol:sf/bicycle"
           text "Device"
-        button role="tab" aria-controls="panel-wifi" aria-selected=(nav.tab == "wifi") press=pick("wifi")
-          testId="tab-wifi" flex=1
-          image "symbol:sf/wifi"
-          text "Wi-Fi"
-        button role="tab" aria-controls="panel-workouts" aria-selected=(nav.tab == "workouts") press=pick("workouts")
-          testId="tab-workouts" flex=1
-          image "symbol:sf/list.bullet.rectangle"
-          text "Workouts"

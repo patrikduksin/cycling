@@ -1,6 +1,6 @@
 test "opens on Today; the device tab, not paired"
   expect state nav.tab == "today"
-  expect text "call-title" == "Go hard tonight."
+  expect text "workout-title" == "Threshold 2 × 20"
   tap "tab-device"
   expect state nav.tab == "device"
   expect text "pair-how" == "1. On the bike computer, swipe down and tap Phone."
@@ -54,11 +54,8 @@ test "Pair on the link's screen saves the key and connects at once"
   expect state connected.text == "Connected to VANA in 840 ms"
 
 test "each tab opens its screen"
-  tap "tab-wifi"
-  expect state nav.tab == "wifi"
-  expect tree missing "current"
-  tap "tab-workouts"
-  expect state nav.tab == "workouts"
+  tap "tab-activities"
+  expect state nav.tab == "activities"
   expect tree missing "today"
   tap "tab-device"
   expect tree has "paste-link"
@@ -84,7 +81,7 @@ test "connected: today's workout and the rides"
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source today with {"planned": true, "name": "Sweet spot 3x12", "detail": "45 min · 12 steps"}
   answer source rides with {"indexing": false, "rides": [{"id": "f12-17", "title": "Tue 24 Nov, 07:12", "subtitle": "1:42:10 · 48.3 km", "power": true, "heart": false, "date": "Tue 24 Nov 2026", "start": "07:12", "moving": "1:42:10", "distance": "48.3 km", "speed": "28.4 km/h", "recorded": "GPS, Power", "file": "vana-2026-11-24-0712-ride17.fit"}, {"id": "i0-16", "title": "Ride 16", "subtitle": "15:05", "power": false, "heart": true, "date": "Unknown", "start": "Unknown", "moving": "15:05", "distance": "Not recorded", "speed": "Not recorded", "recorded": "Heart rate", "file": "vana-ride16.fit"}]}
-  tap "tab-workouts"
+  tap "tab-activities"
   clock data
   expect text "today-name" == "Sweet spot 3x12"
   expect text "today-detail" == "45 min · 12 steps"
@@ -101,7 +98,7 @@ test "connected: no workout and no rides yet"
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source today with {"planned": false, "name": "No workout today", "detail": ""}
   answer source rides with {"indexing": false, "rides": []}
-  tap "tab-workouts"
+  tap "tab-activities"
   clock data
   expect text "today-name" == "No workout today"
   expect tree missing "today-detail"
@@ -113,7 +110,7 @@ test "a ride pushes its detail, and Share FIT downloads it"
   answer source today with {"planned": false, "name": "No workout today", "detail": ""}
   answer source rides with {"indexing": false, "rides": [{"id": "f12-17", "title": "Tue 24 Nov, 07:12", "subtitle": "1:42:10 · 48.3 km", "power": true, "heart": false, "date": "Tue 24 Nov 2026", "start": "07:12", "moving": "1:42:10", "distance": "48.3 km", "speed": "28.4 km/h", "recorded": "GPS, Power", "file": "vana-2026-11-24-0712-ride17.fit"}]}
   answer source fit with {"path": "app:/cache/rides/vana-2026-11-24-0712-ride17.fit"}
-  tap "tab-workouts"
+  tap "tab-activities"
   clock data
   tap "ride-f12-17"
   clock settle
@@ -128,18 +125,19 @@ test "a ride pushes its detail, and Share FIT downloads it"
   expect state fitPath == "app:/cache/rides/vana-2026-11-24-0712-ride17.fit"
   expect text "share-error" == ""
 
-test "Wi-Fi not connected says so"
-  tap "tab-wifi"
+test "Wi-Fi waits for a connected bike computer"
+  tap "tab-device"
   clock data
-  expect tree missing "current"
-  expect tree missing "networks-note"
+  expect tree missing "open-wifi"
 
 test "Wi-Fi: the current network and the scan"
   answer source pairing with {"paired": true, "id": "c6060001"}
   answer source link with {"state": "open", "detail": "", "name": "VANA", "psm": 129}
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
-  tap "tab-wifi"
+  tap "tab-device"
+  clock data
+  tap "open-wifi"
   clock data
   expect text "current-ssid" == "home"
   expect text "current-state" == "Connected"
@@ -157,7 +155,9 @@ test "Wi-Fi: a wrong password asks again"
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
   answer source join with {"outcome": "wrong_password", "ssid": "Neighbour", "text": ""}
-  tap "tab-wifi"
+  tap "tab-device"
+  clock data
+  tap "open-wifi"
   clock data
   tap "network-1"
   clock settle
@@ -180,7 +180,9 @@ test "Wi-Fi: joined with no internet says so"
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
   answer source join with {"outcome": "no_internet", "ssid": "Neighbour", "text": "Joined, no internet"}
-  tap "tab-wifi"
+  tap "tab-device"
+  clock data
+  tap "open-wifi"
   clock data
   tap "network-1"
   clock settle
@@ -196,7 +198,9 @@ test "Wi-Fi: a failed join tells why"
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
   answer source join with {"outcome": "failed", "ssid": "Neighbour", "text": "Bike computer is busy"}
-  tap "tab-wifi"
+  tap "tab-device"
+  clock data
+  tap "open-wifi"
   clock data
   tap "network-1"
   clock settle
@@ -214,7 +218,9 @@ test "Wi-Fi: forget asks first"
   answer source wifi with {"configured": true, "ssid": "home", "state": "Connected", "ink": "vana.green", "bars": 3, "signal": "Strong signal", "networks": [{"ssid": "home", "secure": true, "bars": 3, "signal": "Strong signal", "joined": true}, {"ssid": "Neighbour", "secure": true, "bars": 2, "signal": "Fair signal", "joined": false}, {"ssid": "Cafe", "secure": false, "bars": 1, "signal": "Weak signal", "joined": false}]}
   answer source scan with {"ok": true, "text": ""}
   answer source forget with {"ok": true, "text": "Forgot the network"}
-  tap "tab-wifi"
+  tap "tab-device"
+  clock data
+  tap "open-wifi"
   clock data
   tap "forget"
   clock settle
@@ -222,25 +228,21 @@ test "Wi-Fi: forget asks first"
   clock data
   expect text "current-error" == ""
 
-test "Today makes the call, already on VANA; see why, or swap"
-  expect text "call-title" == "Go hard tonight."
+test "Today names tonight's workout, already on VANA; why and fuel one tap away"
+  expect text "today-date" == "Thursday, 26 Nov"
+  expect text "workout-title" == "Threshold 2 × 20"
+  expect text "workout-when" == "Tonight at 17:30 · 1 h 15"
+  expect tree missing "swap"
+  tap "open-workout"
+  clock settle
   expect text "sync-text" == "On your VANA"
+  back
+  clock settle
   tap "open-why"
   clock settle
   expect text "charge-value" == "82"
   back
   clock settle
-  tap "swap"
-  clock settle
-  tap "swap-confirm"
-  clock settle
-  expect text "call-title" == "Take it easy tonight."
-  expect text "sync-text" == "Updating VANA"
-  clock +1500
-  expect text "sync-text" == "On your VANA"
-  tap "swap-back"
-  clock settle
-  expect text "call-title" == "Go hard tonight."
   tap "open-fuel"
   clock settle
   expect tree has "meal-lunch"

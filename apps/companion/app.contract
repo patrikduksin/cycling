@@ -503,5 +503,5 @@ component Companion
           text "Activities"
         button role="tab" aria-controls="panel-device" aria-selected=(nav.tab == "device") press=pick("device")
           testId="tab-device" flex=1
-          image "symbol:sf/candybarphone"
+          image "symbol:sf/location.north.circle.fill"
           text "Device"

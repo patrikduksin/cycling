@@ -1,8 +1,9 @@
 use EmptyState from "exact:content"
-use Today, WorkoutDetail, FuelDetail, WhyDetail from "./today.contract"
+use Today, DayDetail, WorkoutDetail, FuelDetail, WhyDetail from "./today.contract"
 
 routes nav
   tab today "/"
+    day "/today/day"
     workout "/today/workout"
     fuel "/today/fuel"
     why "/today/why"
@@ -140,6 +141,8 @@ component Companion
   action replayed
     replaying = false
     replays = replays + 1
+  action openDay
+    nav = push(nav, "/today/day")
   action openWorkout
     nav = push(nav, "/today/workout")
   action openWhy
@@ -222,7 +225,12 @@ component Companion
                     text "Thursday, 26 Nov" role="heading" aria-level=1 flex=1 testId="today-date"
                   scroll id=`content-${e.id}` flex=1 min-height=0 refresh=replay refreshing=replaying testId="today-view"
                     for k in [replays] key=k
-                      Today(still=still, openWorkout=openWorkout, openFuel=openFuel, openWhy=openWhy)
+                      Today(still=still, openDay=openDay, openWorkout=openWorkout, openFuel=openFuel, openWhy=openWhy)
+                else if e.name == "day"
+                  header display="flex" align-items="center" padding="8px 16px"
+                    text "Your Day" role="heading" aria-level=2
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    DayDetail(still=still)
                 else if e.name == "workout"
                   header display="flex" align-items="center" padding="8px 16px"
                     text "Threshold 2 × 20" role="heading" aria-level=2

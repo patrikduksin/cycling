@@ -233,6 +233,13 @@ test "Today names tonight's workout, already on VANA; why and fuel one tap away"
   expect text "workout-title" == "Threshold 2 × 20"
   expect text "workout-when" == "Tonight at 17:30 · 1 h 15"
   expect tree missing "swap"
+  expect text "next-title" == "Lunch, carbs first"
+  expect tree missing "item-lunch"
+  tap "open-day"
+  clock settle
+  expect tree has "item-lunch"
+  back
+  clock settle
   tap "open-workout"
   clock settle
   expect text "sync-text" == "On your VANA"

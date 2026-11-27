@@ -1,0 +1,35 @@
+build:
+  name: Exact iOS (timing)
+  steps:
+    - eas/checkout
+    - run:
+        name: Machine
+        command: |
+          set -eu
+          date -u +%FT%TZ; sysctl -n hw.ncpu machdep.cpu.brand_string hw.memsize; sw_vers; xcodebuild -version
+    - run:
+        name: Prepare Exact
+        command: |
+          set -eu
+          start=$(date +%s)
+          sh .ci/prepare-native.sh ios
+          echo "TIMING prepare $(( $(date +%s) - start ))s"
+    - eas/install_node_modules
+    - eas/resolve_build_config
+    - run:
+        name: Archive (unsigned)
+        command: |
+          set -eu
+          start=$(date +%s)
+          bun "$EXACT/scripts/exact.mjs" setup --check --platform ios --device
+          export EXACT_BUILD_NUMBER="${ eas.job.version.buildNumber }"
+          bun exact.mjs ios --device --archive out.ipa --unsigned --json > artifact.json
+          echo "TIMING archive $(( $(date +%s) - start ))s"
+          cat artifact.json
+          ls -la out.ipa
+          ls -la out.dSYM out.dSYMs 2>&1 || true
+          find out.dSYM out.dSYMs -path '*DWARF*' -type f -exec du -h {} + 2>/dev/null || true
+    - eas/upload_artifact:
+        inputs:
+          type: application-archive
+          path: out.ipa

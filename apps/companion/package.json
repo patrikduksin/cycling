@@ -5,5 +5,9 @@
     "build": "bun exact.mjs web-build --out dist",
     "start": "bun exact.mjs serve dist"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "eas-cli": "27.11.0",
+    "expo-modules-autolinking": "^58.1.0"
+  }
 }

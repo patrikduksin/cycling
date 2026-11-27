@@ -1,0 +1,14 @@
+{
+  "cli": { "version": ">= 27.11.0", "appVersionSource": "remote" },
+  "build": {
+    "exact": {
+      "environment": "production",
+      "distribution": "internal",
+      "withoutCredentials": true,
+      "autoIncrement": true,
+      "bun": "1.4.2",
+      "env": { "EXACT_REF": "5ae5992d0862b41d8b5ab7e09cb667c26885cb78", "EXACT_VERSION": "0.1.0" },
+      "ios": { "config": "eas-ios.yml", "image": "macos-tahoe-26.6-xcode-27.2" }
+    }
+  }
+}

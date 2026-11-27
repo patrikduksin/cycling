@@ -32,4 +32,10 @@ build:
     - eas/upload_artifact:
         inputs:
           type: application-archive
-          path: out.ipa
+          path: apps/companion/out.ipa
+    - eas/upload_artifact:
+        inputs:
+          type: build-artifact
+          path: |
+            apps/companion/out.dSYM
+            apps/companion/out.dSYMs

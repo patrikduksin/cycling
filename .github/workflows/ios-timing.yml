@@ -1,0 +1,69 @@
+name: iOS archive timing
+
+# Measures an unsigned production archive of apps/companion on a GitHub-hosted macOS runner,
+# with the same preparation as the EAS profile (.ci/prepare-native.sh).
+on:
+  push:
+    branches: [eas-build-timing]
+  workflow_dispatch:
+
+jobs:
+  archive:
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/companion
+    env:
+      EXACT_REF: 5ae5992d0862b41d8b5ab7e09cb667c26885cb78
+      EXACT_VERSION: 0.1.0
+      EXACT_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Machine and Xcode
+        run: |
+          set -eu
+          sysctl -n hw.ncpu machdep.cpu.brand_string hw.memsize
+          sw_vers
+          ls -d /Applications/Xcode*.app
+          newest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$newest" ] || { echo "no Xcode 27 on this image"; exit 1; }
+          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Prepare Exact
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/set-env" <<'EOF'
+          #!/bin/sh
+          if [ "$1" = PATH ]; then echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"; else echo "$1=$2" >> "$GITHUB_ENV"; fi
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/set-env"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          xcodebuild -version
+          start=$(date +%s)
+          sh .ci/prepare-native.sh ios
+          echo "TIMING prepare $(( $(date +%s) - start ))s"
+      - name: Install node modules
+        run: bun install --frozen-lockfile
+      - name: Archive (unsigned)
+        run: |
+          set -eu
+          bun "$EXACT/scripts/exact.mjs" setup --check --platform ios --device
+          start=$(date +%s)
+          /usr/bin/time -l bun exact.mjs ios --device --archive out.ipa --unsigned --json > artifact.json 2> archive.err || { tail -80 archive.err; exit 1; }
+          echo "TIMING archive $(( $(date +%s) - start ))s"
+          grep -E "host/apple: .*out.ipa|maximum resident|peak memory" archive.err || true
+          cat artifact.json
+          ls -la out.ipa
+          find out.dSYM out.dSYMs -path '*DWARF*' -type f -exec du -h {} +
+      - uses: actions/upload-artifact@v4
+        with:
+          name: companion-ios
+          path: |
+            apps/companion/out.ipa
+            apps/companion/out.dSYM
+            apps/companion/out.dSYMs
+          retention-days: 3

@@ -9,7 +9,7 @@ on:
 
 jobs:
   archive:
-    runs-on: macos-27
+    runs-on: xcode-27
     timeout-minutes: 60
     defaults:
       run:
